@@ -1,8 +1,7 @@
-# jj-native diff review tool — plan
+# jjdiff — plan
 
-Working title: **jjdiff** (placeholder). A fast, minimal desktop diff viewer for reviewing and
-landing changes in **Jujutsu colocated repos**, built with **Tauri 2 + Rust**, jj-native from day
-one. Informed by a code-level analysis of [nkzw-tech/codiff](https://github.com/nkzw-tech/codiff)
+**jjdiff**: a fast, minimal desktop diff viewer for reviewing and landing changes in **Jujutsu
+colocated repos**, built with **Tauri 2 + Rust + Lit**, jj-native from day one. Informed by a code-level analysis of [nkzw-tech/codiff](https://github.com/nkzw-tech/codiff)
 (MIT, Electron): its expensive part is the diff-review UI (~38k LOC renderer); its VCS plumbing is
 ~3k LOC and cleanly separated behind an IPC surface. We copy the *shape*, not the code — and we
 design the review model around jj instead of bending git's index model.
@@ -25,7 +24,7 @@ design the review model around jj instead of bending git's index model.
 
 ```
 ┌─────────────────────────────────────────────┐
-│ ui/            React 19 + Vite + TS         │
+│ ui/            Lit 3 + Vite + TS            │
 │   diff view (virtualized), stack sidebar,   │
 │   file tree, command bar, comments          │
 ├──────────────── Tauri IPC ──────────────────┤
@@ -41,11 +40,17 @@ design the review model around jj instead of bending git's index model.
 
 - **Tauri 2.x** — ~10 MB bundle / low RSS vs Electron's ~200 MB; native menus; sidecar-free
   because the backend *is* Rust.
-- **Frontend: React 19 + Vite + TypeScript.** Chosen for ecosystem (virtualization, editor
-  widgets) and to borrow proven UX patterns from codiff. Virtualized diff list via
-  `@tanstack/react-virtual`; syntax highlighting with **Shiki in a web worker** (lazy grammars,
-  zero Rust-side grammar management). Revisit syntect/tree-sitter in Rust only if profiling
-  demands it.
+- **Frontend: Lit 3 + Vite + TypeScript.** ~5 KB runtime, no VDOM — the frontend counterpart of
+  choosing Tauri over Electron. The diff view is custom DOM-heavy work in any framework; Lit's
+  fine-grained templating (`repeat()`, no reconciler) suits huge code listings. Virtualization
+  via `@lit-labs/virtualizer` (variable-height, fits diff hunks); state via reactive
+  controllers / `@lit-labs/signals`; syntax highlighting with **Shiki in a web worker** (lazy
+  grammars, zero Rust-side grammar management). Revisit syntect/tree-sitter in Rust only if
+  profiling demands it.
+  - **Light-DOM rule:** the code/diff pane renders in light DOM
+    (`createRenderRoot() { return this }`) so text selection, copy, and find work natively
+    across lines; shadow DOM is reserved for chrome (sidebar, dialogs, command bar). Theming
+    flows exclusively through CSS custom properties so it crosses both worlds.
 - **Rust workspace** (`crates/`) so the vcs/diff/watch logic is testable without Tauri.
 
 ### jj integration strategy: CLI-first, jj-lib later
@@ -133,6 +138,11 @@ agent-CLI pattern — it's VCS-agnostic); shared-review web service; hunk-level 
 - **jj-lib churn** — it's Phase 2 and optional; the `crates/vcs` trait keeps it swappable.
 - **Diff-view performance** — the real work (codiff's ReviewCodeView is 4k LOC alone). Budget
   M1 generously; virtualize from day one; keep highlighting off the main thread.
+- **Shadow-DOM selection** — cross-shadow-root text selection/copy is still uneven
+  (`getComposedRanges`); the light-DOM rule for the code pane exists to avoid it entirely.
+  Verify select/copy/find UX in M1 before building comments on top.
+- **Lit ecosystem thinness** — fewer off-the-shelf widgets than React (e.g. markdown comment
+  editor will be hand-rolled). Acceptable for this app's surface; noted so it isn't a surprise.
 
 ## Effort
 
