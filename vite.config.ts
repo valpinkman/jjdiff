@@ -12,4 +12,8 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
+  worker: {
+    // Shiki lazy-loads grammars via dynamic import; iife workers can't code-split.
+    format: 'es',
+  },
 });

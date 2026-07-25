@@ -6,11 +6,14 @@
   --jj-fg-muted: #6a737d;
   --jj-border: #d7dbe0;
   --jj-accent: #7c5cff;
-  --jj-added-bg: #e6ffec;
+  --jj-added-bg: #e9ffef;
+  --jj-added-mark: #b3f0c0;
   --jj-added-fg: #1a7f37;
-  --jj-removed-bg: #ffebe9;
+  --jj-removed-bg: #ffedeb;
+  --jj-removed-mark: #ffcecb;
   --jj-removed-fg: #cf222e;
   --jj-hunk-bg: #f1f3f5;
+  --jj-num-fg: #9aa3ad;
   --jj-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --jj-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --jj-code-size: 12.5px;
@@ -24,11 +27,14 @@
     --jj-fg-muted: #8b939e;
     --jj-border: #2c313a;
     --jj-accent: #9d86ff;
-    --jj-added-bg: #12261a;
+    --jj-added-bg: #10231a;
+    --jj-added-mark: #1d4a2d;
     --jj-added-fg: #57ab5a;
-    --jj-removed-bg: #2d1517;
+    --jj-removed-bg: #291416;
+    --jj-removed-mark: #55272b;
     --jj-removed-fg: #e5534b;
     --jj-hunk-bg: #1f242b;
+    --jj-num-fg: #566069;
   }
 }
 
@@ -44,55 +50,159 @@ body {
 
 jj-app {
   display: block;
-  height: 100%;
+  height: 100vh;
 }
 
-/* The diff pane renders in light DOM (selection/copy/find); style it globally. */
+/* ---- Diff pane (light DOM: selection/copy/find must work natively) ---- */
+
+jj-patch-view {
+  display: block;
+  flex: 1;
+  min-height: 0;
+}
+
 .jj-patch {
+  display: block;
+  height: 100%;
+  overflow-y: auto;
   font-family: var(--jj-mono);
   font-size: var(--jj-code-size);
   line-height: 1.5;
+  padding: 10px 12px;
+  box-sizing: border-box;
 }
 
-.jj-patch .file {
-  border: 1px solid var(--jj-border);
-  border-radius: 8px;
-  margin: 0 0 12px;
-  overflow: hidden;
+.jj-patch > * {
+  width: 100%;
 }
 
-.jj-patch .file-header {
+.jj-empty {
+  padding: 24px;
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-sans);
+}
+
+.file-header {
   display: flex;
   gap: 8px;
   align-items: baseline;
-  padding: 6px 12px;
+  padding: 6px 10px;
+  margin-top: 14px;
   background: var(--jj-bg-panel);
-  border-bottom: 1px solid var(--jj-border);
+  border: 1px solid var(--jj-border);
+  border-radius: 8px 8px 0 0;
   font-weight: 600;
+  box-sizing: border-box;
 }
 
-.jj-patch .file-status {
-  font-size: 11px;
+.jj-patch > .file-header:first-child {
+  margin-top: 0;
+}
+
+.file-status {
+  font-size: 10px;
   color: var(--jj-fg-muted);
   text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.jj-patch .file-status.added { color: var(--jj-added-fg); }
-.jj-patch .file-status.deleted { color: var(--jj-removed-fg); }
+.file-status.added { color: var(--jj-added-fg); }
+.file-status.deleted { color: var(--jj-removed-fg); }
 
-.jj-patch .hunk-header {
-  padding: 2px 12px;
+.file-counts {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.file-counts .plus { color: var(--jj-added-fg); }
+.file-counts .minus { color: var(--jj-removed-fg); }
+
+.hunk-header {
+  padding: 2px 10px;
   background: var(--jj-hunk-bg);
   color: var(--jj-fg-muted);
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
+  box-sizing: border-box;
+  font-size: 11px;
 }
 
-.jj-patch pre {
-  margin: 0;
-  padding: 0 12px;
-  white-space: pre;
-  overflow-x: auto;
+.notice {
+  padding: 10px;
+  color: var(--jj-fg-muted);
+  font-style: italic;
+  border: 1px solid var(--jj-border);
+  border-top: 0;
+  box-sizing: border-box;
 }
 
-.jj-patch .line { display: block; }
-.jj-patch .line.added { background: var(--jj-added-bg); color: var(--jj-added-fg); }
-.jj-patch .line.removed { background: var(--jj-removed-bg); color: var(--jj-removed-fg); }
+/* Unified rows: [old#][new#][sign][content] */
+.line.unified {
+  display: grid;
+  grid-template-columns: 3.2em 3.2em 1.2em 1fr;
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
+  box-sizing: border-box;
+}
+
+.line.unified.added { background: var(--jj-added-bg); }
+.line.unified.removed { background: var(--jj-removed-bg); }
+
+/* Split rows: two [num][content] cells */
+.split-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
+  box-sizing: border-box;
+}
+
+.cell {
+  display: grid;
+  grid-template-columns: 3.2em 1fr;
+  min-width: 0;
+}
+
+.cell.left {
+  border-right: 1px solid var(--jj-border);
+}
+
+.cell.added { background: var(--jj-added-bg); }
+.cell.removed { background: var(--jj-removed-bg); }
+.cell.filler {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 6px,
+    var(--jj-hunk-bg) 6px 7px
+  );
+}
+
+.num {
+  color: var(--jj-num-fg);
+  text-align: right;
+  padding-right: 8px;
+  user-select: none;
+  font-size: 11px;
+  line-height: inherit;
+}
+
+.sign {
+  user-select: none;
+  color: var(--jj-fg-muted);
+  text-align: center;
+}
+
+.content {
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.line.added .content, .cell.added .content { color: var(--jj-added-fg); }
+.line.removed .content, .cell.removed .content { color: var(--jj-removed-fg); }
+
+/* Word-diff emphasis; keeps working when shiki colors the same span. */
+.line.added .mark, .cell.added .mark { background: var(--jj-added-mark); border-radius: 2px; }
+.line.removed .mark, .cell.removed .mark { background: var(--jj-removed-mark); border-radius: 2px; }

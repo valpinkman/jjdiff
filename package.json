@@ -10,8 +10,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@lit-labs/virtualizer": "^2.1.1",
+    "@shikijs/langs": "^4.3.1",
+    "@shikijs/themes": "^4.3.1",
+    "@shikijs/types": "^4.3.1",
     "@tauri-apps/api": "^2",
-    "lit": "^3"
+    "lit": "^3",
+    "shiki": "^4.3.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

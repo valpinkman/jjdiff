@@ -1,10 +1,10 @@
-use crate::{DiffError, FilePatch, FileStatus, Hunk, Line, LineKind};
+use crate::{spans, DiffError, FilePatch, FileStatus, Hunk, Line, LineKind};
 
 /// Parse `git diff` / `jj diff --git` output into [`FilePatch`]es.
 pub fn parse_git_patch(patch: &str) -> Result<Vec<FilePatch>, DiffError> {
     let mut files = Vec::new();
     let mut current: Option<PendingFile> = None;
-    let mut hunk: Option<Hunk> = None;
+    let mut hunk: Option<HunkBuilder> = None;
 
     for (index, raw) in patch.lines().enumerate() {
         if raw.starts_with("diff --git ") {
@@ -16,9 +16,9 @@ pub fn parse_git_patch(patch: &str) -> Result<Vec<FilePatch>, DiffError> {
 
         if let Some(header) = raw.strip_prefix("@@ ") {
             if let Some(done) = hunk.take() {
-                file.hunks.push(done);
+                file.hunks.push(done.finish());
             }
-            hunk = Some(parse_hunk_header(header, index)?);
+            hunk = Some(HunkBuilder::new(parse_hunk_header(header, index)?));
             continue;
         }
 
@@ -28,19 +28,18 @@ pub fn parse_git_patch(patch: &str) -> Result<Vec<FilePatch>, DiffError> {
                 Some(b'+') => Some(LineKind::Added),
                 Some(b'-') => Some(LineKind::Removed),
                 Some(b' ') | None => Some(LineKind::Context),
-                Some(b'\\') => None, // "\ No newline at end of file"
                 _ => None,
             };
             if let Some(kind) = kind {
                 let text = if raw.is_empty() { "" } else { &raw[1..] };
-                active.lines.push(Line { kind, text: text.to_string() });
+                active.push(kind, text);
                 continue;
             }
             if raw.starts_with('\\') {
-                continue;
+                continue; // "\ No newline at end of file"
             }
             // Anything else ends the hunk (start of the next file's metadata).
-            file.hunks.push(hunk.take().unwrap());
+            file.hunks.push(hunk.take().unwrap().finish());
         }
 
         if raw.starts_with("new file mode") {
@@ -77,10 +76,49 @@ struct PendingFile {
     hunks: Vec<Hunk>,
 }
 
-fn flush(files: &mut Vec<FilePatch>, current: &mut Option<PendingFile>, hunk: &mut Option<Hunk>) {
+/// Wraps a [`Hunk`] under construction, assigning 1-based line numbers as lines arrive.
+struct HunkBuilder {
+    hunk: Hunk,
+    old_next: u32,
+    new_next: u32,
+}
+
+impl HunkBuilder {
+    fn new(hunk: Hunk) -> HunkBuilder {
+        HunkBuilder { old_next: hunk.old_start, new_next: hunk.new_start, hunk }
+    }
+
+    fn push(&mut self, kind: LineKind, text: &str) {
+        let mut line = Line::new(kind, text);
+        match kind {
+            LineKind::Context => {
+                line.old_line = Some(self.old_next);
+                line.new_line = Some(self.new_next);
+                self.old_next += 1;
+                self.new_next += 1;
+            }
+            LineKind::Removed => {
+                line.old_line = Some(self.old_next);
+                self.old_next += 1;
+            }
+            LineKind::Added => {
+                line.new_line = Some(self.new_next);
+                self.new_next += 1;
+            }
+        }
+        self.hunk.lines.push(line);
+    }
+
+    fn finish(mut self) -> Hunk {
+        spans::add_word_spans(&mut self.hunk);
+        self.hunk
+    }
+}
+
+fn flush(files: &mut Vec<FilePatch>, current: &mut Option<PendingFile>, hunk: &mut Option<HunkBuilder>) {
     let Some(mut file) = current.take() else { return };
     if let Some(done) = hunk.take() {
-        file.hunks.push(done);
+        file.hunks.push(done.finish());
     }
     let status = file.status.unwrap_or(FileStatus::Modified);
     // Deletions only carry an old path; everything else prefers the new path.
@@ -93,7 +131,18 @@ fn flush(files: &mut Vec<FilePatch>, current: &mut Option<PendingFile>, hunk: &m
         FileStatus::Renamed => file.old_path.clone(),
         _ => None,
     };
-    files.push(FilePatch { path, old_path, status, binary: file.binary, hunks: file.hunks });
+    let mut patch = FilePatch {
+        path,
+        old_path,
+        status,
+        binary: file.binary,
+        skipped: None,
+        added: 0,
+        removed: 0,
+        hunks: file.hunks,
+    };
+    patch.recount();
+    files.push(patch);
 }
 
 fn parse_hunk_header(header: &str, line: usize) -> Result<Hunk, DiffError> {
@@ -177,6 +226,7 @@ mod tests {
         assert_eq!(files[0].path, "added.txt");
         assert_eq!(files[0].status, FileStatus::Added);
         assert_eq!(files[0].hunks[0].lines[0].kind, LineKind::Added);
+        assert_eq!((files[0].added, files[0].removed), (1, 0));
 
         assert_eq!(files[1].path, "del.txt");
         assert_eq!(files[1].status, FileStatus::Deleted);
@@ -189,6 +239,29 @@ mod tests {
         assert_eq!(hunk.lines.len(), 5);
         assert_eq!(hunk.lines[1].kind, LineKind::Removed);
         assert_eq!(hunk.lines[2].text, "TWO");
+    }
+
+    #[test]
+    fn assigns_line_numbers() {
+        let files = parse_git_patch(FIXTURE).unwrap();
+        let hunk = &files[2].hunks[0];
+        // " one" context
+        assert_eq!((hunk.lines[0].old_line, hunk.lines[0].new_line), (Some(1), Some(1)));
+        // "-two"
+        assert_eq!((hunk.lines[1].old_line, hunk.lines[1].new_line), (Some(2), None));
+        // "+TWO"
+        assert_eq!((hunk.lines[2].old_line, hunk.lines[2].new_line), (None, Some(2)));
+        // " three"
+        assert_eq!((hunk.lines[3].old_line, hunk.lines[3].new_line), (Some(3), Some(3)));
+    }
+
+    #[test]
+    fn computes_word_spans() {
+        let files = parse_git_patch(FIXTURE).unwrap();
+        let hunk = &files[2].hunks[0];
+        // "two" → "TWO" is a full-token replace of a tiny line: spans allowed (3/3 marked is
+        // > 70%, so they are dropped).
+        assert!(hunk.lines[1].spans.is_empty());
     }
 
     #[test]

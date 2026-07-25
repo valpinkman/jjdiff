@@ -1,14 +1,19 @@
 //! Diff domain for jjdiff.
 //!
-//! M0: parse `jj diff --git` output into structured data for the UI. Statuses and renames come
-//! from patch headers (`new file mode`, `deleted file mode`, `rename from`/`rename to`), which
-//! are unambiguous even for paths with spaces — unlike `--summary`'s `R {old => new}` braces.
-//! Paths for plain edits come from the `---`/`+++` lines, not from splitting the ambiguous
-//! `diff --git a/X b/Y` header.
+//! Two producers, one output shape:
+//! - [`parse_git_patch`] parses `jj diff --git` output (revset diffs). Statuses and renames come
+//!   from patch headers, paths from `---`/`+++` lines — never from splitting the ambiguous
+//!   `diff --git a/X b/Y` header.
+//! - [`worktree::diff_worktree`] diffs the live filesystem against a base tree via gix +
+//!   similar, so viewing the working copy never snapshots and never writes a jj operation
+//!   (PLAN.md: fs-vs-`@-`).
 //!
-//! M1 adds fs-vs-tree diffing (gix + imara-diff) so working-copy views never snapshot.
+//! Both run [`spans::add_word_spans`] so the UI gets intra-line word emphasis. Span offsets are
+//! **UTF-16 code units** to match JavaScript string indexing.
 
 mod parse;
+mod spans;
+pub mod worktree;
 
 pub use parse::parse_git_patch;
 
@@ -31,7 +36,28 @@ pub struct FilePatch {
     pub old_path: Option<String>,
     pub status: FileStatus,
     pub binary: bool,
+    /// Human-readable reason when contents were not diffed (e.g. too large, conflicted).
+    pub skipped: Option<String>,
+    /// Total added/removed line counts (file-tree badges).
+    pub added: u32,
+    pub removed: u32,
     pub hunks: Vec<Hunk>,
+}
+
+impl FilePatch {
+    fn recount(&mut self) {
+        self.added = 0;
+        self.removed = 0;
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                match line.kind {
+                    LineKind::Added => self.added += 1,
+                    LineKind::Removed => self.removed += 1,
+                    LineKind::Context => {}
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +77,18 @@ pub struct Hunk {
 pub struct Line {
     pub kind: LineKind,
     pub text: String,
+    /// 1-based line number on the old side (context/removed lines).
+    pub old_line: Option<u32>,
+    /// 1-based line number on the new side (context/added lines).
+    pub new_line: Option<u32>,
+    /// Intra-line emphasis ranges, `[start, end)` in UTF-16 code units.
+    pub spans: Vec<(u32, u32)>,
+}
+
+impl Line {
+    pub fn new(kind: LineKind, text: impl Into<String>) -> Line {
+        Line { kind, text: text.into(), old_line: None, new_line: None, spans: Vec::new() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -65,4 +103,8 @@ pub enum LineKind {
 pub enum DiffError {
     #[error("malformed patch at line {line}: {message}")]
     Malformed { line: usize, message: String },
+    #[error("git object access failed: {0}")]
+    Gix(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }

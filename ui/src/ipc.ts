@@ -35,6 +35,10 @@ export type LineKind = 'context' | 'added' | 'removed';
 export interface Line {
   kind: LineKind;
   text: string;
+  oldLine: number | null;
+  newLine: number | null;
+  /** Intra-line emphasis ranges, [start, end) in UTF-16 code units. */
+  spans: [number, number][];
 }
 
 export interface Hunk {
@@ -51,6 +55,10 @@ export interface FilePatch {
   oldPath: string | null;
   status: FileStatus;
   binary: boolean;
+  /** Reason contents were not diffed (too large, conflicted, …). */
+  skipped: string | null;
+  added: number;
+  removed: number;
   hunks: Hunk[];
 }
 
@@ -61,8 +69,8 @@ export interface LaunchOptions {
 
 export const getLaunchOptions = () => invoke<LaunchOptions>('launch_options');
 export const getRepoState = () => invoke<RepoState>('repo_state');
-export const getDiff = (revset?: string) =>
-  invoke<FilePatch[]>('diff', { revset: revset ?? null });
+export const getDiff = (revset: string | null, ignoreWhitespace: boolean) =>
+  invoke<FilePatch[]>('diff', { revset, ignoreWhitespace });
 export const describeChange = (changeId: string, message: string) =>
   invoke<void>('describe', { changeId, message });
 export const newChange = () => invoke<void>('new_change');

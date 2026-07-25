@@ -85,13 +85,32 @@ fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, String> {
 }
 
 /// Structured diff for one revision — or the live working copy when `revset` is `None`.
+///
+/// Working-copy diffs never touch jj: they run fs-vs-`@-` through gix (no snapshot, no
+/// operation written). Revset diffs parse `jj diff --git` output.
 #[tauri::command]
-fn diff(state: tauri::State<'_, AppState>, revset: Option<String>) -> Result<Vec<FilePatch>, String> {
-    let patch = with_repo(&state, |repo| match &revset {
-        Some(revset) => repo.patch_for(revset),
-        None => repo.working_copy_patch(),
-    })?;
-    jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())
+fn diff(
+    state: tauri::State<'_, AppState>,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+) -> Result<Vec<FilePatch>, String> {
+    match revset {
+        Some(revset) => {
+            let patch = with_repo(&state, |repo| repo.patch_for(&revset, ignore_whitespace))?;
+            jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())
+        }
+        None => {
+            let (root, base) = with_repo(&state, |repo| {
+                Ok((repo.root().to_path_buf(), repo.working_copy_parent()?))
+            })?;
+            jjdiff_diff::worktree::diff_worktree(
+                &root,
+                base.as_deref(),
+                jjdiff_diff::worktree::WorktreeDiffOptions { ignore_whitespace },
+            )
+            .map_err(|e| e.to_string())
+        }
+    }
 }
 
 #[tauri::command]

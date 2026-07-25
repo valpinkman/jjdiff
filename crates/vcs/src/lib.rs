@@ -97,24 +97,33 @@ impl Repo {
     }
 
     /// Git-format patch for a single revision (its diff against parents).
-    pub fn patch_for(&self, revset: &str) -> Result<String> {
-        self.runner
-            .read(&["diff", "--git", "--context", "3", "-r", revset])
+    pub fn patch_for(&self, revset: &str, ignore_whitespace: bool) -> Result<String> {
+        let mut args = vec!["diff", "--git", "--context", "3", "-r", revset];
+        if ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
+        self.runner.read(&args)
     }
 
     /// Git-format patch between two revsets.
-    pub fn patch_between(&self, from: &str, to: &str) -> Result<String> {
-        self.runner
-            .read(&["diff", "--git", "--context", "3", "--from", from, "--to", to])
+    pub fn patch_between(&self, from: &str, to: &str, ignore_whitespace: bool) -> Result<String> {
+        let mut args = vec!["diff", "--git", "--context", "3", "--from", from, "--to", to];
+        if ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
+        self.runner.read(&args)
     }
 
-    /// Live working-copy patch.
-    ///
-    /// TEMPORARY (M0): runs `jj diff` *without* `--ignore-working-copy`, letting jj snapshot —
-    /// exactly what the user's own `jj st` would do. M1 replaces this with fs-vs-`@-` tree
-    /// diffing in `jjdiff-diff` so viewing never writes an operation.
-    pub fn working_copy_patch(&self) -> Result<String> {
-        self.runner.mutate(&["diff", "--git", "--context", "3"])
+    /// Git commit id of the working copy's first parent — the base for live fs-vs-tree
+    /// diffing (`jjdiff-diff::worktree`). `None` when `@` sits directly on the root commit,
+    /// whose tree is empty (the all-zeros id is not a real git object).
+    pub fn working_copy_parent(&self) -> Result<Option<String>> {
+        let wc = self.working_copy()?;
+        Ok(wc
+            .parents
+            .into_iter()
+            .next()
+            .filter(|id| !id.bytes().all(|b| b == b'0')))
     }
 
     // -- Mutations (jj-native verbs; no staging axis) --
