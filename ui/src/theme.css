@@ -1,0 +1,98 @@
+/* All theming flows through custom properties so it crosses shadow and light DOM (PLAN.md). */
+:root {
+  --jj-bg: #ffffff;
+  --jj-bg-panel: #f6f7f9;
+  --jj-fg: #1c2128;
+  --jj-fg-muted: #6a737d;
+  --jj-border: #d7dbe0;
+  --jj-accent: #7c5cff;
+  --jj-added-bg: #e6ffec;
+  --jj-added-fg: #1a7f37;
+  --jj-removed-bg: #ffebe9;
+  --jj-removed-fg: #cf222e;
+  --jj-hunk-bg: #f1f3f5;
+  --jj-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --jj-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --jj-code-size: 12.5px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --jj-bg: #14161a;
+    --jj-bg-panel: #1c1f24;
+    --jj-fg: #dde1e6;
+    --jj-fg-muted: #8b939e;
+    --jj-border: #2c313a;
+    --jj-accent: #9d86ff;
+    --jj-added-bg: #12261a;
+    --jj-added-fg: #57ab5a;
+    --jj-removed-bg: #2d1517;
+    --jj-removed-fg: #e5534b;
+    --jj-hunk-bg: #1f242b;
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font-family: var(--jj-sans);
+  font-size: 13px;
+}
+
+jj-app {
+  display: block;
+  height: 100%;
+}
+
+/* The diff pane renders in light DOM (selection/copy/find); style it globally. */
+.jj-patch {
+  font-family: var(--jj-mono);
+  font-size: var(--jj-code-size);
+  line-height: 1.5;
+}
+
+.jj-patch .file {
+  border: 1px solid var(--jj-border);
+  border-radius: 8px;
+  margin: 0 0 12px;
+  overflow: hidden;
+}
+
+.jj-patch .file-header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 12px;
+  background: var(--jj-bg-panel);
+  border-bottom: 1px solid var(--jj-border);
+  font-weight: 600;
+}
+
+.jj-patch .file-status {
+  font-size: 11px;
+  color: var(--jj-fg-muted);
+  text-transform: uppercase;
+}
+
+.jj-patch .file-status.added { color: var(--jj-added-fg); }
+.jj-patch .file-status.deleted { color: var(--jj-removed-fg); }
+
+.jj-patch .hunk-header {
+  padding: 2px 12px;
+  background: var(--jj-hunk-bg);
+  color: var(--jj-fg-muted);
+}
+
+.jj-patch pre {
+  margin: 0;
+  padding: 0 12px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.jj-patch .line { display: block; }
+.jj-patch .line.added { background: var(--jj-added-bg); color: var(--jj-added-fg); }
+.jj-patch .line.removed { background: var(--jj-removed-bg); color: var(--jj-removed-fg); }

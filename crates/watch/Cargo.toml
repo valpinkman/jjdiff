@@ -1,0 +1,12 @@
+[package]
+name = "jjdiff-watch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notify = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
