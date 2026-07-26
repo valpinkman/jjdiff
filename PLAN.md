@@ -160,6 +160,121 @@ as a generated one, and `skills/jjdiff/SKILL.md` documents the loop. `check_vers
 gates on jj ≥ 0.33. Worktree rename detection (exact-content only) and nested `.gitignore`
 support in the fs watcher close the two known correctness gaps.
 
+## Phase 2 — jj as a whole tool (planned)
+
+M0–M7 made jjdiff a *reviewer*. Phase 2 makes it a *client*: acting on the repo, not just
+reading it. Ordering is deliberate — the safety net lands before the sharp tools.
+
+### B1 — Bug: description hidden on non-stack changes ✅ diagnosed
+
+Selecting an older change shows an empty description box. `select()` looks the change up in
+`repo.stack` only ([app.ts:404](ui/src/app.ts:404)), but the stack is `trunk()..@ | @`, so
+anything below trunk resolves to `undefined` and seeds `''`. It also sets `seededFor`, which
+suppresses the correcting re-seed in `refresh()`. Fix: resolve through `selectedChange`
+(which already searches the graph) and render immutable descriptions read-only rather than
+as an editable box that silently discards edits.
+
+### M8 — Change detail view
+
+Clicking a change currently jumps to Files, which throws away the change's identity. Replace
+that with a **detail pane** as the default view for any non-working-copy change:
+
+- Identity: change id, commit id, author, timestamps, bookmarks, immutable/conflict/empty
+  state, and the full multi-line description (read-only when immutable, editable when not).
+- Changed-file list with +/− counts, click to jump into the diff.
+- Parents/children as navigable links — walking the graph without the sidebar.
+- Actions relevant to *that* change (see M10), disabled with a reason when not applicable.
+- The working copy keeps today's edit-first layout; the detail view is for everything else.
+
+### M9 — Operation log + undo
+
+jj's superpower is that every operation is reversible. Shipping this **before** the mutation
+surface means every new command in M10 arrives with a safety net.
+
+- **Op log tab**: `jj op log -T 'json(self)'` returns id, parents, start/end time,
+  description, and the literal `args` — a structured log with no parsing at all.
+- **Undo**: `jj undo` for the last operation; `jj op restore <id>` to jump back to any point;
+  `jj op revert <id>` to reverse a specific one mid-history.
+- **Undo affordance on every mutation**: each command reports jj's own summary plus an Undo
+  action, so experimenting is cheap. This is the feature that makes the rest safe.
+- **`jj op diff`** between two operations for "what did that actually do".
+
+### M10 — The jj command surface
+
+One `mutate()` helper in `crates/vcs`: run, capture stdout+stderr, return the resulting
+operation id for undo. Every command below routes through it, appears in the command bar with
+a keybinding, and is disabled with an explanation when it cannot apply (immutable target,
+no remote, nothing to squash).
+
+| Group | Commands | Notes |
+|---|---|---|
+| Navigate | `new [rev]`, `edit <rev>` | "Work on this change" from the detail view |
+| Shape | `squash` (whole + per file ✅), `absorb` ✅, `split <paths>`, `duplicate`, `abandon` | Split is **file-level, non-interactive** (`jj split <paths>`), matching our squash approach; interactive hunk-splitting stays deferred |
+| History | `rebase -r/-s/-b -d <dest>`, `backout` | Destination picker over the graph; drag-to-rebase deliberately not first — misdrops are expensive, and every rebase is undoable but not free |
+| Describe | `describe` ✅, bulk-describe empty changes | |
+| Remote | `git fetch`, `git push -b/--change`, bookmark create/set/delete/track, **open pull request** | Push needs bookmarks; `--change` auto-names from the change id. Show ahead/behind per bookmark. See PR note below |
+| Files | `restore <paths>` | Discard changes — the one genuinely destructive op; confirm, and it is undoable |
+
+**Safety model** (applies to all of the above): immutable targets are blocked client-side
+*and* by jj itself; destructive commands (`abandon`, `restore`, `op abandon`) confirm first;
+everything reports what it did and offers Undo. Long operations (fetch/push) run async with
+progress, since they already block on the network.
+
+### M11 — Revset filtering
+
+The graph is hardwired to `ancestors(@ | bookmarks())` capped at 60. Replace with a filter
+control:
+
+- A preset row for the revsets people actually use: **Stack** (`trunk()..@`), **All**
+  (`ancestors(@ | bookmarks())`), **Mine** (`author(exact:"<me>")`), **Recent**
+  (`ancestors(@, 50)`), **Conflicts** (`conflicts()`), **Bookmarks** (`bookmarks()`),
+  **Working copies** (`@ | @-`).
+- A free-form revset input with jj's own error surfaced inline on a bad expression (jj
+  validates far better than we could).
+- Persisted per repo, and honoured by `jjdiff <revset>` on launch.
+
+#### Pull requests without a forge integration
+
+Every forge prints a ready-made "create a PR" URL on the push that creates a branch —
+tangled (`…/pulls/new?sourceBranch=…&targetBranch=main`), GitHub
+(`…/pull/new/<branch>`), GitLab (`…/merge_requests/new?…`). We already capture push
+stderr for the mutation summary, so the plan is to **scrape that URL and offer an "Open
+pull request" action** rather than integrate any forge API.
+
+That buys tangled, GitHub, GitLab and Gitea support in one small feature with no auth, no
+tokens, and nothing to keep current as APIs drift. A real API integration (PR title/body
+from the change description, review state in-app) stays deferred until there is a reason to
+pick one forge — and tangled would now be the natural first, not GitHub.
+
+Fetch pairs with this: `jj git fetch` plus per-bookmark ahead/behind is what tells you a PR
+is out of date before you push over it.
+
+### Proactive additions not in the original ask
+
+- **Undo everywhere** (M9) — the single highest-value item here, and the reason to do the op
+  log before the commands.
+- **Bookmark management** (M10) — not optional: `jj git push` has nothing to push without it.
+- **Fetch + ahead/behind** — a review tool that cannot see the remote's state is half-blind.
+- **PR creation by URL scraping** — forge-agnostic, no API integration (see above).
+- **Evolog drawer** — we already fetch evolog for interdiffs; exposing "this change has 6
+  versions, diff any two" is nearly free and has no git equivalent.
+- **Conflict resolution** — still deferred (GUI-spawned merge editors without a TTY hang more
+  than they work), but M10 should at least offer `jj resolve --list` navigation and mark
+  which side is which.
+- **Command discoverability** — every command in the command bar with a keybinding, so the
+  UI does not become a hunt for buttons.
+
+### Risks specific to Phase 2
+
+- **Mutations move the working copy.** `jj edit`/`new`/`rebase` rewrite files on disk; the
+  watchers already catch this, but the UI must not hold stale paths across the change.
+- **Rebase produces conflicts by design in jj** — that is not an error path, and the UI must
+  present it as a normal outcome with the conflict surfacing we already have.
+- **`jj op restore` rewrites the working copy too** — the same refresh discipline applies,
+  and it must never be offered without a confirmation naming what it will undo.
+- **Command sprawl.** Every command needs an applicability rule, a confirmation policy, and a
+  test; the `mutate()` helper exists to keep that uniform rather than ad hoc per command.
+
 **Deferred, with reasons.**
 - *Signed macOS build + Homebrew tap* — blocked on an Apple Developer identity; the
   unsigned bundle already builds (`pnpm tauri build`).
