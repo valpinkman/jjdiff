@@ -11,7 +11,7 @@
 mod change;
 mod runner;
 
-pub use change::{Change, Signature};
+pub use change::{Change, EvologEntry, Signature};
 pub use runner::JjRunner;
 
 use std::path::{Path, PathBuf};
@@ -36,7 +36,9 @@ pub enum VcsError {
 
 pub type Result<T> = std::result::Result<T, VcsError>;
 
-/// A discovered, colocated jj repository.
+/// A discovered, colocated jj repository. Cheap to clone (two paths) — commands clone it out
+/// of app state so blocking jj work can run off the main thread.
+#[derive(Clone)]
 pub struct Repo {
     root: PathBuf,
     runner: JjRunner,
@@ -126,7 +128,64 @@ impl Repo {
             .filter(|id| !id.bytes().all(|b| b == b'0')))
     }
 
+    /// How a change evolved: one entry per predecessor commit, newest first. Entry 0 is the
+    /// current commit. Powers "what changed since I last reviewed" interdiffs.
+    ///
+    /// Note: evolog's template context differs from log's — entries expose `commit`, not the
+    /// revision keywords, so this uses its own template and a lighter record type.
+    pub fn evolog(&self, change_id: &str) -> Result<Vec<EvologEntry>> {
+        const EVOLOG_TEMPLATE: &str = r#"json(commit) ++ "\n""#;
+        let out = self.runner.read(&[
+            "evolog", "--no-graph", "-n", "50", "-r", change_id, "-T", EVOLOG_TEMPLATE,
+        ])?;
+        out.lines()
+            .filter(|l| !l.is_empty())
+            .map(change::parse_evolog_record)
+            .collect()
+    }
+
+    /// Git-format *interdiff*: how the diff itself changed between two commits of a change
+    /// (rebase noise excluded by jj). Both sides may be hidden commits — jj addresses them
+    /// by commit id.
+    pub fn interdiff(&self, from_commit: &str, to_commit: &str, ignore_whitespace: bool) -> Result<String> {
+        let mut args = vec![
+            "interdiff", "--git", "--context", "3", "--from", from_commit, "--to", to_commit,
+        ];
+        if ignore_whitespace {
+            args.push("--ignore-all-space");
+        }
+        self.runner.read(&args)
+    }
+
+    /// Paths with unresolved conflicts in `revset`. Parses `jj resolve --list` lines of the
+    /// form `<path>    <N>-sided conflict…` — the description suffix is stripped from the
+    /// right so paths containing spaces survive.
+    pub fn conflicted_paths(&self, revset: &str) -> Result<Vec<String>> {
+        let out = match self.runner.read(&["resolve", "--list", "-r", revset]) {
+            Ok(out) => out,
+            // jj exits non-zero when there is nothing to resolve.
+            Err(VcsError::CommandFailed { stderr, .. }) if stderr.contains("No conflicts") => {
+                return Ok(Vec::new());
+            }
+            Err(other) => return Err(other),
+        };
+        Ok(out
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| match line.rfind("    ") {
+                Some(position) => line[..position].trim_end().to_string(),
+                None => line.trim_end().to_string(),
+            })
+            .collect())
+    }
+
     // -- Mutations (jj-native verbs; no staging axis) --
+
+    /// `jj absorb`: route working-copy hunks into the ancestor changes that last touched
+    /// those lines. Returns jj's summary of what moved where.
+    pub fn absorb(&self) -> Result<String> {
+        self.runner.mutate_capturing_stderr(&["absorb"])
+    }
 
     pub fn describe(&self, change_id: &str, message: &str) -> Result<()> {
         self.runner
@@ -166,6 +225,15 @@ impl Repo {
 mod tests {
     use super::*;
     use std::process::Command;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Concurrent `jj git init` invocations are flaky ("Failed to check out the initial
+    /// commit"); serialize every jj-backed test.
+    static JJ_LOCK: Mutex<()> = Mutex::new(());
+
+    fn jj_serial() -> MutexGuard<'static, ()> {
+        JJ_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn jj_available() -> bool {
         Command::new("jj").arg("--version").output().is_ok()
@@ -198,6 +266,7 @@ mod tests {
 
     #[test]
     fn log_and_stack_roundtrip() {
+        let _guard = jj_serial();
         if !jj_available() {
             eprintln!("skipping: jj not installed");
             return;
@@ -219,5 +288,82 @@ mod tests {
         // Read calls must not create operations: repeated logs are stable.
         let again = repo.log("all()").unwrap();
         assert_eq!(all.len(), again.len());
+    }
+
+    #[test]
+    fn evolog_and_interdiff_track_change_evolution() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "user.name=Test", "--config", "user.email=t@example.com"])
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+
+        // Evolve @: describe, then amend content — three evolog entries minimum.
+        std::fs::write(tmp.path().join("work.txt"), "first\n").unwrap();
+        jj(&["describe", "-m", "wip"]);
+        std::fs::write(tmp.path().join("work.txt"), "second\n").unwrap();
+        jj(&["describe", "-m", "wip v2"]); // snapshots the edit
+
+        let wc = repo.working_copy().unwrap();
+        let evolog = repo.evolog(&wc.change_id).unwrap();
+        assert!(evolog.len() >= 2, "expected multiple evolog entries, got {}", evolog.len());
+        assert_eq!(evolog[0].commit_id, wc.commit_id, "entry 0 is the current commit");
+        assert!(evolog.iter().all(|entry| entry.change_id == wc.change_id));
+
+        // Interdiff between the oldest and newest version mentions the content change.
+        let oldest = &evolog[evolog.len() - 1];
+        let patch = repo.interdiff(&oldest.commit_id, &wc.commit_id, false).unwrap();
+        assert!(patch.contains("work.txt"), "interdiff should mention work.txt: {patch}");
+    }
+
+    #[test]
+    fn conflicted_paths_lists_conflicts_and_handles_none() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "user.name=Test", "--config", "user.email=t@example.com"])
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        jj(&["git", "init", "--colocate", "."]);
+        std::fs::write(tmp.path().join("sp file.txt"), "base\n").unwrap();
+        jj(&["commit", "-m", "base"]);
+        let repo = Repo::discover(tmp.path()).unwrap();
+
+        // No conflicts → empty, not an error.
+        assert!(repo.conflicted_paths("@").unwrap().is_empty());
+
+        // Two divergent edits of the same line, merged. Address parents by change id —
+        // description() revset matching is not worth depending on in tests.
+        let base = repo.log("roots(all() ~ root())").unwrap()[0].change_id.clone();
+        std::fs::write(tmp.path().join("sp file.txt"), "left\n").unwrap();
+        jj(&["commit", "-m", "left"]);
+        let left = repo.log("@-").unwrap()[0].change_id.clone();
+        jj(&["new", "-m", "right", &base]);
+        std::fs::write(tmp.path().join("sp file.txt"), "right\n").unwrap();
+        jj(&["new", "-m", "merge", &left, "@"]);
+
+        let conflicted = repo.conflicted_paths("@").unwrap();
+        assert_eq!(conflicted, vec!["sp file.txt"], "path with spaces survives parsing");
     }
 }

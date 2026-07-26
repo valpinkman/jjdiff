@@ -1,4 +1,8 @@
 //! jjdiff application shell: launch options, app state, IPC commands, repo watchers.
+//!
+//! Commands that call jj or walk the filesystem are `async` and run their blocking work on
+//! the runtime's blocking pool — sync Tauri commands execute on the main thread, and a slow
+//! `jj` invocation there would freeze the window.
 
 mod config;
 mod viewed;
@@ -11,9 +15,9 @@ use serde::Serialize;
 use tauri::{Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
-use jjdiff_vcs::{Change, Repo, VcsError};
+use jjdiff_vcs::{Change, Repo};
 use jjdiff_watch::RepoWatcher;
-use viewed::ViewedStore;
+use viewed::ReviewStore;
 
 /// `jjdiff [revset] [-R|--repo <path>]`
 #[derive(Debug, Clone, Serialize)]
@@ -47,7 +51,7 @@ impl LaunchOptions {
 struct AppState {
     launch: LaunchOptions,
     repo: Mutex<Option<Repo>>,
-    viewed: Mutex<ViewedStore>,
+    review: Mutex<ReviewStore>,
     _watchers: Mutex<Vec<RepoWatcher>>,
 }
 
@@ -61,19 +65,42 @@ struct RepoState {
     stack: Vec<Change>,
 }
 
-fn with_repo<T>(
-    state: &tauri::State<'_, AppState>,
-    f: impl FnOnce(&Repo) -> Result<T, VcsError>,
-) -> Result<T, String> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewStatus {
+    viewed: Vec<String>,
+    /// Commit id stored when the change was last marked reviewed.
+    reviewed_commit: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Interdiff {
+    files: Vec<FilePatch>,
+    from_commit: String,
+    to_commit: String,
+}
+
+/// Clone the (cheap) repo handle out of state, discovering it on first use.
+fn repo_handle(state: &tauri::State<'_, AppState>) -> Result<Repo, String> {
     let mut guard = state.repo.lock().expect("repo lock");
     if guard.is_none() {
         *guard = Some(Repo::discover(&state.launch.repo_path).map_err(|e| e.to_string())?);
     }
-    f(guard.as_ref().expect("repo present")).map_err(|e| e.to_string())
+    Ok(guard.as_ref().expect("repo present").clone())
 }
 
-fn repo_root_string(state: &tauri::State<'_, AppState>) -> Result<String, String> {
-    with_repo(state, |repo| Ok(repo.root().to_string_lossy().into_owned()))
+/// Run blocking jj/fs work off the main thread.
+async fn blocking<T: Send + 'static>(
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn vcs<T>(result: jjdiff_vcs::Result<T>) -> Result<T, String> {
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -87,15 +114,17 @@ fn get_config() -> config::Config {
 }
 
 #[tauri::command]
-fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, String> {
-    with_repo(&state, |repo| {
+async fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || {
         Ok(RepoState {
             root: repo.root().to_path_buf(),
-            jj_version: repo.jj_version()?,
-            working_copy: repo.working_copy()?,
-            stack: repo.stack()?,
+            jj_version: vcs(repo.jj_version())?,
+            working_copy: vcs(repo.working_copy())?,
+            stack: vcs(repo.stack())?,
         })
     })
+    .await
 }
 
 /// Structured diff for one revision — or the live working copy when `revset` is `None`.
@@ -103,57 +132,119 @@ fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, String> {
 /// Working-copy diffs never touch jj: they run fs-vs-`@-` through gix (no snapshot, no
 /// operation written). Revset diffs parse `jj diff --git` output.
 #[tauri::command]
-fn diff(
+async fn diff(
     state: tauri::State<'_, AppState>,
     revset: Option<String>,
     ignore_whitespace: bool,
 ) -> Result<Vec<FilePatch>, String> {
-    match revset {
+    let repo = repo_handle(&state)?;
+    blocking(move || match revset {
         Some(revset) => {
-            let patch = with_repo(&state, |repo| repo.patch_for(&revset, ignore_whitespace))?;
+            let patch = vcs(repo.patch_for(&revset, ignore_whitespace))?;
             jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())
         }
         None => {
-            let (root, base) = with_repo(&state, |repo| {
-                Ok((repo.root().to_path_buf(), repo.working_copy_parent()?))
-            })?;
+            let base = vcs(repo.working_copy_parent())?;
             jjdiff_diff::worktree::diff_worktree(
-                &root,
+                repo.root(),
                 base.as_deref(),
                 jjdiff_diff::worktree::WorktreeDiffOptions { ignore_whitespace },
             )
             .map_err(|e| e.to_string())
         }
-    }
+    })
+    .await
+}
+
+/// Interdiff from the last-reviewed commit of `change_id` to its current commit.
+#[tauri::command]
+async fn interdiff_since_reviewed(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    ignore_whitespace: bool,
+) -> Result<Interdiff, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    let from = state
+        .review
+        .lock()
+        .expect("review lock")
+        .reviewed_commit(&repo_key, &change_id)
+        .ok_or_else(|| "change has no reviewed commit recorded".to_string())?;
+    blocking(move || {
+        let current = vcs(repo.log(&change_id))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| format!("change {change_id} not found"))?;
+        let patch = vcs(repo.interdiff(&from, &current.commit_id, ignore_whitespace))?;
+        Ok(Interdiff {
+            files: jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())?,
+            from_commit: from,
+            to_commit: current.commit_id,
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-fn describe(
+async fn describe(
     state: tauri::State<'_, AppState>,
     change_id: String,
     message: String,
 ) -> Result<(), String> {
-    with_repo(&state, |repo| repo.describe(&change_id, &message))
+    let repo = repo_handle(&state)?;
+    blocking(move || vcs(repo.describe(&change_id, &message))).await
 }
 
 #[tauri::command]
-fn new_change(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    with_repo(&state, |repo| repo.new_change())
+async fn new_change(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || vcs(repo.new_change())).await
 }
 
-/// Move `paths` of the working copy into its parent (jj-native partial commit).
+/// Move working-copy `paths` into `into` (defaults to the parent): jj-native partial commit.
 #[tauri::command]
-fn squash_paths(state: tauri::State<'_, AppState>, paths: Vec<String>) -> Result<(), String> {
-    with_repo(&state, |repo| repo.squash_paths("@", "@-", &paths))
+async fn squash_paths(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    into: Option<String>,
+) -> Result<(), String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || {
+        let target = into.as_deref().unwrap_or("@-");
+        vcs(repo.squash_paths("@", target, &paths))
+    })
+    .await
+}
+
+/// `jj absorb`: returns jj's summary of which hunks moved into which changes.
+#[tauri::command]
+async fn absorb(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || vcs(repo.absorb())).await
 }
 
 #[tauri::command]
-fn viewed_files(
+async fn conflicts(
+    state: tauri::State<'_, AppState>,
+    revset: String,
+) -> Result<Vec<String>, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || vcs(repo.conflicted_paths(&revset))).await
+}
+
+#[tauri::command]
+fn review_status(
     state: tauri::State<'_, AppState>,
     change_id: String,
-) -> Result<Vec<String>, String> {
-    let repo = repo_root_string(&state)?;
-    Ok(state.viewed.lock().expect("viewed lock").viewed(&repo, &change_id))
+) -> Result<ReviewStatus, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    let review = state.review.lock().expect("review lock");
+    Ok(ReviewStatus {
+        viewed: review.viewed(&repo_key, &change_id),
+        reviewed_commit: review.reviewed_commit(&repo_key, &change_id),
+    })
 }
 
 #[tauri::command]
@@ -163,8 +254,30 @@ fn set_viewed(
     path: String,
     viewed: bool,
 ) -> Result<(), String> {
-    let repo = repo_root_string(&state)?;
-    state.viewed.lock().expect("viewed lock").set(&repo, &change_id, &path, viewed);
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    state
+        .review
+        .lock()
+        .expect("review lock")
+        .set_viewed(&repo_key, &change_id, &path, viewed);
+    Ok(())
+}
+
+/// Record `commit_id` as the reviewed baseline for `change_id`.
+#[tauri::command]
+fn mark_reviewed(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    commit_id: String,
+) -> Result<(), String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    state
+        .review
+        .lock()
+        .expect("review lock")
+        .mark_reviewed(&repo_key, &change_id, &commit_id);
     Ok(())
 }
 
@@ -173,7 +286,7 @@ pub fn run() {
     let state = AppState {
         launch,
         repo: Mutex::new(None),
-        viewed: Mutex::new(ViewedStore::default()),
+        review: Mutex::new(ReviewStore::default()),
         _watchers: Mutex::new(Vec::new()),
     };
 
@@ -184,21 +297,25 @@ pub fn run() {
             get_config,
             repo_state,
             diff,
+            interdiff_since_reviewed,
             describe,
             new_change,
             squash_paths,
-            viewed_files,
-            set_viewed
+            absorb,
+            conflicts,
+            review_status,
+            set_viewed,
+            mark_reviewed
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
 
-            let viewed_path = app
+            let review_path = app
                 .path()
                 .app_data_dir()
-                .map(|dir| dir.join("viewed.json"))
-                .unwrap_or_else(|_| PathBuf::from(".jjdiff-viewed.json"));
-            *state.viewed.lock().expect("viewed lock") = ViewedStore::load(viewed_path);
+                .map(|dir| dir.join("review.json"))
+                .unwrap_or_else(|_| PathBuf::from(".jjdiff-review.json"));
+            *state.review.lock().expect("review lock") = ReviewStore::load(review_path);
 
             // Watchers are not fatal: without them the UI still works, it just won't
             // live-refresh.

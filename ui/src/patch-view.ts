@@ -23,6 +23,10 @@ export class PatchView extends LitElement {
   /** Whether per-file actions (viewed toggle, squash) apply to this diff. */
   @property({ type: Boolean }) canSquash = false;
   @property({ type: Boolean }) canMarkViewed = false;
+  /** Mutable changes a working-copy file can be squashed into ("move to change"). */
+  @property({ attribute: false }) squashTargets: { changeId: string; label: string }[] = [];
+  /** Paths with unresolved conflicts in the shown revision. */
+  @property({ attribute: false }) conflicted: ReadonlySet<string> = new Set();
 
   private highlights = new HighlightStore();
 
@@ -42,7 +46,6 @@ export class PatchView extends LitElement {
 
   private onTokens = () => this.requestUpdate();
 
-  private emit(name: 'squash-file', path: string): void;
   private emit(name: 'toggle-viewed', path: string, viewed: boolean): void;
   private emit(name: string, path: string, viewed?: boolean) {
     this.dispatchEvent(
@@ -50,6 +53,16 @@ export class PatchView extends LitElement {
         bubbles: true,
         composed: true,
         detail: viewed === undefined ? { path } : { path, viewed },
+      }),
+    );
+  }
+
+  private emitSquash(path: string, into: string) {
+    this.dispatchEvent(
+      new CustomEvent('squash-file', {
+        bubbles: true,
+        composed: true,
+        detail: { path, into },
       }),
     );
   }
@@ -90,14 +103,28 @@ export class PatchView extends LitElement {
             >${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
             ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}</span
           >
+          ${this.conflicted.has(file.path)
+            ? html`<span class="conflict-badge">conflict</span>`
+            : nothing}
           ${this.canSquash
-            ? html`<button
+            ? html`<select
                 class="file-action"
-                title="Squash this file into the parent change (jj squash)"
-                @click=${() => this.emit('squash-file', file.path)}
+                title="Squash this file into another change (jj squash)"
+                @click=${(event: Event) => event.stopPropagation()}
+                @change=${(event: Event) => {
+                  const select = event.target as HTMLSelectElement;
+                  if (select.value) {
+                    this.emitSquash(file.path, select.value);
+                    select.value = '';
+                  }
+                }}
               >
-                ⇩ parent
-              </button>`
+                <option value="">⇩ move to…</option>
+                ${this.squashTargets.map(
+                  (target) =>
+                    html`<option value=${target.changeId}>${target.label}</option>`,
+                )}
+              </select>`
             : nothing}
           ${this.canMarkViewed
             ? html`<label class="file-action viewed-toggle" title="Mark as viewed">
@@ -128,7 +155,7 @@ export class PatchView extends LitElement {
 
   private renderUnified(fileIndex: number, line: Line, hl: HlRef | null): TemplateResult {
     const tokens = this.highlights.tokensFor(this.files[fileIndex]!, hl);
-    return html`<div class="line unified ${line.kind}">
+    return html`<div class="line unified ${line.kind} ${markerClass(line.text)}">
       <span class="num">${line.oldLine ?? ''}</span>
       <span class="num">${line.newLine ?? ''}</span>
       <span class="sign">${sign(line.kind)}</span>
@@ -149,7 +176,7 @@ export class PatchView extends LitElement {
     const kind = line.kind === 'context' ? 'context' : line.kind;
     const number = side === 'left' ? line.oldLine : line.newLine;
     const tokens = this.highlights.tokensFor(this.files[fileIndex]!, hl);
-    return html`<div class="cell ${side} ${kind}">
+    return html`<div class="cell ${side} ${kind} ${markerClass(line.text)}">
       <span class="num">${number ?? ''}</span>
       <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
     </div>`;
@@ -158,9 +185,14 @@ export class PatchView extends LitElement {
 
 const sign = (kind: Line['kind']) => (kind === 'added' ? '+' : kind === 'removed' ? '−' : ' ');
 
+/** jj materialized-conflict markers: `<<<<<<<`, `%%%%%%%`, `+++++++`, `|||||||`, `=======`, `>>>>>>>`, `\\\\\\\`. */
+const CONFLICT_MARKER = /^(<{7}|>{7}|={7}|\|{7}|%{7}|\+{7}|\\{7})(\s|$)/;
+
+const markerClass = (text: string) => (CONFLICT_MARKER.test(text) ? 'conflict-marker' : '');
+
 declare global {
   interface HTMLElementEventMap {
-    'squash-file': CustomEvent<{ path: string }>;
+    'squash-file': CustomEvent<{ path: string; into: string }>;
     'toggle-viewed': CustomEvent<{ path: string; viewed: boolean }>;
   }
 }

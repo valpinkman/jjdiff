@@ -6,11 +6,15 @@ import './command-bar.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import {
+  absorb,
   describeChange,
   getConfig,
+  getConflicts,
   getDiff,
+  getInterdiffSinceReviewed,
   getRepoState,
-  getViewedFiles,
+  getReviewStatus,
+  markReviewed,
   newChange,
   onRepoChanged,
   setViewed,
@@ -21,6 +25,9 @@ import {
 } from './ipc.js';
 import './patch-view.js';
 import type { DiffLayout } from './rows.js';
+
+/** What the main pane shows for the selected change. */
+type ViewMode = 'full' | 'interdiff';
 
 /** App chrome (shadow DOM is fine here — no text the user selects across boundaries). */
 @customElement('jj-app')
@@ -138,6 +145,10 @@ export class App extends LitElement {
       background: var(--jj-hunk-bg);
       color: var(--jj-fg-muted);
     }
+    .badge.warn {
+      background: var(--jj-removed-bg);
+      color: var(--jj-removed-fg);
+    }
     .files {
       flex: 1;
       overflow-y: auto;
@@ -173,13 +184,35 @@ export class App extends LitElement {
       outline: none;
       border-color: var(--jj-accent);
     }
+    .banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--jj-border);
+      background: var(--jj-hunk-bg);
+      font-size: 12px;
+    }
+    .banner.conflict {
+      background: var(--jj-removed-bg);
+      color: var(--jj-removed-fg);
+    }
+    .banner .spacer {
+      flex: 1;
+    }
     .status {
       padding: 4px 12px;
       font-size: 11px;
-      color: var(--jj-removed-fg);
       white-space: pre-wrap;
+      border-bottom: 1px solid var(--jj-border);
     }
-    .error {
+    .status.error {
+      color: var(--jj-removed-fg);
+    }
+    .status.info {
+      color: var(--jj-added-fg);
+    }
+    .fatal {
       grid-column: 1 / -1;
       padding: 24px;
       color: var(--jj-removed-fg);
@@ -191,14 +224,18 @@ export class App extends LitElement {
   @state() private repo: RepoState | null = null;
   @state() private error: string | null = null;
   @state() private actionError: string | null = null;
+  @state() private actionInfo: string | null = null;
   @state() private selected: string | null = null; // change id; null = working copy
   @state() private files: FilePatch[] = [];
   @state() private layout: DiffLayout = 'split';
   @state() private ignoreWhitespace = false;
   @state() private focusPath: string | null = null;
   @state() private viewedPaths: ReadonlySet<string> = new Set();
+  @state() private reviewedCommit: string | null = null;
+  @state() private conflictedPaths: ReadonlySet<string> = new Set();
   @state() private description = '';
   @state() private barOpen = false;
+  @state() private viewMode: ViewMode = 'full';
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -251,6 +288,16 @@ export class App extends LitElement {
     return this.selected === null || this.selected === this.repo?.workingCopy.changeId;
   }
 
+  /** True when the selected change moved since it was last marked reviewed. */
+  private get changedSinceReview(): boolean {
+    const change = this.selectedChange;
+    return (
+      change !== null &&
+      this.reviewedCommit !== null &&
+      this.reviewedCommit !== change.commitId
+    );
+  }
+
   private async refresh() {
     try {
       this.repo = await getRepoState();
@@ -262,8 +309,7 @@ export class App extends LitElement {
         this.description = current.description;
         this.seededFor = current.changeId;
       }
-      await this.loadDiff();
-      await this.loadViewed();
+      await Promise.all([this.loadDiff(), this.loadReview(), this.loadConflicts()]);
     } catch (error) {
       this.error = String(error);
     }
@@ -271,10 +317,19 @@ export class App extends LitElement {
 
   private async loadDiff() {
     try {
-      this.files = await getDiff(
-        this.isWorkingCopySelected ? null : this.selected,
-        this.ignoreWhitespace,
-      );
+      if (this.viewMode === 'interdiff' && this.selectedChange && this.changedSinceReview) {
+        const interdiff = await getInterdiffSinceReviewed(
+          this.selectedChange.changeId,
+          this.ignoreWhitespace,
+        );
+        this.files = interdiff.files;
+      } else {
+        this.viewMode = 'full';
+        this.files = await getDiff(
+          this.isWorkingCopySelected ? null : this.selected,
+          this.ignoreWhitespace,
+        );
+      }
       this.actionError = null;
       if (this.focusPath && !this.files.some((f) => f.path === this.focusPath)) {
         this.focusPath = null;
@@ -284,24 +339,42 @@ export class App extends LitElement {
     }
   }
 
-  private async loadViewed() {
+  private async loadReview() {
     const change = this.selectedChange;
     if (!change) return;
     try {
-      this.viewedPaths = new Set(await getViewedFiles(change.changeId));
+      const status = await getReviewStatus(change.changeId);
+      this.viewedPaths = new Set(status.viewed);
+      this.reviewedCommit = status.reviewedCommit;
     } catch {
       this.viewedPaths = new Set();
+      this.reviewedCommit = null;
+    }
+  }
+
+  private async loadConflicts() {
+    const change = this.selectedChange;
+    if (!change || !change.conflict) {
+      this.conflictedPaths = new Set();
+      return;
+    }
+    try {
+      this.conflictedPaths = new Set(await getConflicts(change.changeId));
+    } catch {
+      this.conflictedPaths = new Set();
     }
   }
 
   private select(change: Change) {
     this.selected = change.changeId;
     this.focusPath = null;
+    this.viewMode = 'full';
     const target = this.repo?.stack.find((c) => c.changeId === change.changeId);
     this.description = target?.description ?? '';
     this.seededFor = change.changeId;
     void this.loadDiff();
-    void this.loadViewed();
+    void this.loadReview();
+    void this.loadConflicts();
   }
 
   private async run(action: () => Promise<void>) {
@@ -310,6 +383,7 @@ export class App extends LitElement {
       this.actionError = null;
     } catch (error) {
       this.actionError = String(error);
+      this.actionInfo = null;
     }
   }
 
@@ -318,7 +392,6 @@ export class App extends LitElement {
     if (!change) return;
     void this.run(async () => {
       await describeChange(change.changeId, this.description);
-      // The op watcher also fires, but refresh immediately for snappy feedback.
       await this.refresh();
     });
   }
@@ -335,6 +408,35 @@ export class App extends LitElement {
     });
   }
 
+  private runAbsorb() {
+    void this.run(async () => {
+      const summary = await absorb();
+      this.actionInfo = summary || 'Nothing to absorb.';
+      await this.refresh();
+    });
+  }
+
+  private markCurrentReviewed() {
+    const change = this.selectedChange;
+    if (!change) return;
+    void this.run(async () => {
+      await markReviewed(change.changeId, change.commitId);
+      this.reviewedCommit = change.commitId;
+      this.viewMode = 'full';
+      await this.loadDiff();
+    });
+  }
+
+  private showInterdiff() {
+    this.viewMode = 'interdiff';
+    void this.loadDiff();
+  }
+
+  private showFullDiff() {
+    this.viewMode = 'full';
+    void this.loadDiff();
+  }
+
   private toggleLayout() {
     this.layout = this.layout === 'split' ? 'unified' : 'split';
   }
@@ -342,6 +444,19 @@ export class App extends LitElement {
   private toggleWhitespace() {
     this.ignoreWhitespace = !this.ignoreWhitespace;
     void this.loadDiff();
+  }
+
+  /** Mutable non-@ stack changes a file can be squashed into. */
+  private get squashTargets(): { changeId: string; label: string }[] {
+    if (!this.repo) return [];
+    return this.repo.stack
+      .filter((change) => !change.workingCopy && !change.immutable)
+      .map((change) => ({
+        changeId: change.changeId,
+        label: `${change.changeId.slice(0, 8)} ${
+          change.description.split('\n')[0] || '(no description)'
+        }`,
+      }));
   }
 
   private get commands(): Command[] {
@@ -360,16 +475,37 @@ export class App extends LitElement {
       { id: 'refresh', label: 'Refresh', run: () => void this.refresh() },
     ];
     if (this.isWorkingCopySelected) {
+      commands.push(
+        {
+          id: 'new',
+          label: 'New Change (jj new)',
+          run: () =>
+            void this.run(async () => {
+              await newChange();
+              this.selected = null;
+              this.seededFor = null;
+              await this.refresh();
+            }),
+        },
+        {
+          id: 'absorb',
+          label: 'Absorb Into Ancestors (jj absorb)',
+          run: () => this.runAbsorb(),
+        },
+      );
+    } else {
       commands.push({
-        id: 'new',
-        label: 'New Change (jj new)',
-        run: () => void this.run(async () => {
-          await newChange();
-          this.selected = null;
-          this.seededFor = null;
-          await this.refresh();
-        }),
+        id: 'reviewed',
+        label: 'Mark Change Reviewed',
+        run: () => this.markCurrentReviewed(),
       });
+      if (this.changedSinceReview) {
+        commands.push({
+          id: 'interdiff',
+          label: 'Show Changes Since Last Review',
+          run: () => this.showInterdiff(),
+        });
+      }
     }
     if (this.focusPath) {
       commands.push({
@@ -383,7 +519,7 @@ export class App extends LitElement {
 
   protected override render() {
     if (this.error) {
-      return html`<div class="error">${this.error}</div>`;
+      return html`<div class="fatal">${this.error}</div>`;
     }
     if (!this.repo) {
       return nothing;
@@ -399,6 +535,15 @@ export class App extends LitElement {
         <span class="root">${basename(this.repo.root)}</span>
         <span class="version">jj ${this.repo.jjVersion}</span>
         <span class="spacer"></span>
+        ${isWc
+          ? html`<button
+              class="tool"
+              title="Route working-copy hunks into the ancestors that last touched them"
+              @click=${this.runAbsorb}
+            >
+              Absorb
+            </button>`
+          : nothing}
         <button class="tool" @click=${this.toggleLayout} title="Toggle diff layout">
           ${this.layout === 'split' ? 'Split' : 'Unified'}
         </button>
@@ -423,7 +568,7 @@ export class App extends LitElement {
               >
                 <span class="id">${item.changeId.slice(0, 8)}</span>
                 ${item.workingCopy ? html`<span class="badge">@</span>` : nothing}
-                ${item.conflict ? html`<span class="badge">conflict</span>` : nothing}
+                ${item.conflict ? html`<span class="badge warn">conflict</span>` : nothing}
                 ${item.immutable ? html`<span class="badge">immutable</span>` : nothing}
                 ${item.bookmarks.map((b) => html`<span class="badge">${b}</span>`)}
                 <span class="desc ${item.description ? '' : 'empty-desc'}">
@@ -476,16 +621,49 @@ export class App extends LitElement {
                   >
                     Commit & New
                   </button>`
-                : nothing}
+                : html`<button
+                    class="tool ${this.changedSinceReview ? '' : 'on'}"
+                    title="Record the current commit as reviewed"
+                    @click=${this.markCurrentReviewed}
+                  >
+                    ${this.reviewedCommit && !this.changedSinceReview
+                      ? 'Reviewed ✓'
+                      : 'Mark Reviewed'}
+                  </button>`}
             </div>`
           : nothing}
-        ${this.actionError ? html`<div class="status">${this.actionError}</div>` : nothing}
+        ${change?.conflict
+          ? html`<div class="banner conflict">
+              ⚠ This change has unresolved conflicts
+              (${this.conflictedPaths.size || '?'} file${this.conflictedPaths.size === 1
+                ? ''
+                : 's'}) — resolve with <code>jj resolve</code> in a terminal.
+            </div>`
+          : nothing}
+        ${this.changedSinceReview
+          ? html`<div class="banner">
+              This change evolved since you reviewed it.
+              <span class="spacer"></span>
+              ${this.viewMode === 'interdiff'
+                ? html`<button class="tool" @click=${this.showFullDiff}>Full Diff</button>`
+                : html`<button class="tool" @click=${this.showInterdiff}>
+                    What Changed Since Review
+                  </button>`}
+              <button class="tool" @click=${this.markCurrentReviewed}>Mark Reviewed</button>
+            </div>`
+          : nothing}
+        ${this.actionError
+          ? html`<div class="status error">${this.actionError}</div>`
+          : nothing}
+        ${this.actionInfo ? html`<div class="status info">${this.actionInfo}</div>` : nothing}
         <jj-patch-view
           .files=${visible}
           .layout=${this.layout}
           .viewed=${this.viewedPaths}
-          .canSquash=${isWc && !this.parentImmutable()}
-          .canMarkViewed=${true}
+          .canSquash=${isWc && this.viewMode === 'full' && this.squashTargets.length > 0}
+          .canMarkViewed=${this.viewMode === 'full'}
+          .squashTargets=${this.squashTargets}
+          .conflicted=${this.conflictedPaths}
         ></jj-patch-view>
       </main>
       ${this.barOpen
@@ -497,17 +675,9 @@ export class App extends LitElement {
     `;
   }
 
-  private parentImmutable(): boolean {
-    if (!this.repo) return true;
-    const parentId = this.repo.workingCopy.parents[0];
-    const parent = this.repo.stack.find((change) => change.commitId === parentId);
-    // Parent outside the stack (e.g. trunk) is immutable by definition of `trunk()..@`.
-    return parent ? parent.immutable : true;
-  }
-
-  private onSquashFile = (event: CustomEvent<{ path: string }>) => {
+  private onSquashFile = (event: CustomEvent<{ path: string; into: string }>) => {
     void this.run(async () => {
-      await squashPaths([event.detail.path]);
+      await squashPaths([event.detail.path], event.detail.into);
       await this.refresh();
     });
   };
@@ -521,7 +691,7 @@ export class App extends LitElement {
     if (viewed) next.add(path);
     else next.delete(path);
     this.viewedPaths = next;
-    void setViewed(change.changeId, path, viewed).catch(() => void this.loadViewed());
+    void setViewed(change.changeId, path, viewed).catch(() => void this.loadReview());
   };
 }
 

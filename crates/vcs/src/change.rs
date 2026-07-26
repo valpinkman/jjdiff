@@ -55,6 +55,28 @@ struct CommitInfo {
     committer: Signature,
 }
 
+/// One predecessor version of a change, from `jj evolog`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvologEntry {
+    pub commit_id: String,
+    pub change_id: String,
+    pub description: String,
+    /// Committer timestamp (RFC 3339) — when this version of the change was written.
+    pub timestamp: String,
+}
+
+pub(crate) fn parse_evolog_record(line: &str) -> Result<EvologEntry> {
+    let commit: CommitInfo = serde_json::from_str(line)
+        .map_err(|error| VcsError::Parse(format!("bad evolog record: {error}; line: {line}")))?;
+    Ok(EvologEntry {
+        commit_id: commit.commit_id,
+        change_id: commit.change_id,
+        description: commit.description,
+        timestamp: commit.committer.timestamp,
+    })
+}
+
 pub(crate) fn parse_record(line: &str) -> Result<Change> {
     let record: LogRecord = serde_json::from_str(line)
         .map_err(|error| VcsError::Parse(format!("bad log record: {error}; line: {line}")))?;

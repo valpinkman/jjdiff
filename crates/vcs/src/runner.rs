@@ -7,6 +7,7 @@ use crate::{Result, VcsError};
 const COMMON_ARGS: &[&str] = &["--color=never", "--no-pager"];
 
 /// Runs the `jj` CLI with jjdiff's read/mutate discipline.
+#[derive(Clone)]
 pub struct JjRunner {
     bin: PathBuf,
     cwd: PathBuf,
@@ -28,6 +29,28 @@ impl JjRunner {
     /// Mutating invocation: lets jj snapshot the working copy as usual.
     pub fn mutate(&self, args: &[&str]) -> Result<String> {
         self.run(args, false)
+    }
+
+    /// Like [`Self::mutate`], but returns stderr on success — jj narrates what a mutation
+    /// did (e.g. `absorb`'s per-target summary) on stderr.
+    pub fn mutate_capturing_stderr(&self, args: &[&str]) -> Result<String> {
+        let mut cmd = Command::new(&self.bin);
+        cmd.current_dir(&self.cwd).args(COMMON_ARGS).args(args);
+        let output = cmd.output().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                VcsError::JjNotFound { bin: self.bin.display().to_string() }
+            } else {
+                VcsError::Io(error)
+            }
+        })?;
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !output.status.success() {
+            return Err(VcsError::CommandFailed {
+                args: args.iter().map(|s| s.to_string()).collect(),
+                stderr,
+            });
+        }
+        Ok(stderr)
     }
 
     fn run(&self, args: &[&str], ignore_working_copy: bool) -> Result<String> {

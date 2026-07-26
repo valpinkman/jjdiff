@@ -145,6 +145,34 @@ jj-patch-view {
   margin: 0;
 }
 
+select.file-action {
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.conflict-badge {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* jj materialized-conflict marker lines: make the structure jump out of the diff. */
+.line.conflict-marker,
+.cell.conflict-marker {
+  background: color-mix(in srgb, var(--jj-accent) 12%, var(--jj-bg));
+}
+
+.line.conflict-marker .content,
+.cell.conflict-marker .content {
+  color: var(--jj-accent);
+  font-weight: 700;
+}
+
 .file-counts .plus { color: var(--jj-added-fg); }
 .file-counts .minus { color: var(--jj-removed-fg); }
 
