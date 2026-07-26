@@ -93,29 +93,51 @@ export interface Interdiff {
   toCommit: string;
 }
 
-export const getLaunchOptions = () => invoke<LaunchOptions>('launch_options');
-export const getConfig = () => invoke<Config>('get_config');
-export const getRepoState = () => invoke<RepoState>('repo_state');
-export const getDiff = (revset: string | null, ignoreWhitespace: boolean) =>
-  invoke<FilePatch[]>('diff', { revset, ignoreWhitespace });
+/** True inside the Tauri shell; false in a plain browser (`pnpm dev`), where fixtures serve. */
+const IN_TAURI = '__TAURI_INTERNALS__' in window;
+
+const mock = async <T>(load: (m: typeof import('./mock.js')) => T): Promise<T> =>
+  load(await import('./mock.js'));
+
+export const getLaunchOptions = (): Promise<LaunchOptions> =>
+  IN_TAURI
+    ? invoke<LaunchOptions>('launch_options')
+    : Promise.resolve({ repoPath: '/mock', revset: null });
+export const getConfig = (): Promise<Config> =>
+  IN_TAURI ? invoke<Config>('get_config') : mock((m) => m.mockConfig);
+export const getRepoState = (): Promise<RepoState> =>
+  IN_TAURI ? invoke<RepoState>('repo_state') : mock((m) => m.mockRepoState);
+export const getDiff = (revset: string | null, ignoreWhitespace: boolean): Promise<FilePatch[]> =>
+  IN_TAURI
+    ? invoke<FilePatch[]>('diff', { revset, ignoreWhitespace })
+    : mock((m) => m.mockFiles);
 /** How a change's diff evolved since it was last marked reviewed. */
-export const getInterdiffSinceReviewed = (changeId: string, ignoreWhitespace: boolean) =>
-  invoke<Interdiff>('interdiff_since_reviewed', { changeId, ignoreWhitespace });
+export const getInterdiffSinceReviewed = (
+  changeId: string,
+  ignoreWhitespace: boolean,
+): Promise<Interdiff> =>
+  IN_TAURI
+    ? invoke<Interdiff>('interdiff_since_reviewed', { changeId, ignoreWhitespace })
+    : mock((m) => m.mockInterdiff);
 export const describeChange = (changeId: string, message: string) =>
-  invoke<void>('describe', { changeId, message });
-export const newChange = () => invoke<void>('new_change');
+  IN_TAURI ? invoke<void>('describe', { changeId, message }) : Promise.resolve();
+export const newChange = () => (IN_TAURI ? invoke<void>('new_change') : Promise.resolve());
 /** Move working-copy paths into `into` (parent when omitted): jj-native partial commit. */
 export const squashPaths = (paths: string[], into?: string) =>
-  invoke<void>('squash_paths', { paths, into: into ?? null });
+  IN_TAURI ? invoke<void>('squash_paths', { paths, into: into ?? null }) : Promise.resolve();
 /** jj absorb — returns jj's summary of what moved where. */
-export const absorb = () => invoke<string>('absorb');
-export const getConflicts = (revset: string) => invoke<string[]>('conflicts', { revset });
-export const getReviewStatus = (changeId: string) =>
-  invoke<ReviewStatus>('review_status', { changeId });
+export const absorb = (): Promise<string> =>
+  IN_TAURI ? invoke<string>('absorb') : Promise.resolve('Absorbed 2 hunks (mock).');
+export const getConflicts = (revset: string): Promise<string[]> =>
+  IN_TAURI ? invoke<string[]>('conflicts', { revset }) : Promise.resolve([]);
+export const getReviewStatus = (changeId: string): Promise<ReviewStatus> =>
+  IN_TAURI
+    ? invoke<ReviewStatus>('review_status', { changeId })
+    : mock((m) => m.mockReviewStatus(changeId));
 export const setViewed = (changeId: string, path: string, viewed: boolean) =>
-  invoke<void>('set_viewed', { changeId, path, viewed });
+  IN_TAURI ? invoke<void>('set_viewed', { changeId, path, viewed }) : Promise.resolve();
 export const markReviewed = (changeId: string, commitId: string) =>
-  invoke<void>('mark_reviewed', { changeId, commitId });
+  IN_TAURI ? invoke<void>('mark_reviewed', { changeId, commitId }) : Promise.resolve();
 
 export const onRepoChanged = (callback: () => void): Promise<UnlistenFn> =>
-  listen('repo-changed', callback);
+  IN_TAURI ? listen('repo-changed', callback) : Promise.resolve(() => {});

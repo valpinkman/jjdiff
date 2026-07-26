@@ -1,4 +1,4 @@
-import { css, html, LitElement, nothing } from 'lit';
+import { html, LitElement, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
@@ -30,197 +30,18 @@ import type { DiffLayout } from './rows.js';
 /** What the main pane shows for the selected change. */
 type ViewMode = 'full' | 'interdiff';
 
-/** App chrome (shadow DOM is fine here — no text the user selects across boundaries). */
+/**
+ * App shell. LIGHT DOM, non-negotiably: the diff pane (jj-patch-view) is a descendant, and
+ * document stylesheets cannot cross a shadow boundary — a shadow root here would sever
+ * theme.css from every diff row below it (exactly the bug that shipped in M1–M4). Chrome
+ * styles live in theme.css under the `jj-app` prefix; leaf widgets with no cross-boundary
+ * text selection (file tree, command bar) keep their own shadow styles.
+ */
 @customElement('jj-app')
 export class App extends LitElement {
-  static override styles = css`
-    :host {
-      display: grid;
-      grid-template-columns: 280px 1fr;
-      grid-template-rows: auto 1fr;
-      height: 100%;
-    }
-    header {
-      grid-column: 1 / -1;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 12px;
-      border-bottom: 1px solid var(--jj-border);
-      background: var(--jj-bg-panel);
-    }
-    header .root {
-      font-weight: 600;
-    }
-    header .version {
-      color: var(--jj-fg-muted);
-      font-size: 11px;
-    }
-    header .spacer {
-      flex: 1;
-    }
-    button.tool {
-      border: 1px solid var(--jj-border);
-      background: var(--jj-bg);
-      color: var(--jj-fg);
-      font: inherit;
-      font-size: 12px;
-      border-radius: 6px;
-      padding: 3px 10px;
-      cursor: pointer;
-    }
-    button.tool:hover {
-      border-color: var(--jj-accent);
-    }
-    button.tool.on {
-      border-color: var(--jj-accent);
-      color: var(--jj-accent);
-    }
-    button.tool.primary {
-      background: var(--jj-accent);
-      border-color: var(--jj-accent);
-      color: #fff;
-    }
-    button.tool:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-    aside {
-      border-right: 1px solid var(--jj-border);
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-    .section-title {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--jj-fg-muted);
-      padding: 10px 10px 4px;
-    }
-    .stack {
-      padding: 0 6px;
-    }
-    .change {
-      display: block;
-      width: 100%;
-      text-align: left;
-      border: 1px solid transparent;
-      border-radius: 6px;
-      background: none;
-      color: var(--jj-fg);
-      font: inherit;
-      padding: 5px 8px;
-      cursor: pointer;
-    }
-    .change:hover {
-      background: var(--jj-bg-panel);
-    }
-    .change.selected {
-      border-color: var(--jj-accent);
-      background: var(--jj-bg-panel);
-    }
-    .change .id {
-      font-family: var(--jj-mono);
-      color: var(--jj-accent);
-      font-size: 11px;
-    }
-    .change .desc {
-      display: block;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-size: 12px;
-    }
-    .change .desc.empty-desc {
-      color: var(--jj-fg-muted);
-      font-style: italic;
-    }
-    .badge {
-      font-size: 10px;
-      border-radius: 4px;
-      padding: 1px 5px;
-      margin-left: 6px;
-      background: var(--jj-hunk-bg);
-      color: var(--jj-fg-muted);
-    }
-    .badge.warn {
-      background: var(--jj-removed-bg);
-      color: var(--jj-removed-fg);
-    }
-    .files {
-      flex: 1;
-      overflow-y: auto;
-      padding: 0 6px 10px;
-    }
-    main {
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-    }
-    .describe {
-      display: flex;
-      gap: 8px;
-      align-items: flex-start;
-      padding: 8px 12px;
-      border-bottom: 1px solid var(--jj-border);
-    }
-    .describe textarea {
-      flex: 1;
-      resize: vertical;
-      min-height: 34px;
-      max-height: 140px;
-      border: 1px solid var(--jj-border);
-      border-radius: 6px;
-      background: var(--jj-bg);
-      color: var(--jj-fg);
-      font: inherit;
-      font-size: 12.5px;
-      padding: 6px 8px;
-      box-sizing: border-box;
-    }
-    .describe textarea:focus {
-      outline: none;
-      border-color: var(--jj-accent);
-    }
-    .banner {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 12px;
-      border-bottom: 1px solid var(--jj-border);
-      background: var(--jj-hunk-bg);
-      font-size: 12px;
-    }
-    .banner.conflict {
-      background: var(--jj-removed-bg);
-      color: var(--jj-removed-fg);
-    }
-    .banner .spacer {
-      flex: 1;
-    }
-    .status {
-      padding: 4px 12px;
-      font-size: 11px;
-      white-space: pre-wrap;
-      border-bottom: 1px solid var(--jj-border);
-    }
-    .status.error {
-      color: var(--jj-removed-fg);
-    }
-    .status.info {
-      color: var(--jj-added-fg);
-    }
-    .fatal {
-      grid-column: 1 / -1;
-      padding: 24px;
-      color: var(--jj-removed-fg);
-      font-family: var(--jj-mono);
-      white-space: pre-wrap;
-    }
-  `;
+  protected override createRenderRoot() {
+    return this; // light DOM
+  }
 
   @state() private repo: RepoState | null = null;
   @state() private error: string | null = null;

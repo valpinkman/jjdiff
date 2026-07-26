@@ -1,6 +1,6 @@
 import { html, LitElement, nothing, type TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import '@lit-labs/virtualizer';
+import { virtualize } from '@lit-labs/virtualizer/virtualize.js';
 
 import { HighlightStore } from './highlight.js';
 import type { FilePatch, Line } from './ipc.js';
@@ -81,12 +81,16 @@ export class PatchView extends LitElement {
       return html`<p class="jj-empty">No changes.</p>`;
     }
     const rows = buildRows(this.files, this.layout, this.viewed);
-    return html`<lit-virtualizer
-      class="jj-patch ${this.layout}"
-      scroller
-      .items=${rows}
-      .renderItem=${(row: Row) => this.renderRow(row) as TemplateResult}
-    ></lit-virtualizer>`;
+    // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows
+    // into its shadow root, which would cut them off from theme.css and break cross-row text
+    // selection — the whole reason this component is light DOM.
+    return html`<div class="jj-patch ${this.layout}">
+      ${virtualize({
+        items: rows,
+        renderItem: (row: Row) => this.renderRow(row) as TemplateResult,
+        scroller: true,
+      })}
+    </div>`;
   }
 
   private renderRow(row: Row): TemplateResult {

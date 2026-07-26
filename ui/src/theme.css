@@ -67,9 +67,221 @@ body {
   font-size: 13px;
 }
 
+/* ---- App shell (jj-app is light DOM; all chrome styles live here) ---- */
+
 jj-app {
-  display: block;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  grid-template-rows: auto 1fr;
   height: 100vh;
+}
+
+jj-app > header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
+}
+
+jj-app > header .root {
+  font-weight: 600;
+}
+
+jj-app > header .version {
+  color: var(--jj-fg-muted);
+  font-size: 11px;
+}
+
+jj-app .spacer {
+  flex: 1;
+}
+
+jj-app button.tool {
+  border: 1px solid var(--jj-border);
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+jj-app button.tool:hover {
+  border-color: var(--jj-accent);
+}
+
+jj-app button.tool.on {
+  border-color: var(--jj-accent);
+  color: var(--jj-accent);
+}
+
+jj-app button.tool.primary {
+  background: var(--jj-accent);
+  border-color: var(--jj-accent);
+  color: #fff;
+}
+
+jj-app button.tool:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+jj-app > aside {
+  border-right: 1px solid var(--jj-border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+jj-app .section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--jj-fg-muted);
+  padding: 10px 10px 4px;
+}
+
+jj-app .stack {
+  padding: 0 6px;
+}
+
+jj-app .change {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--jj-fg);
+  font: inherit;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+jj-app .change:hover {
+  background: var(--jj-bg-panel);
+}
+
+jj-app .change.selected {
+  border-color: var(--jj-accent);
+  background: var(--jj-bg-panel);
+}
+
+jj-app .change .id {
+  font-family: var(--jj-mono);
+  color: var(--jj-accent);
+  font-size: 11px;
+}
+
+jj-app .change .desc {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+
+jj-app .change .desc.empty-desc {
+  color: var(--jj-fg-muted);
+  font-style: italic;
+}
+
+jj-app .badge {
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  background: var(--jj-hunk-bg);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .badge.warn {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .files {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 10px;
+}
+
+jj-app > main {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+jj-app .describe {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--jj-border);
+}
+
+jj-app .describe textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 34px;
+  max-height: 140px;
+  border: 1px solid var(--jj-border);
+  border-radius: 6px;
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+
+jj-app .describe textarea:focus {
+  outline: none;
+  border-color: var(--jj-accent);
+}
+
+jj-app .banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-hunk-bg);
+  font-size: 12px;
+}
+
+jj-app .banner.conflict {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .status {
+  padding: 4px 12px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  border-bottom: 1px solid var(--jj-border);
+}
+
+jj-app .status.error {
+  color: var(--jj-removed-fg);
+}
+
+jj-app .status.info {
+  color: var(--jj-added-fg);
+}
+
+jj-app .fatal {
+  grid-column: 1 / -1;
+  padding: 24px;
+  color: var(--jj-removed-fg);
+  font-family: var(--jj-mono);
+  white-space: pre-wrap;
 }
 
 /* ---- Diff pane (light DOM: selection/copy/find must work natively) ---- */
@@ -87,7 +299,6 @@ jj-patch-view {
   font-family: var(--jj-mono);
   font-size: var(--jj-code-size);
   line-height: 1.5;
-  padding: 10px 12px;
   box-sizing: border-box;
 }
 
@@ -104,18 +315,16 @@ jj-patch-view {
 .file-header {
   display: flex;
   gap: 8px;
-  align-items: baseline;
-  padding: 6px 10px;
-  margin-top: 14px;
+  align-items: center;
+  padding: 7px 12px;
   background: var(--jj-bg-panel);
-  border: 1px solid var(--jj-border);
-  border-radius: 8px 8px 0 0;
+  /* Flat full-width rows: virtualizers measure offsetHeight (margins excluded), so
+     inter-file spacing must not come from margins, and side borders would need a
+     card-end cap per file. Borders top+bottom only. */
+  border-top: 1px solid var(--jj-border);
+  border-bottom: 1px solid var(--jj-border);
   font-weight: 600;
   box-sizing: border-box;
-}
-
-.jj-patch > .file-header:first-child {
-  margin-top: 0;
 }
 
 .file-status {
@@ -167,6 +376,7 @@ jj-patch-view {
 select.file-action {
   appearance: none;
   -webkit-appearance: none;
+  max-width: 110px;
 }
 
 .conflict-badge {
@@ -196,21 +406,17 @@ select.file-action {
 .file-counts .minus { color: var(--jj-removed-fg); }
 
 .hunk-header {
-  padding: 2px 10px;
+  padding: 3px 12px;
   background: var(--jj-hunk-bg);
   color: var(--jj-fg-muted);
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
   box-sizing: border-box;
   font-size: 11px;
 }
 
 .notice {
-  padding: 10px;
+  padding: 10px 12px;
   color: var(--jj-fg-muted);
   font-style: italic;
-  border: 1px solid var(--jj-border);
-  border-top: 0;
   box-sizing: border-box;
 }
 
@@ -218,8 +424,6 @@ select.file-action {
 .line.unified {
   display: grid;
   grid-template-columns: 3.2em 3.2em 1.2em 1fr;
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
   box-sizing: border-box;
 }
 
@@ -230,8 +434,6 @@ select.file-action {
 .split-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
   box-sizing: border-box;
 }
 
