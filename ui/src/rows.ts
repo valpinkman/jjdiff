@@ -48,8 +48,9 @@ export function buildRows(
       return;
     }
     rows.push({ kind: 'file', fileIndex, file });
-    if (!hunkFilter && viewed.has(file.path)) {
-      // Viewed files collapse — that is the point of the flag.
+    if (viewed.has(file.path)) {
+      // Viewed files collapse — that is the point of the flag. This applies during guided
+      // review too: the header (with its checkbox) stays, so un-checking re-expands.
       return;
     }
     if (file.binary) {
