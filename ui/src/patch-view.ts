@@ -41,6 +41,7 @@ export class PatchView extends LitElement {
   @state() private searchCurrent = -1;
 
   private rows: Row[] = [];
+  private visibleFile: string | null = null;
   private searchMatches: number[] = [];
   private highlights = new HighlightStore();
 
@@ -118,6 +119,15 @@ export class PatchView extends LitElement {
     }
   }
 
+  /** Scroll a file's header to the top of the viewport. */
+  scrollToPath(path: string): void {
+    const index = this.rows.findIndex((row) => row.kind === 'file' && row.file.path === path);
+    if (index >= 0) {
+      this.cursor = index;
+      this.scrollToRow(index, 'start');
+    }
+  }
+
   /** Advance the current search match (wraps). */
   moveMatch(direction: 1 | -1): void {
     if (this.searchMatches.length === 0) return;
@@ -157,12 +167,34 @@ export class PatchView extends LitElement {
     );
   }
 
-  private scrollToRow(index: number) {
+  private scrollToRow(index: number, block: 'center' | 'start' = 'center') {
     const host = this.querySelector('.jj-patch') as
       | (HTMLElement & { [virtualizerRef]?: { element(i: number): { scrollIntoView(o?: object): void } | undefined } })
       | null;
-    host?.[virtualizerRef]?.element(index)?.scrollIntoView({ block: 'center' });
+    host?.[virtualizerRef]?.element(index)?.scrollIntoView({ block });
   }
+
+  /** Report which file the viewport is currently inside (sticky breadcrumb). */
+  private onVisibilityChanged = (event: Event) => {
+    const first = (event as CustomEvent<{ first: number }>).detail?.first ?? 0;
+    // Walk back to the file header owning the topmost visible row.
+    for (let index = Math.min(first, this.rows.length - 1); index >= 0; index--) {
+      const row = this.rows[index];
+      if (row?.kind === 'file') {
+        if (this.visibleFile !== row.file.path) {
+          this.visibleFile = row.file.path;
+          this.dispatchEvent(
+            new CustomEvent('visible-file', {
+              bubbles: true,
+              composed: true,
+              detail: { path: row.file.path },
+            }),
+          );
+        }
+        return;
+      }
+    }
+  };
 
   private rowClasses(index: number): string {
     const classes: string[] = [];
@@ -207,7 +239,10 @@ export class PatchView extends LitElement {
     // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows
     // into its shadow root, which would cut them off from theme.css and break cross-row text
     // selection — the whole reason this component is light DOM.
-    return html`<div class="jj-patch ${this.layout} ${this.wordWrap ? 'wrap' : 'nowrap'}">
+    return html`<div
+      class="jj-patch ${this.layout} ${this.wordWrap ? 'wrap' : 'nowrap'}"
+      @visibilityChanged=${this.onVisibilityChanged}
+    >
       ${virtualize({
         items: this.rows,
         renderItem: (row: Row, index: number) => this.renderRow(row, index) as TemplateResult,

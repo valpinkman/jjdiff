@@ -86,6 +86,8 @@ export class App extends LitElement {
   @state() private searchCount = 0;
   @state() private searchCurrent = -1;
   @state() private wordWrap = false;
+  /** File the diff viewport is currently inside (sticky breadcrumb). */
+  @state() private visibleFile: string | null = null;
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -893,6 +895,9 @@ export class App extends LitElement {
           this.searchCount = event.detail.count;
           this.searchCurrent = event.detail.current;
         }}
+        @visible-file=${(event: CustomEvent<{ path: string }>) => {
+          this.visibleFile = event.detail.path;
+        }}
       >
         ${change
           ? html`<div class="describe">
@@ -1037,6 +1042,12 @@ export class App extends LitElement {
           ? html`<div class="status error">${this.actionError}</div>`
           : nothing}
         ${this.actionInfo ? html`<div class="status info">${this.actionInfo}</div>` : nothing}
+        ${this.visibleFile && visible.length > 1
+          ? html`<div class="crumb" title=${this.visibleFile}>
+              <span class="crumb-dir">${dirname(this.visibleFile)}</span>
+              <span class="crumb-name">${basename(this.visibleFile)}</span>
+            </div>`
+          : nothing}
         <jj-patch-view
           .files=${visible}
           .layout=${this.layout}
@@ -1080,6 +1091,10 @@ export class App extends LitElement {
 }
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;
+const dirname = (path: string) => {
+  const cut = path.lastIndexOf('/');
+  return cut === -1 ? '' : `${path.slice(0, cut)}/`;
+};
 
 declare global {
   interface HTMLElementTagNameMap {
