@@ -91,6 +91,21 @@ impl Repo {
         self.log("trunk()..@ | @")
     }
 
+    /// Recent history for the graph view: ancestors of `@` and every bookmark, capped.
+    /// jj log order is reverse-topological (children before parents), which the UI's
+    /// lane-assignment algorithm depends on.
+    pub fn graph(&self, limit: usize) -> Result<Vec<Change>> {
+        let limit = limit.to_string();
+        let out = self.runner.read(&[
+            "log", "--no-graph", "-n", &limit, "-r", "ancestors(@ | bookmarks())", "-T",
+            LOG_TEMPLATE,
+        ])?;
+        out.lines()
+            .filter(|l| !l.is_empty())
+            .map(change::parse_record)
+            .collect()
+    }
+
     pub fn working_copy(&self) -> Result<Change> {
         self.log("@")?
             .into_iter()

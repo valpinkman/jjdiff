@@ -68,6 +68,8 @@ struct RepoState {
     jj_version: String,
     working_copy: Change,
     stack: Vec<Change>,
+    /// Recent history (ancestors of @ and all bookmarks) for the graph view.
+    graph: Vec<Change>,
 }
 
 #[derive(Serialize)]
@@ -127,6 +129,7 @@ async fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, Stri
             jj_version: vcs(repo.jj_version())?,
             working_copy: vcs(repo.working_copy())?,
             stack: vcs(repo.stack())?,
+            graph: vcs(repo.graph(60))?,
         })
     })
     .await

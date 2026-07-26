@@ -27,6 +27,8 @@ export interface RepoState {
   jjVersion: string;
   workingCopy: Change;
   stack: Change[];
+  /** Recent history (ancestors of @ and all bookmarks) for the graph view. */
+  graph: Change[];
 }
 
 export type FileStatus = 'added' | 'deleted' | 'modified' | 'renamed';

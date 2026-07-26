@@ -6,6 +6,7 @@ import { repeat } from 'lit/directives/repeat.js';
 import './command-bar.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
+import './log-graph.js';
 import {
   absorb,
   describeChange,
@@ -150,7 +151,11 @@ export class App extends LitElement {
   private get selectedChange(): Change | null {
     if (!this.repo) return null;
     const id = this.selected ?? this.repo.workingCopy.changeId;
-    return this.repo.stack.find((change) => change.changeId === id) ?? this.repo.workingCopy;
+    return (
+      this.repo.stack.find((change) => change.changeId === id) ??
+      this.repo.graph.find((change) => change.changeId === id) ??
+      this.repo.workingCopy
+    );
   }
 
   private get isWorkingCopySelected(): boolean {
@@ -653,7 +658,7 @@ export class App extends LitElement {
             class="tab ${this.sidebarTab === 'stack' ? 'active' : ''}"
             @click=${() => (this.sidebarTab = 'stack')}
           >
-            Stack
+            Log
           </button>
           <button
             class="tab ${this.sidebarTab === 'files' ? 'active' : ''}"
@@ -675,25 +680,11 @@ export class App extends LitElement {
         </nav>
         ${this.sidebarTab === 'stack'
           ? html`<div class="stack">
-              ${repeat(
-                this.repo.stack,
-                (item) => item.changeId,
-                (item) => html`
-                  <button
-                    class="change ${item.changeId === selectedId ? 'selected' : ''}"
-                    @click=${() => this.select(item)}
-                  >
-                    <span class="id">${item.changeId.slice(0, 8)}</span>
-                    ${item.workingCopy ? html`<span class="badge">@</span>` : nothing}
-                    ${item.conflict ? html`<span class="badge warn">conflict</span>` : nothing}
-                    ${item.immutable ? html`<span class="badge">immutable</span>` : nothing}
-                    ${item.bookmarks.map((b) => html`<span class="badge">${b}</span>`)}
-                    <span class="desc ${item.description ? '' : 'empty-desc'}">
-                      ${item.description.split('\n')[0] || '(no description)'}
-                    </span>
-                  </button>
-                `,
-              )}
+              <jj-log-graph
+                .changes=${this.repo.graph}
+                .selected=${selectedId}
+                @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
+              ></jj-log-graph>
             </div>`
           : html`
               ${change

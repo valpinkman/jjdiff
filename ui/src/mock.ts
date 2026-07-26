@@ -26,23 +26,47 @@ const change = (partial: Partial<Change> & Pick<Change, 'changeId' | 'descriptio
 
 const wc = change({ changeId: 'wcwcwcwcwcwcwcwcwcwc', description: '', workingCopy: true, empty: false });
 
+const retry = change({
+  changeId: 'qpalzmwoskxn12345678',
+  description: 'Add retry logic to the sync engine\n\nUses exponential backoff.',
+  bookmarks: ['sync-retries'],
+});
+const pool = change({
+  changeId: 'zxnvlqpwmrkd87654321',
+  description: 'Refactor connection pool',
+  conflict: true,
+});
+const trunk1 = change({
+  changeId: 'trunktrunktrunk11111',
+  description: 'Release 2.4',
+  bookmarks: ['main'],
+  immutable: true,
+});
+const trunk2 = change({
+  changeId: 'trunktrunktrunk22222',
+  description: 'Fix flaky CI on windows runners',
+  immutable: true,
+});
+const sidebranch = change({
+  changeId: 'featurexyzfeaturexyz',
+  description: 'Experiment: streaming parser',
+  bookmarks: ['streaming'],
+});
+
+// Parent wiring (commit ids) so the graph has a real fork: streaming branches off trunk1.
+wc.parents = [retry.commitId];
+retry.parents = [pool.commitId];
+pool.parents = [trunk1.commitId];
+sidebranch.parents = [trunk1.commitId];
+trunk1.parents = [trunk2.commitId];
+trunk2.parents = [];
+
 export const mockRepoState: RepoState = {
   root: '/Users/dev/projects/example',
   jjVersion: '0.43.0 (mock)',
   workingCopy: wc,
-  stack: [
-    wc,
-    change({
-      changeId: 'qpalzmwoskxn12345678',
-      description: 'Add retry logic to the sync engine\n\nUses exponential backoff.',
-      bookmarks: ['sync-retries'],
-    }),
-    change({
-      changeId: 'zxnvlqpwmrkd87654321',
-      description: 'Refactor connection pool',
-      conflict: true,
-    }),
-  ],
+  stack: [wc, retry, pool],
+  graph: [wc, retry, sidebranch, pool, trunk1, trunk2],
 };
 
 export const mockFiles: FilePatch[] = [
