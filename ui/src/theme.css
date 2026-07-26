@@ -666,17 +666,20 @@ jj-app .detail {
 }
 
 jj-app .detail-toggle {
-  border: 0;
-  background: none;
   color: var(--jj-fg-muted);
   font-size: 10px;
-  cursor: pointer;
-  padding: 0 2px;
   line-height: 1;
+  width: 12px;
+  flex: none;
+  user-select: none;
 }
 
-jj-app .detail-toggle:hover {
+jj-app .detail-head:hover .detail-toggle {
   color: var(--jj-accent);
+}
+
+jj-app .detail.collapsed .detail-head {
+  margin-bottom: -4px;
 }
 
 jj-app .detail-summary {
@@ -693,7 +696,14 @@ jj-app .detail-head {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin: -4px -6px 8px;
+  padding: 4px 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+jj-app .detail-head:hover {
+  background: var(--jj-bg-panel);
 }
 
 jj-app .detail-id {

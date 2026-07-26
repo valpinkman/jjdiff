@@ -1259,15 +1259,18 @@ export class App extends LitElement {
         @expand-context=${this.onExpandContext}
       >
         ${change && this.detailView
-          ? html`<section class="detail">
-              <header class="detail-head">
-                <button
-                  class="detail-toggle"
-                  title=${this.detailCollapsed ? 'Show change details' : 'Hide change details'}
-                  @click=${() => (this.detailCollapsed = !this.detailCollapsed)}
-                >
-                  ${this.detailCollapsed ? '▸' : '▾'}
-                </button>
+          ? html`<section class="detail ${this.detailCollapsed ? 'collapsed' : ''}">
+              <header
+                class="detail-head"
+                title=${this.detailCollapsed ? 'Show change details' : 'Hide change details'}
+                @click=${(event: Event) => {
+                  // The row is the hit target — a 10px chevron was not clickable in
+                  // practice. Nested controls (bookmark delete) opt out via stopPropagation.
+                  if ((event.target as HTMLElement).closest('.tag-x')) return;
+                  this.detailCollapsed = !this.detailCollapsed;
+                }}
+              >
+                <span class="detail-toggle">${this.detailCollapsed ? '▸' : '▾'}</span>
                 <span class="detail-id">${change.changeId.slice(0, 12)}</span>
                 ${change.bookmarks.map(
                   (bookmark) => html`<span class="tag"
@@ -1275,7 +1278,10 @@ export class App extends LitElement {
                     <button
                       class="tag-x"
                       title="Delete bookmark"
-                      @click=${() => this.removeBookmark(bookmark)}
+                      @click=${(event: Event) => {
+                        event.stopPropagation();
+                        this.removeBookmark(bookmark);
+                      }}
                     >
                       ×
                     </button></span
