@@ -161,7 +161,7 @@ export const mockFiles: FilePatch[] = [
 ];
 
 export const mockConfig: Config = {
-  ui: { diffStyle: 'split', codeFontSize: 12.5, ignoreWhitespace: false, theme: 'system' },
+  ui: { diffStyle: 'split', codeFontSize: 12.5, ignoreWhitespace: false, theme: 'system', wordWrap: false },
   keymap: { commandBar: 'Mod+Shift+p' },
 };
 

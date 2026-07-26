@@ -99,6 +99,7 @@ export interface Config {
     ignoreWhitespace: boolean;
     /** "system", "light", or "dark". */
     theme: string;
+    wordWrap: boolean;
   };
   keymap: {
     /** E.g. "Mod+Shift+p" — Mod is Cmd on macOS, Ctrl elsewhere. */

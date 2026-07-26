@@ -15,11 +15,32 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct WalkthroughConfig {
-    /// Claude model override; empty = the CLI's configured default.
+    /// Which agent CLI generates walkthroughs: claude (default), codex, opencode, pi.
+    pub backend: String,
+    /// Model override for the selected backend; empty = the CLI's configured default.
     #[serde(alias = "claude-model")]
     pub claude_model: String,
+    #[serde(alias = "codex-model")]
+    pub codex_model: String,
+    #[serde(alias = "opencode-model")]
+    pub opencode_model: String,
+    #[serde(alias = "pi-model")]
+    pub pi_model: String,
     /// Extra instructions appended to every generation prompt.
     pub prompt: String,
+}
+
+impl WalkthroughConfig {
+    /// Model override for whichever backend is selected.
+    pub fn model_for(&self, backend: crate::walkthrough::Backend) -> String {
+        use crate::walkthrough::Backend;
+        match backend {
+            Backend::Claude => self.claude_model.clone(),
+            Backend::Codex => self.codex_model.clone(),
+            Backend::OpenCode => self.opencode_model.clone(),
+            Backend::Pi => self.pi_model.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +70,8 @@ pub struct UiConfig {
     pub ignore_whitespace: bool,
     /// "system" (default), "light", or "dark".
     pub theme: String,
+    #[serde(alias = "word-wrap")]
+    pub word_wrap: bool,
 }
 
 impl Default for UiConfig {
@@ -58,6 +81,7 @@ impl Default for UiConfig {
             code_font_size: 12.5,
             ignore_whitespace: false,
             theme: "system".into(),
+            word_wrap: false,
         }
     }
 }
@@ -89,6 +113,22 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.ui.diff_style, "split");
         assert!(!config.ui.ignore_whitespace);
+        // Empty backend string parses to the Claude default.
+        assert_eq!(
+            crate::walkthrough::Backend::parse(&config.walkthrough.backend),
+            crate::walkthrough::Backend::Claude
+        );
+    }
+
+    #[test]
+    fn walkthrough_backend_and_model_selection() {
+        let config: Config = toml::from_str(
+            "[walkthrough]\nbackend = \"opencode\"\nopencode-model = \"anthropic/claude-sonnet-4-6\"\nclaude-model = \"ignored\"\n",
+        )
+        .unwrap();
+        let backend = crate::walkthrough::Backend::parse(&config.walkthrough.backend);
+        assert_eq!(backend, crate::walkthrough::Backend::OpenCode);
+        assert_eq!(config.walkthrough.model_for(backend), "anthropic/claude-sonnet-4-6");
     }
 
     #[test]

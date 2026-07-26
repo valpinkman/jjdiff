@@ -30,6 +30,8 @@ pub enum VcsError {
     CommandFailed { args: Vec<String>, stderr: String },
     #[error("failed to parse jj output: {0}")]
     Parse(String),
+    #[error("jj {found} is too old — jjdiff needs {}.{} or newer", MIN_JJ_VERSION.0, MIN_JJ_VERSION.1)]
+    JjTooOld { found: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -73,6 +75,22 @@ impl Repo {
     pub fn jj_version(&self) -> Result<String> {
         let out = self.runner.read(&["--version"])?;
         Ok(out.trim().trim_start_matches("jj ").to_string())
+    }
+
+    /// Fail fast on a jj too old for the template features jjdiff depends on
+    /// (`json()` landed in 0.33). Unparseable versions pass — a dev build should not
+    /// block the app.
+    pub fn check_version(&self) -> Result<()> {
+        let version = self.jj_version()?;
+        let mut parts = version.split(['.', '-', '+']);
+        let major: Option<u32> = parts.next().and_then(|p| p.parse().ok());
+        let minor: Option<u32> = parts.next().and_then(|p| p.parse().ok());
+        if let (Some(major), Some(minor)) = (major, minor) {
+            if (major, minor) < MIN_JJ_VERSION {
+                return Err(VcsError::JjTooOld { found: version });
+            }
+        }
+        Ok(())
     }
 
     /// Changes matching `revset`, newest-first (jj log order).
@@ -268,6 +286,20 @@ mod tests {
         run(&["git", "init", "--colocate", "."]);
         std::fs::write(dir.join("hello.txt"), "hello\n").unwrap();
         run(&["--config", "user.name=Test", "--config", "user.email=test@example.com", "commit", "-m", "initial"]);
+    }
+
+    #[test]
+    fn version_gate_accepts_current_and_rejects_old() {
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let _guard = jj_serial();
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+        // The installed jj must satisfy the gate, or every other test here is moot.
+        repo.check_version().unwrap();
     }
 
     #[test]

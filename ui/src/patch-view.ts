@@ -34,6 +34,8 @@ export class PatchView extends LitElement {
   @property({ attribute: false }) hunkFilter: ReadonlySet<string> | null = null;
   /** Find-in-diffs query; null when search is closed. */
   @property() searchQuery: string | null = null;
+  /** Wrap long lines instead of scrolling horizontally. */
+  @property({ type: Boolean }) wordWrap = false;
 
   @state() private cursor: number | null = null;
   @state() private searchCurrent = -1;
@@ -205,7 +207,7 @@ export class PatchView extends LitElement {
     // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows
     // into its shadow root, which would cut them off from theme.css and break cross-row text
     // selection — the whole reason this component is light DOM.
-    return html`<div class="jj-patch ${this.layout}">
+    return html`<div class="jj-patch ${this.layout} ${this.wordWrap ? 'wrap' : 'nowrap'}">
       ${virtualize({
         items: this.rows,
         renderItem: (row: Row, index: number) => this.renderRow(row, index) as TemplateResult,

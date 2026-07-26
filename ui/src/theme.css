@@ -910,10 +910,20 @@ select.file-action {
 }
 
 .content {
-  white-space: pre-wrap;
-  word-break: break-all;
   min-width: 0;
   padding-right: 8px;
+}
+
+/* Wrapping is a per-view choice: wrap keeps every column visible, nowrap keeps
+   alignment honest for long lines and scrolls instead. */
+.jj-patch.wrap .content {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.jj-patch.nowrap .content {
+  white-space: pre;
+  overflow-x: auto;
 }
 
 .line.added .content, .cell.added .content { color: var(--jj-added-fg); }

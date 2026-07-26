@@ -85,6 +85,7 @@ export class App extends LitElement {
   @state() private searchQuery = '';
   @state() private searchCount = 0;
   @state() private searchCurrent = -1;
+  @state() private wordWrap = false;
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -156,6 +157,7 @@ export class App extends LitElement {
         '--jj-code-size',
         `${config.ui.codeFontSize}px`,
       );
+      this.wordWrap = config.ui.wordWrap;
       if (config.ui.theme === 'light' || config.ui.theme === 'dark') {
         document.documentElement.dataset['jjTheme'] = config.ui.theme;
         document.documentElement.style.colorScheme = config.ui.theme;
@@ -170,6 +172,18 @@ export class App extends LitElement {
     });
     try {
       const launch = await getLaunchOptions();
+      if (launch.revset) {
+        // `jjdiff <revset>`: open on that change when it is in the loaded history.
+        const target = this.repo?.graph.find(
+          (change) =>
+            change.changeId.startsWith(launch.revset!) ||
+            change.commitId.startsWith(launch.revset!) ||
+            change.bookmarks.includes(launch.revset!),
+        );
+        if (target) {
+          this.select(target);
+        }
+      }
       if (launch.walkthrough) {
         if (this.walkthrough && !this.walkStale) {
           this.walkActive = true;
@@ -595,6 +609,10 @@ export class App extends LitElement {
     this.layout = this.layout === 'split' ? 'unified' : 'split';
   }
 
+  private toggleWordWrap() {
+    this.wordWrap = !this.wordWrap;
+  }
+
   private toggleWhitespace() {
     this.ignoreWhitespace = !this.ignoreWhitespace;
     void this.loadDiff();
@@ -628,6 +646,11 @@ export class App extends LitElement {
       },
       { id: 'refresh', label: 'Refresh', run: () => void this.refresh() },
       { id: 'find', label: 'Find in Diffs', hint: 'Mod+F', run: () => this.openSearch() },
+      {
+        id: 'wrap',
+        label: this.wordWrap ? 'Disable Word Wrap' : 'Enable Word Wrap',
+        run: () => this.toggleWordWrap(),
+      },
       this.walkthrough
         ? {
             id: 'walkthrough',
@@ -785,6 +808,13 @@ export class App extends LitElement {
           title="Hide whitespace-only changes"
         >
           W/S
+        </button>
+        <button
+          class="tool ${this.wordWrap ? 'on' : ''}"
+          @click=${this.toggleWordWrap}
+          title="Wrap long diff lines"
+        >
+          Wrap
         </button>
       </header>
       <aside>
@@ -1017,6 +1047,7 @@ export class App extends LitElement {
           .conflicted=${this.conflictedPaths}
           .hunkFilter=${this.walkFilter}
           .searchQuery=${this.searchOpen ? this.searchQuery : null}
+          .wordWrap=${this.wordWrap}
         ></jj-patch-view>
       </main>
       ${this.barOpen

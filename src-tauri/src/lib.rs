@@ -146,7 +146,10 @@ struct Interdiff {
 fn repo_handle(state: &tauri::State<'_, AppState>) -> Result<Repo, String> {
     let mut guard = state.repo.lock().expect("repo lock");
     if guard.is_none() {
-        *guard = Some(Repo::discover(&state.launch.repo_path).map_err(|e| e.to_string())?);
+        let repo = Repo::discover(&state.launch.repo_path).map_err(|e| e.to_string())?;
+        // Fail loudly here rather than with a confusing template parse error later.
+        repo.check_version().map_err(|e| e.to_string())?;
+        *guard = Some(repo);
     }
     Ok(guard.as_ref().expect("repo present").clone())
 }
@@ -376,8 +379,11 @@ async fn generate_walkthrough(
     let cfg = config::load().walkthrough;
     let generated = blocking(move || {
         let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
-        let backend = walkthrough::ClaudeBackend {
-            model: (!cfg.claude_model.is_empty()).then(|| cfg.claude_model.clone()),
+        let selected = walkthrough::Backend::parse(&cfg.backend);
+        let model = cfg.model_for(selected);
+        let backend = walkthrough::CliBackend {
+            backend: selected,
+            model: (!model.is_empty()).then_some(model),
         };
         walkthrough::generate(&backend, &files, &context, &cfg.prompt)
     })
@@ -398,7 +404,9 @@ async fn open_repository(
     path: String,
 ) -> Result<(), String> {
     let repo = tauri::async_runtime::spawn_blocking(move || {
-        Repo::discover(std::path::Path::new(&path)).map_err(|e| e.to_string())
+        let repo = Repo::discover(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+        repo.check_version().map_err(|e| e.to_string())?;
+        Ok::<_, String>(repo)
     })
     .await
     .map_err(|e| e.to_string())??;

@@ -59,29 +59,138 @@ pub trait AgentBackend {
     fn name(&self) -> &'static str;
 }
 
-/// Claude Code CLI: `claude -p --output-format json`, prompt on stdin.
-pub struct ClaudeBackend {
+/// Which agent CLI generates walkthroughs. All are driven headlessly with the prompt on
+/// stdin; only the argv and the reply envelope differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Claude,
+    Codex,
+    OpenCode,
+    Pi,
+}
+
+impl Backend {
+    pub fn parse(name: &str) -> Backend {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "codex" => Backend::Codex,
+            "opencode" => Backend::OpenCode,
+            "pi" => Backend::Pi,
+            _ => Backend::Claude,
+        }
+    }
+
+    /// Env var overriding binary discovery, and the default binary name.
+    fn binary(self) -> (&'static str, &'static str) {
+        match self {
+            Backend::Claude => ("JJDIFF_CLAUDE_PATH", "claude"),
+            Backend::Codex => ("JJDIFF_CODEX_PATH", "codex"),
+            Backend::OpenCode => ("JJDIFF_OPENCODE_PATH", "opencode"),
+            Backend::Pi => ("JJDIFF_PI_PATH", "pi"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Backend::Claude => "claude",
+            Backend::Codex => "codex",
+            Backend::OpenCode => "opencode",
+            Backend::Pi => "pi",
+        }
+    }
+}
+
+/// One agent CLI invocation: headless flags + prompt on stdin + a reply envelope.
+pub struct CliBackend {
+    pub backend: Backend,
     pub model: Option<String>,
 }
 
-impl AgentBackend for ClaudeBackend {
+impl CliBackend {
+    fn args(&self) -> Vec<String> {
+        let model = self.model.as_deref().filter(|m| !m.is_empty());
+        let mut args: Vec<String> = match self.backend {
+            // Prompt arrives on stdin, so no positional message is passed.
+            Backend::Claude => ["-p", "--output-format", "json"].iter().map(|s| s.to_string()).collect(),
+            Backend::Codex => ["exec", "--json", "-"].iter().map(|s| s.to_string()).collect(),
+            Backend::OpenCode => ["run", "--format", "json"].iter().map(|s| s.to_string()).collect(),
+            Backend::Pi => ["--print", "--mode", "json"].iter().map(|s| s.to_string()).collect(),
+        };
+        if let Some(model) = model {
+            match self.backend {
+                Backend::Claude => args.extend(["--model".into(), model.into()]),
+                Backend::Codex => args.extend(["--model".into(), model.into()]),
+                Backend::OpenCode => args.extend(["--model".into(), model.into()]),
+                Backend::Pi => args.extend(["--model".into(), model.into()]),
+            }
+        }
+        args
+    }
+
+    /// Pull the assistant's final text out of each CLI's reply format.
+    ///
+    /// Claude wraps a single object (`{"result": "..."}`); Codex and OpenCode stream JSONL
+    /// events, so the last event carrying text wins; Pi's `--mode json` is a single object
+    /// whose text field name has varied across versions. Anything unrecognized falls back to
+    /// raw stdout, which the schema validation downstream will reject if it is not usable.
+    fn extract(&self, raw: &str) -> Result<String, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(format!("{} returned no output", self.backend.label()));
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(text) = first_text(&value) {
+                return Ok(text);
+            }
+        }
+        // JSONL event stream: scan backwards for the last event with usable text.
+        let last = trimmed
+            .lines()
+            .rev()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find_map(|value| first_text(&value));
+        Ok(last.unwrap_or_else(|| trimmed.to_string()))
+    }
+}
+
+/// Common text-bearing fields across the agent CLIs' JSON shapes.
+fn first_text(value: &serde_json::Value) -> Option<String> {
+    for key in ["result", "text", "content", "message", "response", "output"] {
+        match &value[key] {
+            serde_json::Value::String(text) if !text.trim().is_empty() => {
+                return Some(text.clone())
+            }
+            // e.g. {"message": {"content": "..."}}
+            nested @ serde_json::Value::Object(_) => {
+                if let Some(text) = first_text(nested) {
+                    return Some(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+impl AgentBackend for CliBackend {
     fn name(&self) -> &'static str {
-        "claude"
+        self.backend.label()
     }
 
     fn run(&self, prompt: &str) -> Result<String, String> {
-        let bin = std::env::var("JJDIFF_CLAUDE_PATH").unwrap_or_else(|_| "claude".into());
+        let (env_var, default_bin) = self.backend.binary();
+        let bin = std::env::var(env_var).unwrap_or_else(|_| default_bin.to_string());
         let mut cmd = Command::new(&bin);
-        cmd.args(["-p", "--output-format", "json"])
+        cmd.args(self.args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(model) = self.model.as_deref().filter(|m| !m.is_empty()) {
-            cmd.args(["--model", model]);
-        }
+
         let mut child = cmd.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                format!("`{bin}` not found — install Claude Code or set JJDIFF_CLAUDE_PATH")
+                format!(
+                    "`{bin}` not found — install the {} CLI or set {env_var}",
+                    self.backend.label()
+                )
             } else {
                 error.to_string()
             }
@@ -112,21 +221,18 @@ impl AgentBackend for ClaudeBackend {
         let output = child.wait_with_output().map_err(|e| e.to_string())?;
         if !output.status.success() {
             return Err(format!(
-                "claude exited with {}: {}",
+                "{} exited with {}: {}",
+                self.backend.label(),
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        let raw = String::from_utf8_lossy(&output.stdout);
-        // --output-format json wraps the reply: {"type":"result","result":"...", ...}
-        let envelope: serde_json::Value =
-            serde_json::from_str(raw.trim()).map_err(|e| format!("bad claude envelope: {e}"))?;
-        envelope["result"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| format!("claude envelope has no result field: {raw}"))
+        self.extract(&String::from_utf8_lossy(&output.stdout))
     }
 }
+
+/// Back-compat alias: the Claude CLI backend.
+pub type ClaudeBackend = CliBackend;
 
 const GUIDE: &str = "\
 You are generating a guided code-review walkthrough. Order the steps so a reviewer builds \
@@ -351,6 +457,43 @@ mod tests {
     }
 
     #[test]
+    fn backend_parsing_defaults_to_claude() {
+        assert_eq!(Backend::parse("codex"), Backend::Codex);
+        assert_eq!(Backend::parse("OpenCode"), Backend::OpenCode);
+        assert_eq!(Backend::parse(" pi "), Backend::Pi);
+        assert_eq!(Backend::parse(""), Backend::Claude);
+        assert_eq!(Backend::parse("nonsense"), Backend::Claude);
+    }
+
+    #[test]
+    fn backend_args_carry_model_and_headless_flags() {
+        let claude = CliBackend { backend: Backend::Claude, model: Some("sonnet".into()) };
+        assert_eq!(claude.args(), vec!["-p", "--output-format", "json", "--model", "sonnet"]);
+        // Empty model string is treated as "use the CLI default".
+        let opencode = CliBackend { backend: Backend::OpenCode, model: Some(String::new()) };
+        assert_eq!(opencode.args(), vec!["run", "--format", "json"]);
+    }
+
+    #[test]
+    fn extracts_text_from_each_cli_envelope() {
+        let claude = CliBackend { backend: Backend::Claude, model: None };
+        assert_eq!(claude.extract(r#"{"type":"result","result":"hello"}"#).unwrap(), "hello");
+
+        // JSONL event stream: the last text-bearing event wins.
+        let codex = CliBackend { backend: Backend::Codex, model: None };
+        let stream = "{\"type\":\"start\"}\n{\"text\":\"first\"}\n{\"text\":\"final\"}";
+        assert_eq!(codex.extract(stream).unwrap(), "final");
+
+        // Nested message objects.
+        let pi = CliBackend { backend: Backend::Pi, model: None };
+        assert_eq!(pi.extract(r#"{"message":{"content":"nested"}}"#).unwrap(), "nested");
+
+        // Unrecognized output falls through raw for schema validation to judge.
+        assert_eq!(pi.extract("plain text").unwrap(), "plain text");
+        assert!(pi.extract("   ").is_err());
+    }
+
+    #[test]
     fn tolerates_markdown_fences() {
         let reply = "```json\n{\"summary\":\"s\",\"steps\":[{\"title\":\"t\",\"narrative\":\"n\",\"hunkIds\":[\"a.rs#0\"]}]}\n```";
         assert!(parse_response(reply, &files()).is_ok());
@@ -368,7 +511,7 @@ mod tests {
     #[ignore = "spawns the real claude CLI (network, credits)"]
     fn real_claude_end_to_end() {
         let files = files();
-        let backend = ClaudeBackend { model: None };
+        let backend = CliBackend { backend: Backend::Claude, model: None };
         let walkthrough =
             generate(&backend, &files, "test change: two tiny renames", "").unwrap();
         eprintln!("summary: {}", walkthrough.summary);
