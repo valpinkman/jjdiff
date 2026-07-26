@@ -1,6 +1,6 @@
-import { html, LitElement, nothing, type TemplateResult } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
-import { virtualize } from '@lit-labs/virtualizer/virtualize.js';
+import { html, LitElement, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+import { virtualize, virtualizerRef } from '@lit-labs/virtualizer/virtualize.js';
 
 import { HighlightStore } from './highlight.js';
 import type { FilePatch, Line } from './ipc.js';
@@ -13,6 +13,9 @@ import { buildRows, type DiffLayout, type HlRef, type Row } from './rows.js';
  * Light DOM on purpose (PLAN.md): native text selection, copy, and find must work across
  * lines without crossing shadow boundaries. All rows across all files form ONE flat
  * virtualized list, so a 10k-line diff costs what the viewport shows. Styles: theme.css.
+ *
+ * Keyboard review surface: the app shell drives a row cursor (j/k files, n/p hunks,
+ * v viewed) and a text search via public methods; scrolling goes through the virtualizer.
  */
 @customElement('jj-patch-view')
 export class PatchView extends LitElement {
@@ -29,7 +32,14 @@ export class PatchView extends LitElement {
   @property({ attribute: false }) conflicted: ReadonlySet<string> = new Set();
   /** Active walkthrough step's hunk ids; null = show everything. */
   @property({ attribute: false }) hunkFilter: ReadonlySet<string> | null = null;
+  /** Find-in-diffs query; null when search is closed. */
+  @property() searchQuery: string | null = null;
 
+  @state() private cursor: number | null = null;
+  @state() private searchCurrent = -1;
+
+  private rows: Row[] = [];
+  private searchMatches: number[] = [];
   private highlights = new HighlightStore();
 
   protected override createRenderRoot() {
@@ -47,6 +57,121 @@ export class PatchView extends LitElement {
   }
 
   private onTokens = () => this.requestUpdate();
+
+  protected override willUpdate(changed: PropertyValues<this>) {
+    const contentChanged =
+      changed.has('files') ||
+      changed.has('layout') ||
+      changed.has('viewed') ||
+      changed.has('hunkFilter');
+    if (contentChanged) {
+      this.rows = buildRows(this.files, this.layout, this.viewed, this.hunkFilter);
+      if (this.cursor !== null && this.cursor >= this.rows.length) {
+        this.cursor = null;
+      }
+    }
+    if (changed.has('files')) {
+      this.highlights.clear();
+      for (const file of this.files) {
+        this.highlights.request(file);
+      }
+    }
+    if (contentChanged || changed.has('searchQuery')) {
+      this.computeSearch(changed.has('searchQuery'));
+    }
+  }
+
+  // ---- Keyboard review surface (called by the app shell) ----
+
+  /** Move the cursor to the next/previous row of `kind` and scroll it into view. */
+  moveCursor(kind: 'file' | 'hunk', direction: 1 | -1): void {
+    const candidates: number[] = [];
+    this.rows.forEach((row, index) => {
+      if (row.kind === kind) candidates.push(index);
+    });
+    if (candidates.length === 0) return;
+    const from = this.cursor ?? -1;
+    let next: number | undefined;
+    if (direction === 1) {
+      next = candidates.find((index) => index > from) ?? candidates[candidates.length - 1];
+    } else {
+      next = [...candidates].reverse().find((index) => index < from) ?? candidates[0];
+    }
+    if (next !== undefined) {
+      this.cursor = next;
+      this.scrollToRow(next);
+    }
+  }
+
+  /** Toggle viewed on the file owning the cursor row. */
+  toggleViewedAtCursor(): void {
+    if (this.cursor === null || !this.canMarkViewed) return;
+    for (let index = this.cursor; index >= 0; index--) {
+      const row = this.rows[index];
+      if (row?.kind === 'file') {
+        const path = row.file.path;
+        this.emit('toggle-viewed', path, !this.viewed.has(path));
+        return;
+      }
+    }
+  }
+
+  /** Advance the current search match (wraps). */
+  moveMatch(direction: 1 | -1): void {
+    if (this.searchMatches.length === 0) return;
+    const count = this.searchMatches.length;
+    this.searchCurrent = (this.searchCurrent + direction + count) % count;
+    this.scrollToRow(this.searchMatches[this.searchCurrent]!);
+    this.emitSearchState();
+  }
+
+  private computeSearch(isNewQuery: boolean) {
+    const query = this.searchQuery?.trim().toLowerCase() ?? '';
+    if (!query) {
+      this.searchMatches = [];
+      this.searchCurrent = -1;
+      this.emitSearchState();
+      return;
+    }
+    const matches: number[] = [];
+    this.rows.forEach((row, index) => {
+      if (rowMatches(row, query)) matches.push(index);
+    });
+    this.searchMatches = matches;
+    this.searchCurrent = matches.length > 0 ? 0 : -1;
+    if (isNewQuery && matches.length > 0) {
+      this.scrollToRow(matches[0]!);
+    }
+    this.emitSearchState();
+  }
+
+  private emitSearchState() {
+    this.dispatchEvent(
+      new CustomEvent('search-state', {
+        bubbles: true,
+        composed: true,
+        detail: { count: this.searchMatches.length, current: this.searchCurrent },
+      }),
+    );
+  }
+
+  private scrollToRow(index: number) {
+    const host = this.querySelector('.jj-patch') as
+      | (HTMLElement & { [virtualizerRef]?: { element(i: number): { scrollIntoView(o?: object): void } | undefined } })
+      | null;
+    host?.[virtualizerRef]?.element(index)?.scrollIntoView({ block: 'center' });
+  }
+
+  private rowClasses(index: number): string {
+    const classes: string[] = [];
+    if (index === this.cursor) classes.push('kbd-cursor');
+    if (this.searchMatches.includes(index)) {
+      classes.push(
+        index === this.searchMatches[this.searchCurrent] ? 'search-current' : 'search-match',
+      );
+    }
+    return classes.join(' ');
+  }
 
   private emit(name: 'toggle-viewed', path: string, viewed: boolean): void;
   private emit(name: string, path: string, viewed?: boolean) {
@@ -69,15 +194,6 @@ export class PatchView extends LitElement {
     );
   }
 
-  protected override willUpdate(changed: Map<string, unknown>) {
-    if (changed.has('files')) {
-      this.highlights.clear();
-      for (const file of this.files) {
-        this.highlights.request(file);
-      }
-    }
-  }
-
   protected override render() {
     if (this.files.length === 0) {
       return html`<div class="jj-empty">
@@ -86,25 +202,28 @@ export class PatchView extends LitElement {
         <div class="hint">Changes appear here live as files are edited or a revision is selected.</div>
       </div>`;
     }
-    const rows = buildRows(this.files, this.layout, this.viewed, this.hunkFilter);
     // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows
     // into its shadow root, which would cut them off from theme.css and break cross-row text
     // selection — the whole reason this component is light DOM.
     return html`<div class="jj-patch ${this.layout}">
       ${virtualize({
-        items: rows,
-        renderItem: (row: Row) => this.renderRow(row) as TemplateResult,
+        items: this.rows,
+        renderItem: (row: Row, index: number) => this.renderRow(row, index) as TemplateResult,
         scroller: true,
       })}
     </div>`;
   }
 
-  private renderRow(row: Row): TemplateResult {
+  private renderRow(row: Row, index: number): TemplateResult {
+    const extra = this.rowClasses(index);
     switch (row.kind) {
       case 'file': {
         const { file } = row;
         const isViewed = this.viewed.has(file.path);
-        return html`<div class="file-header ${isViewed ? 'viewed' : ''}" data-path=${file.path}>
+        return html`<div
+          class="file-header ${isViewed ? 'viewed' : ''} ${extra}"
+          data-path=${file.path}
+        >
           <span class="file-status ${file.status}">${file.status}</span>
           <span class="file-path"
             >${file.oldPath ? html`${file.oldPath} → ` : nothing}${file.path}</span
@@ -150,22 +269,27 @@ export class PatchView extends LitElement {
         </div>`;
       }
       case 'hunk':
-        return html`<div class="hunk-header">${row.label}</div>`;
+        return html`<div class="hunk-header ${extra}">${row.label}</div>`;
       case 'notice':
-        return html`<div class="notice">${row.text}</div>`;
+        return html`<div class="notice ${extra}">${row.text}</div>`;
       case 'unified':
-        return this.renderUnified(row.fileIndex, row.line, row.hl);
+        return this.renderUnified(row.fileIndex, row.line, row.hl, extra);
       case 'split':
-        return html`<div class="split-row">
+        return html`<div class="split-row ${extra}">
           ${this.renderCell(row.fileIndex, row.left, row.hlLeft, 'left')}
           ${this.renderCell(row.fileIndex, row.right, row.hlRight, 'right')}
         </div>`;
     }
   }
 
-  private renderUnified(fileIndex: number, line: Line, hl: HlRef | null): TemplateResult {
+  private renderUnified(
+    fileIndex: number,
+    line: Line,
+    hl: HlRef | null,
+    extra: string,
+  ): TemplateResult {
     const tokens = this.highlights.tokensFor(this.files[fileIndex]!, hl);
-    return html`<div class="line unified ${line.kind} ${markerClass(line.text)}">
+    return html`<div class="line unified ${line.kind} ${markerClass(line.text)} ${extra}">
       <span class="num">${line.oldLine ?? ''}</span>
       <span class="num">${line.newLine ?? ''}</span>
       <span class="sign">${sign(line.kind)}</span>
@@ -200,15 +324,29 @@ const CONFLICT_MARKER = /^(<{7}|>{7}|={7}|\|{7}|%{7}|\+{7}|\\{7})(\s|$)/;
 
 const markerClass = (text: string) => (CONFLICT_MARKER.test(text) ? 'conflict-marker' : '');
 
-declare global {
-  interface HTMLElementEventMap {
-    'squash-file': CustomEvent<{ path: string; into: string }>;
-    'toggle-viewed': CustomEvent<{ path: string; viewed: boolean }>;
+function rowMatches(row: Row, query: string): boolean {
+  switch (row.kind) {
+    case 'file':
+      return row.file.path.toLowerCase().includes(query);
+    case 'unified':
+      return row.line.text.toLowerCase().includes(query);
+    case 'split':
+      return (
+        (row.left?.text.toLowerCase().includes(query) ?? false) ||
+        (row.right?.text.toLowerCase().includes(query) ?? false)
+      );
+    default:
+      return false;
   }
 }
 
 declare global {
   interface HTMLElementTagNameMap {
     'jj-patch-view': PatchView;
+  }
+  interface HTMLElementEventMap {
+    'squash-file': CustomEvent<{ path: string; into: string }>;
+    'toggle-viewed': CustomEvent<{ path: string; viewed: boolean }>;
+    'search-state': CustomEvent<{ count: number; current: number }>;
   }
 }

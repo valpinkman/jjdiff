@@ -35,6 +35,7 @@ import {
 import { folderIcon } from './file-icons.js';
 import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import './patch-view.js';
+import type { PatchView } from './patch-view.js';
 import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
@@ -80,6 +81,10 @@ export class App extends LitElement {
   @state() private stackReview: Change[] | null = null;
   @state() private repoMenuOpen = false;
   @state() private recentRepos: string[] = [];
+  @state() private searchOpen = false;
+  @state() private searchQuery = '';
+  @state() private searchCount = 0;
+  @state() private searchCurrent = -1;
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -177,10 +182,33 @@ export class App extends LitElement {
     }
   }
 
+  private get patchView(): PatchView | null {
+    return this.querySelector('jj-patch-view');
+  }
+
+  private openSearch() {
+    this.searchOpen = true;
+    void this.updateComplete.then(() => {
+      const input = this.querySelector<HTMLInputElement>('#diff-search');
+      input?.focus();
+      input?.select();
+    });
+  }
+
+  private closeSearch() {
+    this.searchOpen = false;
+    this.searchQuery = '';
+  }
+
   private onGlobalKey = (event: KeyboardEvent) => {
     if (matchesShortcut(event, this.commandBarShortcut)) {
       event.preventDefault();
       this.barOpen = !this.barOpen;
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      this.openSearch();
       return;
     }
     const typing = (event.target as HTMLElement | null)?.tagName === 'TEXTAREA'
@@ -189,12 +217,47 @@ export class App extends LitElement {
       if (event.key === 'ArrowRight') {
         event.preventDefault();
         this.moveStep(1);
-      } else if (event.key === 'ArrowLeft') {
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
         event.preventDefault();
         this.moveStep(-1);
-      } else if (event.key === 'Escape') {
-        this.exitWalkthrough();
+        return;
       }
+    }
+    if (event.key === 'Escape' && !typing) {
+      if (this.searchOpen) {
+        this.closeSearch();
+        return;
+      }
+      if (this.walkActive) {
+        this.exitWalkthrough();
+        return;
+      }
+    }
+    // Single-key review flow: j/k files, n/p hunks, v viewed.
+    if (typing || this.barOpen || event.metaKey || event.ctrlKey || event.altKey) return;
+    switch (event.key) {
+      case 'j':
+        event.preventDefault();
+        this.patchView?.moveCursor('file', 1);
+        break;
+      case 'k':
+        event.preventDefault();
+        this.patchView?.moveCursor('file', -1);
+        break;
+      case 'n':
+        event.preventDefault();
+        this.patchView?.moveCursor('hunk', 1);
+        break;
+      case 'p':
+        event.preventDefault();
+        this.patchView?.moveCursor('hunk', -1);
+        break;
+      case 'v':
+        event.preventDefault();
+        this.patchView?.toggleViewedAtCursor();
+        break;
     }
   };
 
@@ -564,6 +627,7 @@ export class App extends LitElement {
         run: () => this.toggleWhitespace(),
       },
       { id: 'refresh', label: 'Refresh', run: () => void this.refresh() },
+      { id: 'find', label: 'Find in Diffs', hint: 'Mod+F', run: () => this.openSearch() },
       this.walkthrough
         ? {
             id: 'walkthrough',
@@ -795,6 +859,10 @@ export class App extends LitElement {
       <main
         @squash-file=${this.onSquashFile}
         @toggle-viewed=${this.onToggleViewed}
+        @search-state=${(event: CustomEvent<{ count: number; current: number }>) => {
+          this.searchCount = event.detail.count;
+          this.searchCurrent = event.detail.current;
+        }}
       >
         ${change
           ? html`<div class="describe">
@@ -905,6 +973,36 @@ export class App extends LitElement {
               <button class="tool" @click=${this.runGenerateWalkthrough}>Refresh Walkthrough</button>
             </div>`
           : nothing}
+        ${this.searchOpen
+          ? html`<div class="search-bar">
+              <input
+                id="diff-search"
+                placeholder="Find in diffs…"
+                .value=${this.searchQuery}
+                @input=${(event: Event) =>
+                  (this.searchQuery = (event.target as HTMLInputElement).value)}
+                @keydown=${(event: KeyboardEvent) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    this.patchView?.moveMatch(event.shiftKey ? -1 : 1);
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    this.closeSearch();
+                  }
+                }}
+              />
+              <span class="matches">
+                ${this.searchQuery.trim()
+                  ? this.searchCount > 0
+                    ? `${this.searchCurrent + 1}/${this.searchCount}`
+                    : 'no matches'
+                  : ''}
+              </span>
+              <button class="tool" @click=${() => this.patchView?.moveMatch(-1)}>↑</button>
+              <button class="tool" @click=${() => this.patchView?.moveMatch(1)}>↓</button>
+              <button class="tool" @click=${this.closeSearch}>Esc</button>
+            </div>`
+          : nothing}
         ${this.actionError
           ? html`<div class="status error">${this.actionError}</div>`
           : nothing}
@@ -918,6 +1016,7 @@ export class App extends LitElement {
           .squashTargets=${this.squashTargets}
           .conflicted=${this.conflictedPaths}
           .hunkFilter=${this.walkFilter}
+          .searchQuery=${this.searchOpen ? this.searchQuery : null}
         ></jj-patch-view>
       </main>
       ${this.barOpen

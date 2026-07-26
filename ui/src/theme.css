@@ -583,6 +583,53 @@ jj-app .walk-content {
   }
 }
 
+jj-app .search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
+}
+
+jj-app .search-bar input {
+  flex: 1;
+  max-width: 340px;
+  border: 1px solid var(--jj-border);
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font-family: var(--jj-mono);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+jj-app .search-bar input:focus {
+  outline: none;
+  border-color: var(--jj-accent);
+  box-shadow: var(--jj-focus-ring);
+}
+
+jj-app .search-bar .matches {
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  color: var(--jj-fg-muted);
+  min-width: 70px;
+}
+
+/* Keyboard cursor + search hits in the diff (light DOM rows). */
+.kbd-cursor {
+  box-shadow: inset 3px 0 0 var(--jj-accent) !important;
+}
+
+.search-match {
+  box-shadow: inset -3px 0 0 color-mix(in srgb, var(--jj-accent) 45%, transparent);
+}
+
+.search-current {
+  box-shadow: inset -3px 0 0 var(--jj-accent);
+  background: color-mix(in srgb, var(--jj-accent) 9%, var(--jj-bg)) !important;
+}
+
 jj-app .status {
   padding: 4px 12px;
   font-size: 11px;
