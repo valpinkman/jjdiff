@@ -177,10 +177,44 @@ export const mockWalkthrough: Walkthrough = {
   fingerprint: 'mockfingerprint000',
 };
 
-export const mockWalkthroughStatus = (changeId: string): WalkthroughStatus =>
-  changeId === 'wcwcwcwcwcwcwcwcwcwc'
-    ? { walkthrough: mockWalkthrough, stale: false }
-    : { walkthrough: null, stale: false };
+const mockPoolWalkthrough: Walkthrough = {
+  summary: 'Connection pool refactor: ownership moves into the pool object.',
+  steps: [
+    {
+      title: 'Pool owns connections',
+      narrative: 'The pool now tracks and reuses connections instead of the engine.',
+      hunkIds: ['src/sync/engine.ts#0', 'src/sync/engine.ts#1'],
+    },
+    {
+      title: 'Helper extraction',
+      narrative: 'Backoff logic moves to its own module.',
+      hunkIds: ['src/sync/backoff.ts#0'],
+    },
+  ],
+  fingerprint: 'mockfingerprint001',
+};
 
-export const mockGenerateWalkthrough = (): Promise<Walkthrough> =>
-  new Promise((resolve) => setTimeout(() => resolve(mockWalkthrough), 900));
+/** Mirrors the real backend: generated walkthroughs persist for later fetches. */
+const generatedStore = new Map<string, Walkthrough>();
+
+export const mockWalkthroughStatus = (changeId: string): WalkthroughStatus => {
+  const generated = generatedStore.get(changeId);
+  if (generated) {
+    return { walkthrough: generated, stale: false };
+  }
+  if (changeId === 'wcwcwcwcwcwcwcwcwcwc') {
+    return { walkthrough: mockWalkthrough, stale: false };
+  }
+  if (changeId === 'qpalzmwoskxn12345678') {
+    return { walkthrough: mockPoolWalkthrough, stale: false };
+  }
+  return { walkthrough: null, stale: false };
+};
+
+export const mockGenerateWalkthrough = (changeId: string): Promise<Walkthrough> =>
+  new Promise((resolve) =>
+    setTimeout(() => {
+      generatedStore.set(changeId, mockWalkthrough);
+      resolve(mockWalkthrough);
+    }, 900),
+  );

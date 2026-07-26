@@ -71,6 +71,8 @@ export class App extends LitElement {
   /** -1 = overview (summary + full diff); 0..n-1 = steps. */
   @state() private walkStep = -1;
   @state() private generating = false;
+  /** Guided review across the whole stack: changes ordered oldest → newest. */
+  @state() private stackReview: Change[] | null = null;
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -238,6 +240,7 @@ export class App extends LitElement {
     this.viewMode = 'full';
     this.walkActive = false;
     this.walkStep = -1;
+    this.stackReview = null;
     this.sidebarTab = 'files';
     const target = this.repo?.stack.find((c) => c.changeId === change.changeId);
     this.description = target?.description ?? '';
@@ -267,6 +270,84 @@ export class App extends LitElement {
       this.walkStale = false;
       this.walkActive = false;
     }
+  }
+
+  /** Index of the currently selected change within the stack-review order. */
+  private get stackIndex(): number {
+    if (!this.stackReview) return -1;
+    const id = this.selected ?? this.repo?.workingCopy.changeId;
+    return this.stackReview.findIndex((change) => change.changeId === id);
+  }
+
+  private revsetFor(change: Change): string | null {
+    return change.workingCopy ? null : change.changeId;
+  }
+
+  /** Guided review of every reviewable change in the stack, oldest first (PR-style). */
+  private reviewStack() {
+    if (!this.repo || this.generating) return;
+    const order = [...this.repo.stack]
+      .filter((change) => !change.immutable && !change.empty)
+      .reverse();
+    if (order.length === 0) {
+      this.actionInfo = 'Nothing to review in this stack.';
+      return;
+    }
+    this.generating = true;
+    void this.run(async () => {
+      const ready: Change[] = [];
+      for (const [index, change] of order.entries()) {
+        const status = await getWalkthrough(
+          change.changeId,
+          this.revsetFor(change),
+          this.ignoreWhitespace,
+        );
+        if (status.walkthrough && !status.stale) {
+          ready.push(change);
+          continue;
+        }
+        this.actionInfo = `Generating walkthrough ${index + 1}/${order.length} — ${
+          change.description.split('\n')[0] || change.changeId.slice(0, 8)
+        }…`;
+        try {
+          await generateWalkthrough(
+            change.changeId,
+            this.revsetFor(change),
+            this.ignoreWhitespace,
+            `change ${change.changeId.slice(0, 8)}: ${
+              change.description.split('\n')[0] || '(no description)'
+            }`,
+          );
+          ready.push(change);
+        } catch (error) {
+          // A change that can't be walked (e.g. only binary files) is skipped, not fatal.
+          this.actionInfo = `Skipped ${change.changeId.slice(0, 8)}: ${String(error)}`;
+        }
+      }
+      if (ready.length === 0) {
+        throw new Error('no change in the stack produced a walkthrough');
+      }
+      this.stackReview = ready;
+      this.actionInfo = null;
+      await this.enterStackChange(ready[0]!, 'overview');
+    }).finally(() => {
+      this.generating = false;
+    });
+  }
+
+  /** Move to a change within stack review, keeping guided mode on. */
+  private async enterStackChange(change: Change, position: 'overview' | 'last') {
+    this.selected = change.changeId;
+    this.focusPath = null;
+    this.viewMode = 'full';
+    this.description = change.description;
+    this.seededFor = change.changeId;
+    await Promise.all([this.loadDiff(), this.loadReview(), this.loadConflicts()]);
+    await this.loadWalkthrough();
+    this.walkActive = true;
+    this.walkStep =
+      position === 'last' && this.walkthrough ? this.walkthrough.steps.length - 1 : -1;
+    this.sidebarTab = 'steps';
   }
 
   private runGenerateWalkthrough() {
@@ -303,6 +384,7 @@ export class App extends LitElement {
   private exitWalkthrough() {
     this.walkActive = false;
     this.walkStep = -1;
+    this.stackReview = null;
     if (this.sidebarTab === 'steps') {
       this.sidebarTab = 'files';
     }
@@ -311,8 +393,18 @@ export class App extends LitElement {
   private moveStep(delta: number) {
     if (!this.walkthrough) return;
     const next = this.walkStep + delta;
-    if (next < -1 || next >= this.walkthrough.steps.length) return;
-    this.walkStep = next;
+    if (next >= -1 && next < this.walkthrough.steps.length) {
+      this.walkStep = next;
+      return;
+    }
+    // Past either end: in stack review, cross into the neighboring change.
+    if (!this.stackReview) return;
+    const index = this.stackIndex;
+    if (delta > 0 && index >= 0 && index + 1 < this.stackReview.length) {
+      void this.enterStackChange(this.stackReview[index + 1]!, 'overview');
+    } else if (delta < 0 && index > 0) {
+      void this.enterStackChange(this.stackReview[index - 1]!, 'last');
+    }
   }
 
   /** Hunks visible in the current walkthrough step, or null for everything. */
@@ -432,8 +524,15 @@ export class App extends LitElement {
     if (this.walkthrough) {
       commands.push({
         id: 'regen-walkthrough',
-        label: 'Regenerate Walkthrough (Claude)',
+        label: 'Refresh Walkthrough (Claude)',
         run: () => this.runGenerateWalkthrough(),
+      });
+    }
+    if ((this.repo?.stack.filter((c) => !c.immutable && !c.empty).length ?? 0) > 1) {
+      commands.push({
+        id: 'stack-review',
+        label: this.stackReview ? 'Exit Stack Review' : 'Review Stack (guided)',
+        run: () => (this.stackReview ? this.exitWalkthrough() : this.reviewStack()),
       });
     }
     if (this.isWorkingCopySelected) {
@@ -502,8 +601,18 @@ export class App extends LitElement {
         <span class="root">${basename(this.repo.root)}</span>
         <span class="version">jj ${this.repo.jjVersion}</span>
         <span class="spacer"></span>
+        ${this.repo.stack.filter((c) => !c.immutable && !c.empty).length > 1
+          ? html`<button
+              class="tool ${this.stackReview ? 'on' : ''} ${this.generating ? 'generating' : ''}"
+              ?disabled=${this.generating}
+              title="Guided review of every change in the stack, oldest first"
+              @click=${() => (this.stackReview ? this.exitWalkthrough() : this.reviewStack())}
+            >
+              ${this.stackReview ? 'Exit Stack Review' : 'Review Stack'}
+            </button>`
+          : nothing}
         <button
-          class="tool ${this.walkActive ? 'on' : ''} ${this.generating ? 'generating' : ''}"
+          class="tool ${this.walkActive && !this.stackReview ? 'on' : ''} ${this.generating ? 'generating' : ''}"
           ?disabled=${this.generating || this.files.length === 0}
           title=${this.walkthrough
             ? 'Guided review of this change'
@@ -560,6 +669,7 @@ export class App extends LitElement {
               >
                 Steps
                 <span class="count">${this.walkthrough.steps.length}</span>
+                ${this.walkStale ? html`<span class="stale-dot" title="Content changed"></span>` : nothing}
               </button>`
             : nothing}
         </nav>
@@ -687,7 +797,9 @@ export class App extends LitElement {
                 html`<div class="walk-content">
               <div class="walk-head">
                 <span class="walk-progress">
-                  ${this.walkStep < 0
+                  ${this.stackReview
+                    ? `Change ${this.stackIndex + 1}/${this.stackReview.length} · `
+                    : ''}${this.walkStep < 0
                     ? 'Overview'
                     : `Step ${this.walkStep + 1} of ${this.walkthrough.steps.length}`}
                 </span>
@@ -697,15 +809,22 @@ export class App extends LitElement {
                     : this.walkthrough.steps[this.walkStep]?.title}
                 </strong>
                 <span class="spacer"></span>
-                <button class="tool" ?disabled=${this.walkStep <= -1} @click=${() => this.moveStep(-1)}>
+                <button
+                  class="tool"
+                  ?disabled=${this.walkStep <= -1 && !(this.stackReview && this.stackIndex > 0)}
+                  @click=${() => this.moveStep(-1)}
+                >
                   ← Prev
                 </button>
                 <button
                   class="tool primary"
-                  ?disabled=${this.walkStep >= this.walkthrough.steps.length - 1}
+                  ?disabled=${this.walkStep >= this.walkthrough.steps.length - 1 &&
+                  !(this.stackReview && this.stackIndex + 1 < this.stackReview.length)}
                   @click=${() => this.moveStep(1)}
                 >
-                  Next →
+                  ${this.walkStep >= this.walkthrough.steps.length - 1 && this.stackReview
+                    ? 'Next Change →'
+                    : 'Next →'}
                 </button>
               </div>
               <p class="walk-narrative">
@@ -721,7 +840,7 @@ export class App extends LitElement {
           ? html`<div class="banner">
               The walkthrough was generated for an older version of this change.
               <span class="spacer"></span>
-              <button class="tool" @click=${this.runGenerateWalkthrough}>Regenerate</button>
+              <button class="tool" @click=${this.runGenerateWalkthrough}>Refresh Walkthrough</button>
             </div>`
           : nothing}
         ${this.actionError

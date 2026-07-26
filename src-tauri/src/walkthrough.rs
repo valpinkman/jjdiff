@@ -135,7 +135,9 @@ that uses it, then tests/config/mechanical fallout. Group related hunks into one
 are short noun phrases; narratives are 1-4 sentences explaining what the hunks do and why they \
 matter, written for a colleague seeing the diff for the first time. Every step must reference \
 at least one hunk id, every hunk id should appear in exactly one step, and you must not invent \
-ids that are not in the diff.";
+ids that are not in the diff. HARD CONSTRAINT: all hunks of the same file must be grouped \
+into the same step — a file must never be split across steps (reviewers mark whole files as \
+viewed, so a split file would show as already seen in a later step).";
 
 /// Build the full generation prompt from a structured diff.
 pub fn build_prompt(files: &[FilePatch], context: &str, extra: &str) -> Result<String, String> {
@@ -217,6 +219,8 @@ pub fn parse_response(reply: &str, files: &[FilePatch]) -> Result<Walkthrough, S
         .filter(|step| !step.hunk_ids.is_empty())
         .collect();
 
+    let steps = enforce_file_exclusivity(steps);
+
     if steps.is_empty() {
         return Err("agent produced no steps referencing real hunks".into());
     }
@@ -225,6 +229,41 @@ pub fn parse_response(reply: &str, files: &[FilePatch]) -> Result<Walkthrough, S
         steps,
         fingerprint: jjdiff_diff::diff_fingerprint(files),
     })
+}
+
+fn file_of(hunk_id: &str) -> &str {
+    &hunk_id[..hunk_id.rfind('#').unwrap_or(hunk_id.len())]
+}
+
+/// A file must belong to exactly one step: viewed flags are per file, so a file split
+/// across steps would show as "already seen" in the later step. The agent is instructed
+/// not to split files, but this enforces it — every hunk moves to the first step that
+/// mentions its file, duplicates collapse, and emptied steps drop out.
+fn enforce_file_exclusivity(steps: Vec<Step>) -> Vec<Step> {
+    let mut owner: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (index, step) in steps.iter().enumerate() {
+        for id in &step.hunk_ids {
+            owner.entry(file_of(id).to_string()).or_insert(index);
+        }
+    }
+    let mut rehomed: Vec<Step> = steps
+        .iter()
+        .map(|step| Step {
+            title: step.title.clone(),
+            narrative: step.narrative.clone(),
+            hunk_ids: Vec::new(),
+        })
+        .collect();
+    for step in &steps {
+        for id in &step.hunk_ids {
+            let target = owner[file_of(id)];
+            if !rehomed[target].hunk_ids.contains(id) {
+                rehomed[target].hunk_ids.push(id.clone());
+            }
+        }
+    }
+    rehomed.retain(|step| !step.hunk_ids.is_empty());
+    rehomed
 }
 
 /// Full pipeline: prompt → agent → validated walkthrough.
@@ -284,6 +323,31 @@ mod tests {
         assert_eq!(walkthrough.steps.len(), 2, "ghost-only step dropped");
         assert_eq!(walkthrough.steps[0].hunk_ids, vec!["a.rs#0"]);
         assert!(!walkthrough.fingerprint.is_empty());
+    }
+
+    #[test]
+    fn files_split_across_steps_are_consolidated() {
+        // a.rs has hunks #0 and #1; the agent wrongly puts them in different steps.
+        let reply = r#"{"summary":"s","steps":[
+            {"title":"First","narrative":"...","hunkIds":["a.rs#0"]},
+            {"title":"Second","narrative":"...","hunkIds":["b.rs#0","a.rs#1"]}
+        ]}"#;
+        let walkthrough = parse_response(reply, &files()).unwrap();
+        assert_eq!(walkthrough.steps.len(), 2);
+        // a.rs#1 moved into the step that owns a.rs; b.rs stays put.
+        assert_eq!(walkthrough.steps[0].hunk_ids, vec!["a.rs#0", "a.rs#1"]);
+        assert_eq!(walkthrough.steps[1].hunk_ids, vec!["b.rs#0"]);
+    }
+
+    #[test]
+    fn step_emptied_by_consolidation_is_dropped() {
+        let reply = r#"{"summary":"s","steps":[
+            {"title":"Owns both","narrative":"...","hunkIds":["a.rs#0","b.rs#0"]},
+            {"title":"Only strays","narrative":"...","hunkIds":["a.rs#1"]}
+        ]}"#;
+        let walkthrough = parse_response(reply, &files()).unwrap();
+        assert_eq!(walkthrough.steps.len(), 1);
+        assert_eq!(walkthrough.steps[0].hunk_ids, vec!["a.rs#0", "b.rs#0", "a.rs#1"]);
     }
 
     #[test]

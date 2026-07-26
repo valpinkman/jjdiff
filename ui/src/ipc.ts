@@ -147,7 +147,7 @@ export const generateWalkthrough = (
         ignoreWhitespace,
         context,
       })
-    : mock((m) => m.mockGenerateWalkthrough()).then((walkthrough) => walkthrough);
+    : mock((m) => m.mockGenerateWalkthrough(changeId)).then((walkthrough) => walkthrough);
 export const getConfig = (): Promise<Config> =>
   IN_TAURI ? invoke<Config>('get_config') : mock((m) => m.mockConfig);
 export const getRepoState = (): Promise<RepoState> =>

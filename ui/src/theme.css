@@ -238,6 +238,13 @@ jj-app .tab.active {
   box-shadow: inset 0 -2px 0 var(--jj-accent);
 }
 
+jj-app .tab .stale-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--jj-accent);
+  flex: none;
+}
+
 jj-app .tab .count {
   font-size: 9px;
   font-weight: 400;
