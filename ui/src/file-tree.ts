@@ -1,6 +1,7 @@
 import { css, html, LitElement, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
+import { fileIcon, folderIcon } from './file-icons.js';
 import type { FilePatch } from './ipc.js';
 
 interface DirNode {
@@ -10,74 +11,87 @@ interface DirNode {
   files: FilePatch[];
 }
 
-/** Collapsible changed-files tree. Selecting a file focuses the diff on it. */
+/**
+ * VS Code-style changed-files tree: chevrons + folder icons, per-filetype icons,
+ * filenames colored by status, single-child directory chains compacted (`src/sync`).
+ * Selecting a file focuses the diff on it.
+ */
 @customElement('jj-file-tree')
 export class FileTree extends LitElement {
   static override styles = css`
     :host {
       display: block;
-      font-size: 12px;
+      font-size: 12.5px;
+      user-select: none;
     }
-    .dir,
-    .file {
+    .row {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       width: 100%;
       border: 0;
       background: none;
       color: var(--jj-fg);
       font: inherit;
       text-align: left;
-      padding: 3px 6px;
+      padding: 2px 6px;
       border-radius: 5px;
       cursor: pointer;
       white-space: nowrap;
+      line-height: 20px;
     }
-    .dir:hover,
-    .file:hover {
+    .row:hover {
       background: var(--jj-bg-panel);
     }
-    .file.selected {
+    .row.selected {
       background: var(--jj-bg-panel);
       outline: 1px solid var(--jj-accent);
     }
-    .dir {
+    .chevron {
+      flex: none;
+      width: 12px;
+      font-size: 9px;
       color: var(--jj-fg-muted);
+      text-align: center;
     }
-    .twist {
-      width: 10px;
+    .icon {
+      flex: none;
+      display: inline-flex;
       color: var(--jj-fg-muted);
     }
     .name {
       overflow: hidden;
       text-overflow: ellipsis;
       flex: 1;
+      min-width: 0;
     }
-    .dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      flex: none;
+    .dir-name {
+      color: var(--jj-fg);
     }
-    .dot.added { background: var(--jj-added-fg); }
-    .dot.deleted { background: var(--jj-removed-fg); }
-    .dot.modified { background: var(--jj-accent); }
-    .dot.renamed { background: var(--jj-fg-muted); }
-    .counts {
-      font-family: var(--jj-mono);
-      font-size: 10px;
-    }
-    .counts .plus { color: var(--jj-added-fg); }
-    .counts .minus { color: var(--jj-removed-fg); }
-    .file.viewed .name {
+    .name.added { color: var(--jj-added-fg); }
+    .name.deleted { color: var(--jj-removed-fg); text-decoration: line-through; }
+    .name.modified { color: var(--jj-fg); }
+    .name.renamed { color: var(--jj-accent); }
+    .row.viewed .name {
       color: var(--jj-fg-muted);
       text-decoration: line-through;
       text-decoration-color: var(--jj-border);
     }
-    .check {
-      color: var(--jj-added-fg);
+    .meta {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--jj-mono);
       font-size: 10px;
+    }
+    .meta .plus { color: var(--jj-added-fg); }
+    .meta .minus { color: var(--jj-removed-fg); }
+    .meta .check { color: var(--jj-added-fg); font-size: 10px; }
+    .empty {
+      color: var(--jj-fg-muted);
+      font-style: italic;
+      padding: 6px 8px;
     }
   `;
 
@@ -88,45 +102,57 @@ export class FileTree extends LitElement {
   @state() private collapsed = new Set<string>();
 
   protected override render() {
+    if (this.files.length === 0) {
+      return html`<div class="empty">No changed files</div>`;
+    }
     const root = buildTree(this.files);
     return html`${this.renderDir(root, 0)}`;
   }
 
   private renderDir(node: DirNode, depth: number): TemplateResult {
-    const pad = (n: number) => `padding-left:${6 + n * 12}px`;
+    const pad = (n: number) => `padding-left:${6 + n * 14}px`;
     return html`
       ${[...node.dirs.values()].map((dir) => {
-        const isCollapsed = this.collapsed.has(dir.path);
+        // Compact single-child chains: src/ → sync/ with nothing else becomes "src/sync".
+        let display = dir.name;
+        let target = dir;
+        while (target.files.length === 0 && target.dirs.size === 1) {
+          const only = [...target.dirs.values()][0]!;
+          display = `${display}/${only.name}`;
+          target = only;
+        }
+        const isCollapsed = this.collapsed.has(target.path);
         return html`
-          <button class="dir" style=${pad(depth)} @click=${() => this.toggle(dir.path)}>
-            <span class="twist">${isCollapsed ? '▸' : '▾'}</span>
-            <span class="name">${dir.name}</span>
+          <button class="row" style=${pad(depth)} @click=${() => this.toggle(target.path)}>
+            <span class="chevron">${isCollapsed ? '▶' : '▼'}</span>
+            <span class="icon">${folderIcon(!isCollapsed)}</span>
+            <span class="name dir-name">${display}</span>
           </button>
-          ${isCollapsed ? nothing : this.renderDir(dir, depth + 1)}
+          ${isCollapsed ? nothing : this.renderDir(target, depth + 1)}
         `;
       })}
-      ${node.files.map(
-        (file) => html`
+      ${node.files.map((file) => {
+        const isViewed = this.viewed.has(file.path);
+        return html`
           <button
-            class="file ${file.path === this.selected ? 'selected' : ''} ${this.viewed.has(
-              file.path,
-            )
+            class="row ${file.path === this.selected ? 'selected' : ''} ${isViewed
               ? 'viewed'
               : ''}"
             style=${pad(depth)}
             title=${file.path}
             @click=${() => this.pick(file)}
           >
-            <span class="dot ${file.status}"></span>
-            <span class="name">${basename(file.path)}</span>
-            ${this.viewed.has(file.path) ? html`<span class="check">✓</span>` : nothing}
-            <span class="counts">
+            <span class="chevron"></span>
+            <span class="icon">${fileIcon(file.path)}</span>
+            <span class="name ${file.status}">${basename(file.path)}</span>
+            <span class="meta">
+              ${isViewed ? html`<span class="check">✓</span>` : nothing}
               ${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
               ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}
             </span>
           </button>
-        `,
-      )}
+        `;
+      })}
     `;
   }
 

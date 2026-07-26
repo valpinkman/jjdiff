@@ -138,6 +138,99 @@ jj-app > aside {
   min-height: 0;
 }
 
+jj-app .tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid var(--jj-border);
+}
+
+jj-app .tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 0;
+  background: none;
+  color: var(--jj-fg-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+jj-app .tab:hover {
+  background: var(--jj-bg-panel);
+  color: var(--jj-fg);
+}
+
+jj-app .tab.active {
+  background: var(--jj-bg-panel);
+  color: var(--jj-accent);
+  box-shadow: inset 0 -2px 0 var(--jj-accent);
+}
+
+jj-app .tab .count {
+  font-size: 10px;
+  font-weight: 400;
+  font-family: var(--jj-mono);
+  background: var(--jj-hunk-bg);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+jj-app .context-card {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: calc(100% - 12px);
+  margin: 8px 6px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--jj-border);
+  border-radius: 6px;
+  background: var(--jj-bg-panel);
+  color: var(--jj-fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+jj-app .context-card:hover {
+  border-color: var(--jj-accent);
+}
+
+jj-app .context-card .id {
+  font-family: var(--jj-mono);
+  color: var(--jj-accent);
+  font-size: 11px;
+  flex: none;
+}
+
+jj-app .context-card .desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+jj-app .context-card .desc.empty-desc {
+  color: var(--jj-fg-muted);
+  font-style: italic;
+}
+
+jj-app .context-card .progress {
+  flex: none;
+  font-size: 10px;
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-mono);
+}
+
 jj-app .section-title {
   font-size: 10px;
   font-weight: 700;
@@ -148,7 +241,8 @@ jj-app .section-title {
 }
 
 jj-app .stack {
-  padding: 0 6px;
+  padding: 6px;
+  overflow-y: auto;
 }
 
 jj-app .change {
@@ -209,7 +303,7 @@ jj-app .badge.warn {
 jj-app .files {
   flex: 1;
   overflow-y: auto;
-  padding: 0 6px 10px;
+  padding: 6px 6px 10px;
 }
 
 jj-app > main {

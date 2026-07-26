@@ -63,6 +63,7 @@ export class App extends LitElement {
   @state() private description = '';
   @state() private barOpen = false;
   @state() private viewMode: ViewMode = 'full';
+  @state() private sidebarTab: 'stack' | 'files' | 'steps' = 'stack';
   @state() private walkthrough: Walkthrough | null = null;
   @state() private walkStale = false;
   @state() private walkActive = false;
@@ -236,6 +237,7 @@ export class App extends LitElement {
     this.viewMode = 'full';
     this.walkActive = false;
     this.walkStep = -1;
+    this.sidebarTab = 'files';
     const target = this.repo?.stack.find((c) => c.changeId === change.changeId);
     this.description = target?.description ?? '';
     this.seededFor = change.changeId;
@@ -281,6 +283,7 @@ export class App extends LitElement {
       this.walkStale = false;
       this.walkActive = true;
       this.walkStep = -1;
+      this.sidebarTab = 'steps';
     }).finally(() => {
       this.generating = false;
     });
@@ -293,11 +296,15 @@ export class App extends LitElement {
     }
     this.walkActive = true;
     this.walkStep = -1;
+    this.sidebarTab = 'steps';
   }
 
   private exitWalkthrough() {
     this.walkActive = false;
     this.walkStep = -1;
+    if (this.sidebarTab === 'steps') {
+      this.sidebarTab = 'files';
+    }
   }
 
   private moveStep(delta: number) {
@@ -526,58 +533,84 @@ export class App extends LitElement {
         </button>
       </header>
       <aside>
-        <div class="section-title">Stack</div>
-        <div class="stack">
-          ${repeat(
-            this.repo.stack,
-            (item) => item.changeId,
-            (item) => html`
-              <button
-                class="change ${item.changeId === selectedId ? 'selected' : ''}"
-                @click=${() => this.select(item)}
+        <nav class="tabs">
+          <button
+            class="tab ${this.sidebarTab === 'stack' ? 'active' : ''}"
+            @click=${() => (this.sidebarTab = 'stack')}
+          >
+            Stack
+          </button>
+          <button
+            class="tab ${this.sidebarTab === 'files' ? 'active' : ''}"
+            @click=${() => (this.sidebarTab = 'files')}
+          >
+            Files
+            <span class="count">${this.files.length}</span>
+          </button>
+          ${this.walkActive && this.walkthrough
+            ? html`<button
+                class="tab ${this.sidebarTab === 'steps' ? 'active' : ''}"
+                @click=${() => (this.sidebarTab = 'steps')}
               >
-                <span class="id">${item.changeId.slice(0, 8)}</span>
-                ${item.workingCopy ? html`<span class="badge">@</span>` : nothing}
-                ${item.conflict ? html`<span class="badge warn">conflict</span>` : nothing}
-                ${item.immutable ? html`<span class="badge">immutable</span>` : nothing}
-                ${item.bookmarks.map((b) => html`<span class="badge">${b}</span>`)}
-                <span class="desc ${item.description ? '' : 'empty-desc'}">
-                  ${item.description.split('\n')[0] || '(no description)'}
-                </span>
-              </button>
-            `,
-          )}
-        </div>
-        ${this.walkActive && this.walkthrough
-          ? html`
-              <div class="section-title">
-                Steps (${this.walkthrough.steps.length})
-              </div>
-              <div class="files">
-                <jj-walkthrough-panel
-                  .walkthrough=${this.walkthrough}
-                  .files=${this.files}
-                  .viewed=${this.viewedPaths}
-                  .current=${this.walkStep}
-                  @step-selected=${(event: CustomEvent<number>) => {
-                    this.walkStep = event.detail;
-                  }}
-                ></jj-walkthrough-panel>
-              </div>
-            `
+                Steps
+                <span class="count">${this.walkthrough.steps.length}</span>
+              </button>`
+            : nothing}
+        </nav>
+        ${this.sidebarTab === 'stack'
+          ? html`<div class="stack">
+              ${repeat(
+                this.repo.stack,
+                (item) => item.changeId,
+                (item) => html`
+                  <button
+                    class="change ${item.changeId === selectedId ? 'selected' : ''}"
+                    @click=${() => this.select(item)}
+                  >
+                    <span class="id">${item.changeId.slice(0, 8)}</span>
+                    ${item.workingCopy ? html`<span class="badge">@</span>` : nothing}
+                    ${item.conflict ? html`<span class="badge warn">conflict</span>` : nothing}
+                    ${item.immutable ? html`<span class="badge">immutable</span>` : nothing}
+                    ${item.bookmarks.map((b) => html`<span class="badge">${b}</span>`)}
+                    <span class="desc ${item.description ? '' : 'empty-desc'}">
+                      ${item.description.split('\n')[0] || '(no description)'}
+                    </span>
+                  </button>
+                `,
+              )}
+            </div>`
           : html`
-              <div class="section-title">
-                Files (${this.viewedPaths.size ? `${this.viewedPaths.size}/` : ''}${this.files.length})
-              </div>
+              ${change
+                ? html`<button class="context-card" @click=${() => (this.sidebarTab = 'stack')}>
+                    <span class="id">${change.changeId.slice(0, 8)}</span>
+                    ${change.workingCopy ? html`<span class="badge">@</span>` : nothing}
+                    <span class="desc ${change.description ? '' : 'empty-desc'}">
+                      ${change.description.split('\n')[0] || '(no description)'}
+                    </span>
+                    ${this.viewedPaths.size
+                      ? html`<span class="progress">${this.viewedPaths.size}/${this.files.length} viewed</span>`
+                      : nothing}
+                  </button>`
+                : nothing}
               <div class="files">
-                <jj-file-tree
-                  .files=${this.files}
-                  .selected=${this.focusPath}
-                  .viewed=${this.viewedPaths}
-                  @file-selected=${(event: CustomEvent<string | null>) => {
-                    this.focusPath = event.detail;
-                  }}
-                ></jj-file-tree>
+                ${this.sidebarTab === 'steps' && this.walkthrough
+                  ? html`<jj-walkthrough-panel
+                      .walkthrough=${this.walkthrough}
+                      .files=${this.files}
+                      .viewed=${this.viewedPaths}
+                      .current=${this.walkStep}
+                      @step-selected=${(event: CustomEvent<number>) => {
+                        this.walkStep = event.detail;
+                      }}
+                    ></jj-walkthrough-panel>`
+                  : html`<jj-file-tree
+                      .files=${this.files}
+                      .selected=${this.focusPath}
+                      .viewed=${this.viewedPaths}
+                      @file-selected=${(event: CustomEvent<string | null>) => {
+                        this.focusPath = event.detail;
+                      }}
+                    ></jj-file-tree>`}
               </div>
             `}
       </aside>
