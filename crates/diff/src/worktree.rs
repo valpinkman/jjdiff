@@ -4,10 +4,10 @@
 //! object store with gix. This is what makes the working-copy view *live* while never taking
 //! jj's working-copy lock and never writing an operation (PLAN.md).
 //!
-//! Known M1 limits, all marked in output rather than silently wrong:
-//! - No rename detection (jj itself only resolves copies at snapshot time).
+//! Known limits, all marked in output rather than silently wrong:
 //! - Files inside jj conflict trees (`.jjconflict-*` entries) are reported as skipped.
 //! - Symlinks and exec-bit-only changes are ignored.
+//! - Rename detection is exact-content only (see [`detect_renames`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -83,8 +83,67 @@ pub fn diff_worktree(
             patches.push(patch);
         }
     }
+    detect_renames(&mut patches);
     crate::assign_hunk_ids(&mut patches);
     Ok(patches)
+}
+
+/// Pair deletions with additions of identical content into renames.
+///
+/// Exact-content only: a delete and an add whose hunks carry the same lines are the same
+/// file moved. Similarity-based detection (git's `-M50%`) is deliberately not attempted —
+/// a wrong pairing reads far worse in review than an honest add + delete, and jj itself
+/// only resolves copies at snapshot time.
+fn detect_renames(patches: &mut Vec<FilePatch>) {
+    let content = |patch: &FilePatch| -> Option<String> {
+        if patch.binary || patch.skipped.is_some() || patch.hunks.is_empty() {
+            return None;
+        }
+        Some(
+            patch
+                .hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    };
+
+    let deleted: Vec<(usize, String)> = patches
+        .iter()
+        .enumerate()
+        .filter(|(_, patch)| patch.status == FileStatus::Deleted)
+        .filter_map(|(index, patch)| content(patch).map(|text| (index, text)))
+        .collect();
+    if deleted.is_empty() {
+        return;
+    }
+
+    let mut drop_indices: Vec<usize> = Vec::new();
+    for index in 0..patches.len() {
+        if patches[index].status != FileStatus::Added {
+            continue;
+        }
+        let Some(added_text) = content(&patches[index]) else { continue };
+        let matched = deleted
+            .iter()
+            .find(|(other, text)| *text == added_text && !drop_indices.contains(other));
+        if let Some((source, _)) = matched {
+            drop_indices.push(*source);
+            patches[index].status = FileStatus::Renamed;
+            patches[index].old_path = Some(patches[*source].path.clone());
+            // A pure rename has no content delta to review.
+            patches[index].hunks.clear();
+            patches[index].added = 0;
+            patches[index].removed = 0;
+        }
+    }
+
+    drop_indices.sort_unstable();
+    for index in drop_indices.into_iter().rev() {
+        patches.remove(index);
+    }
 }
 
 /// Walk `tree` recording blob entries; `.jjconflict-*` subtrees become conflicted paths.
@@ -423,6 +482,107 @@ mod tests {
             .unwrap();
         let top = String::from_utf8_lossy(&out.stdout);
         assert!(top.contains("commit"), "unexpected top operation: {top}");
+    }
+
+    #[test]
+    fn exact_content_moves_become_renames() {
+        let mut patches = vec![
+            FilePatch {
+                path: "old/name.rs".into(),
+                old_path: None,
+                status: FileStatus::Deleted,
+                binary: false,
+                skipped: None,
+                added: 0,
+                removed: 2,
+                hunks: vec![Hunk {
+                    id: String::new(),
+                    old_start: 1,
+                    old_lines: 2,
+                    new_start: 0,
+                    new_lines: 0,
+                    context: String::new(),
+                    lines: vec![
+                        Line::new(LineKind::Removed, "fn main() {}"),
+                        Line::new(LineKind::Removed, "// tail"),
+                    ],
+                }],
+            },
+            FilePatch {
+                path: "new/name.rs".into(),
+                old_path: None,
+                status: FileStatus::Added,
+                binary: false,
+                skipped: None,
+                added: 2,
+                removed: 0,
+                hunks: vec![Hunk {
+                    id: String::new(),
+                    old_start: 0,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: 2,
+                    context: String::new(),
+                    lines: vec![
+                        Line::new(LineKind::Added, "fn main() {}"),
+                        Line::new(LineKind::Added, "// tail"),
+                    ],
+                }],
+            },
+        ];
+        detect_renames(&mut patches);
+        assert_eq!(patches.len(), 1, "the delete is consumed by the rename");
+        assert_eq!(patches[0].status, FileStatus::Renamed);
+        assert_eq!(patches[0].path, "new/name.rs");
+        assert_eq!(patches[0].old_path.as_deref(), Some("old/name.rs"));
+        assert!(patches[0].hunks.is_empty(), "a pure rename has no delta");
+    }
+
+    #[test]
+    fn differing_content_stays_add_plus_delete() {
+        let line = |kind, text: &str| Line::new(kind, text);
+        let mut patches = vec![
+            FilePatch {
+                path: "a.rs".into(),
+                old_path: None,
+                status: FileStatus::Deleted,
+                binary: false,
+                skipped: None,
+                added: 0,
+                removed: 1,
+                hunks: vec![Hunk {
+                    id: String::new(),
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 0,
+                    new_lines: 0,
+                    context: String::new(),
+                    lines: vec![line(LineKind::Removed, "one")],
+                }],
+            },
+            FilePatch {
+                path: "b.rs".into(),
+                old_path: None,
+                status: FileStatus::Added,
+                binary: false,
+                skipped: None,
+                added: 1,
+                removed: 0,
+                hunks: vec![Hunk {
+                    id: String::new(),
+                    old_start: 0,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: 1,
+                    context: String::new(),
+                    lines: vec![line(LineKind::Added, "two")],
+                }],
+            },
+        ];
+        detect_renames(&mut patches);
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].status, FileStatus::Deleted);
+        assert_eq!(patches[1].status, FileStatus::Added);
     }
 
     #[test]

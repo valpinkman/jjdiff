@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ignore::gitignore::Gitignore;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
 #[derive(Debug, thiserror::Error)]
@@ -83,10 +83,45 @@ fn start(
     Ok(RepoWatcher { _watcher: watcher, _thread: thread })
 }
 
+/// Collect the repo's `.gitignore` files — root plus nested — as one matcher per directory.
+///
+/// They cannot be merged into a single [`Gitignore`]: a matcher resolves its patterns
+/// against the base directory it was built with, so folding `web/.gitignore` into a
+/// root-based matcher would apply `*.map` repo-wide. Each file therefore keeps its own
+/// directory as base, and matching walks the applicable ones.
+///
+/// The walk that finds them is itself gitignore-aware, so an ignored directory's own
+/// `.gitignore` is never read (and `target/`-sized trees are never descended). Built when a
+/// watcher starts; a newly added `.gitignore` takes effect on the next app run.
+fn build_ignores(root: &Path) -> Vec<(PathBuf, Gitignore)> {
+    let mut ignores = Vec::new();
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .filter_entry(|entry| entry.file_name() != ".git" && entry.file_name() != ".jj")
+        .build();
+    for entry in walker.flatten() {
+        if entry.file_name() != ".gitignore" || !entry.path().is_file() {
+            continue;
+        }
+        let Some(dir) = entry.path().parent() else { continue };
+        let mut builder = GitignoreBuilder::new(dir);
+        // add() returns Some(error) on failure; a broken file must not sink the rest.
+        if builder.add(entry.path()).is_some() {
+            continue;
+        }
+        if let Ok(gitignore) = builder.build() {
+            ignores.push((dir.to_path_buf(), gitignore));
+        }
+    }
+    // Deepest last: nested rules are evaluated after the ones they refine.
+    ignores.sort_by_key(|(dir, _)| dir.components().count());
+    ignores
+}
+
 /// Decides which fs-event paths matter: not under `.git`/`.jj`, not gitignored.
 struct PathFilter {
     root: PathBuf,
-    gitignore: Option<Gitignore>,
+    gitignores: Vec<(PathBuf, Gitignore)>,
 }
 
 impl PathFilter {
@@ -94,13 +129,8 @@ impl PathFilter {
         // fsevents on macOS reports symlink-resolved paths (/tmp → /private/tmp, /var →
         // /private/var); the root must be canonical or strip_prefix rejects every event.
         let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let gitignore_file = root.join(".gitignore");
-        // M2 scope: the root .gitignore covers the storm-prone directories (target/,
-        // node_modules/, dist/). Nested .gitignores are not consulted.
-        let gitignore = gitignore_file
-            .exists()
-            .then(|| Gitignore::new(&gitignore_file).0);
-        PathFilter { root, gitignore }
+        let gitignores = build_ignores(&root);
+        PathFilter { root, gitignores }
     }
 
     fn is_relevant(&self, path: &Path) -> bool {
@@ -113,9 +143,11 @@ impl PathFilter {
                 return false;
             }
         }
-        if let Some(gitignore) = &self.gitignore {
-            let is_dir = path.is_dir();
-            if gitignore.matched_path_or_any_parents(relative, is_dir).is_ignore() {
+        let is_dir = path.is_dir();
+        for (dir, gitignore) in &self.gitignores {
+            // A .gitignore only governs its own subtree.
+            let Ok(scoped) = path.strip_prefix(dir) else { continue };
+            if gitignore.matched_path_or_any_parents(scoped, is_dir).is_ignore() {
                 return false;
             }
         }
@@ -141,6 +173,26 @@ mod tests {
             watch_working_copy(&missing, Duration::from_millis(10), || {}),
             Err(WatchError::MissingDir(_))
         ));
+    }
+
+    #[test]
+    fn path_filter_honours_nested_gitignores() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let root = root.as_path();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+        std::fs::create_dir_all(root.join("web/dist")).unwrap();
+        std::fs::write(root.join("web/.gitignore"), "dist/\n*.map\n").unwrap();
+        let filter = PathFilter::new(root);
+
+        assert!(filter.is_relevant(&root.join("web/src/app.ts")));
+        // Nested rules apply relative to their own directory...
+        assert!(!filter.is_relevant(&root.join("web/dist/bundle.js")));
+        assert!(!filter.is_relevant(&root.join("web/app.js.map")));
+        // ...and do not leak outside it.
+        assert!(filter.is_relevant(&root.join("other/app.js.map")));
+        // Root rules still hold.
+        assert!(!filter.is_relevant(&root.join("target/debug/x")));
     }
 
     #[test]
