@@ -71,6 +71,8 @@ export interface LaunchOptions {
   revset: string | null;
   /** `-w`: generate a walkthrough for the launch target immediately. */
   walkthrough: boolean;
+  /** `--walkthrough-file`: import an agent-authored walkthrough instead of generating. */
+  walkthroughFile: string | null;
 }
 
 export interface WalkthroughStep {
@@ -128,7 +130,12 @@ const mock = async <T>(load: (m: typeof import('./mock.js')) => T): Promise<T> =
 export const getLaunchOptions = (): Promise<LaunchOptions> =>
   IN_TAURI
     ? invoke<LaunchOptions>('launch_options')
-    : Promise.resolve({ repoPath: '/mock', revset: null, walkthrough: false });
+    : Promise.resolve({
+        repoPath: '/mock',
+        revset: null,
+        walkthrough: false,
+        walkthroughFile: null,
+      });
 export const getWalkthrough = (
   changeId: string,
   revset: string | null,
@@ -186,6 +193,17 @@ export const setViewed = (changeId: string, path: string, viewed: boolean) =>
   IN_TAURI ? invoke<void>('set_viewed', { changeId, path, viewed }) : Promise.resolve();
 export const markReviewed = (changeId: string, commitId: string) =>
   IN_TAURI ? invoke<void>('mark_reviewed', { changeId, commitId }) : Promise.resolve();
+
+/** Import an agent-authored walkthrough JSON file for a change. */
+export const importWalkthrough = (
+  changeId: string,
+  revset: string | null,
+  ignoreWhitespace: boolean,
+  path: string,
+): Promise<Walkthrough> =>
+  IN_TAURI
+    ? invoke<Walkthrough>('import_walkthrough', { changeId, revset, ignoreWhitespace, path })
+    : mock((m) => m.mockWalkthrough);
 
 /** Full text of a file for expanding diff context; null revset = working copy. */
 export const getFileContent = (revset: string | null, path: string): Promise<string> =>

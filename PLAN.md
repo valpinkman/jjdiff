@@ -144,10 +144,36 @@ filters the diff to its hunks; ←/→ navigation. Backend sits behind an `Agent
 Claude only for now, more CLIs later. Verified end-to-end against the real CLI
 (`cargo test -p jjdiff-app real_claude -- --ignored`).
 
-**Later.** More walkthrough backends (Codex/OpenCode) + agent-authored walkthroughs (skill
-shim); signed macOS build + Homebrew tap (needs Apple identity / CI); GitHub PR review via
-`gh` on colocated bookmarks; shared-review web service; hunk-level squash/split; rename
-detection in the live working-copy view; nested .gitignore support in the fs watcher.
+**M6 — daily-driver polish. ✅ DONE.** Keyboard-first review (`j`/`k` files, `n`/`p`
+hunks, `v` viewed) with a virtualizer-driven cursor; find-in-diffs (`Mod+F`, live match
+count, wrap-around); tree-click scrolls instead of filtering plus a sticky file
+breadcrumb; expand-context (`file_content` command; expanders derived from hunk gaps so
+they appear before the file is fetched); word-wrap toggle; `jjdiff <revset>` selects a
+change on launch.
+
+**M7 — agent + robustness. ✅ DONE.** All four agent CLIs behind one `CliBackend`
+(Claude/Codex/OpenCode/Pi — one spawn path, per-backend argv, envelope extraction covering
+single-object, JSONL-stream and nested-message shapes), selected via `[walkthrough]
+backend`. Agent-authored walkthroughs: `jjdiff --print-hunks` dumps the diff with stable
+ids headlessly, `--walkthrough-file` imports the agent's JSON through the same validation
+as a generated one, and `skills/jjdiff/SKILL.md` documents the loop. `check_version()`
+gates on jj ≥ 0.33. Worktree rename detection (exact-content only) and nested `.gitignore`
+support in the fs watcher close the two known correctness gaps.
+
+**Deferred, with reasons.**
+- *Signed macOS build + Homebrew tap* — blocked on an Apple Developer identity; the
+  unsigned bundle already builds (`pnpm tauri build`).
+- *Forge PR review* — the repo now lives on tangled.sh, so the original `gh`-based design
+  no longer fits; wants a rethink against tangled's API rather than a port.
+- *Shared-review web service* — weeks of work (codiff's Cloudflare equivalent) and
+  questionable value before there is a second user.
+- *Hunk-level squash/split* — needs a scripted diff-editor shim or jj-lib; file-level
+  `squash`/`absorb` covers most of the need today.
+- *Line-anchored review comments* — designed (change-id keyed, like viewed flags) but not
+  built; would move the JSON store to SQLite.
+- *Full-file syntax highlighting* — expand-context lines are deliberately untokenized;
+  proper highlighting wants the whole file through shiki, which needs a highlight cache
+  rework.
 
 ## Risks
 

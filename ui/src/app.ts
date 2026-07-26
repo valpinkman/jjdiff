@@ -21,6 +21,7 @@ import {
   getRepoState,
   getReviewStatus,
   getWalkthrough,
+  importWalkthrough,
   markReviewed,
   newChange,
   onRepoChanged,
@@ -190,7 +191,24 @@ export class App extends LitElement {
           this.select(target);
         }
       }
-      if (launch.walkthrough) {
+      if (launch.walkthroughFile) {
+        // Agent-authored: import and enter guided review directly, no generation.
+        const change = this.selectedChange;
+        if (change) {
+          await this.run(async () => {
+            this.walkthrough = await importWalkthrough(
+              change.changeId,
+              this.isWorkingCopySelected ? null : change.changeId,
+              this.ignoreWhitespace,
+              launch.walkthroughFile!,
+            );
+            this.walkStale = false;
+            this.walkActive = true;
+            this.walkStep = -1;
+            this.sidebarTab = 'steps';
+          });
+        }
+      } else if (launch.walkthrough) {
         if (this.walkthrough && !this.walkStale) {
           this.walkActive = true;
         } else {

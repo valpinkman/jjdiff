@@ -20,7 +20,7 @@ use jjdiff_vcs::{Change, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
-/// `jjdiff [revset] [-R|--repo <path>] [-w|--walkthrough]`
+/// `jjdiff [revset] [-R|--repo <path>] [-w|--walkthrough] [--walkthrough-file <path>]`
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOptions {
@@ -28,6 +28,8 @@ pub struct LaunchOptions {
     pub revset: Option<String>,
     /// Generate a walkthrough for the launch target immediately.
     pub walkthrough: bool,
+    /// Agent-authored walkthrough JSON to import instead of generating one.
+    pub walkthrough_file: Option<PathBuf>,
 }
 
 impl LaunchOptions {
@@ -35,11 +37,13 @@ impl LaunchOptions {
         let mut repo_path: Option<PathBuf> = None;
         let mut revset: Option<String> = None;
         let mut walkthrough = false;
+        let mut walkthrough_file: Option<PathBuf> = None;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "-R" | "--repo" => repo_path = args.next().map(PathBuf::from),
                 "-w" | "--walkthrough" => walkthrough = true,
+                "--walkthrough-file" => walkthrough_file = args.next().map(PathBuf::from),
                 // Ignore unknown flags (tauri dev passes its own).
                 flag if flag.starts_with('-') => {}
                 positional if revset.is_none() => revset = Some(positional.to_string()),
@@ -49,7 +53,7 @@ impl LaunchOptions {
         let repo_path = repo_path
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        LaunchOptions { repo_path, revset, walkthrough }
+        LaunchOptions { repo_path, revset, walkthrough, walkthrough_file }
     }
 }
 
@@ -336,6 +340,34 @@ fn set_viewed(
     Ok(())
 }
 
+/// Import an agent-authored walkthrough for `change_id`: same validation as a generated
+/// one (hunk ids checked against the real diff, files kept whole), then stored so it
+/// behaves identically — staleness, stack review, everything.
+#[tauri::command]
+async fn import_walkthrough(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+    path: String,
+) -> Result<walkthrough::Walkthrough, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    let imported = blocking(move || {
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {path}: {error}"))?;
+        let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
+        walkthrough::parse_response(&raw, &files)
+    })
+    .await?;
+    state
+        .review
+        .lock()
+        .expect("review lock")
+        .set_walkthrough(&repo_key, &change_id, imported.clone());
+    Ok(imported)
+}
+
 /// Full text of a file, for expanding diff context. `revset: None` = the on-disk
 /// working-copy version, matching what the live worktree diff shows.
 #[tauri::command]
@@ -509,7 +541,8 @@ pub fn run() {
             open_repository,
             pick_repository,
             recent_repos,
-            file_content
+            file_content,
+            import_walkthrough
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
