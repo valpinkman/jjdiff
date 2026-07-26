@@ -1,0 +1,19 @@
+when:
+  - event: ["push", "manual"]
+    branch: ["main"]
+  - event: ["pull_request"]
+    branch: ["main"]
+engine: microvm
+dependencies:
+  - gcc
+  - cargo
+  - clippy
+  - rustc
+  - nodejs_20
+steps:
+  - name: "Rust tests"
+    command: "cargo test --workspace"
+  - name: "Rust lint"
+    command: "cargo clippy --workspace -- -D warnings"
+  - name: "Typecheck + bundle UI"
+    command: "pnpm install && pnpm build"
