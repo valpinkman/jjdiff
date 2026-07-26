@@ -187,6 +187,12 @@ export const setViewed = (changeId: string, path: string, viewed: boolean) =>
 export const markReviewed = (changeId: string, commitId: string) =>
   IN_TAURI ? invoke<void>('mark_reviewed', { changeId, commitId }) : Promise.resolve();
 
+/** Full text of a file for expanding diff context; null revset = working copy. */
+export const getFileContent = (revset: string | null, path: string): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('file_content', { revset, path })
+    : mock((m) => m.mockFileContent(path));
+
 /** Switch the app to another repository (path must be a colocated jj repo). */
 export const openRepository = (path: string) =>
   IN_TAURI ? invoke<void>('open_repository', { path }) : Promise.resolve();

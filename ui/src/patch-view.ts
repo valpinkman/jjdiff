@@ -5,7 +5,7 @@ import { virtualize, virtualizerRef } from '@lit-labs/virtualizer/virtualize.js'
 import { HighlightStore } from './highlight.js';
 import type { FilePatch, Line } from './ipc.js';
 import { renderLineContent } from './render-line.js';
-import { buildRows, type DiffLayout, type HlRef, type Row } from './rows.js';
+import { buildRows, type DiffLayout, type Expansion, type HlRef, type Row } from './rows.js';
 
 /**
  * Virtualized diff renderer.
@@ -36,6 +36,10 @@ export class PatchView extends LitElement {
   @property() searchQuery: string | null = null;
   /** Wrap long lines instead of scrolling horizontally. */
   @property({ type: Boolean }) wordWrap = false;
+  /** Full new-side file text (split into lines) for context expansion. */
+  @property({ attribute: false }) fileLines: ReadonlyMap<string, string[]> = new Map();
+  /** Extra context pulled in per hunk. */
+  @property({ attribute: false }) expansions: ReadonlyMap<string, Expansion> = new Map();
 
   @state() private cursor: number | null = null;
   @state() private searchCurrent = -1;
@@ -66,9 +70,18 @@ export class PatchView extends LitElement {
       changed.has('files') ||
       changed.has('layout') ||
       changed.has('viewed') ||
-      changed.has('hunkFilter');
+      changed.has('hunkFilter') ||
+      changed.has('fileLines') ||
+      changed.has('expansions');
     if (contentChanged) {
-      this.rows = buildRows(this.files, this.layout, this.viewed, this.hunkFilter);
+      this.rows = buildRows(
+        this.files,
+        this.layout,
+        this.viewed,
+        this.hunkFilter,
+        this.fileLines,
+        this.expansions,
+      );
       if (this.cursor !== null && this.cursor >= this.rows.length) {
         this.cursor = null;
       }
@@ -307,6 +320,26 @@ export class PatchView extends LitElement {
       }
       case 'hunk':
         return html`<div class="hunk-header ${extra}">${row.label}</div>`;
+      case 'expander':
+        return html`<button
+          class="expander ${extra}"
+          title="Show more context"
+          @click=${() =>
+            this.dispatchEvent(
+              new CustomEvent('expand-context', {
+                bubbles: true,
+                composed: true,
+                detail: { path: row.path, hunkId: row.hunkId, direction: row.direction },
+              }),
+            )}
+        >
+          <span class="chev">${row.direction === 'up' ? '↑' : '↓'}</span>
+          <span class="count"
+            >${row.hidden > 0
+              ? `${row.hidden} hidden line${row.hidden === 1 ? '' : 's'}`
+              : 'more context'}</span
+          >
+        </button>`;
       case 'notice':
         return html`<div class="notice ${extra}">${row.text}</div>`;
       case 'unified':
@@ -385,5 +418,7 @@ declare global {
     'squash-file': CustomEvent<{ path: string; into: string }>;
     'toggle-viewed': CustomEvent<{ path: string; viewed: boolean }>;
     'search-state': CustomEvent<{ count: number; current: number }>;
+    'expand-context': CustomEvent<{ path: string; hunkId: string; direction: 'up' | 'down' }>;
+    'visible-file': CustomEvent<{ path: string }>;
   }
 }

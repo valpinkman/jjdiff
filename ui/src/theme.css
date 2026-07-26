@@ -873,6 +873,33 @@ select.file-action {
   border-top: 1px solid var(--jj-border);
 }
 
+.expander {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--jj-border);
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-hunk-bg);
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  padding: 3px 12px;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.expander:hover {
+  background: color-mix(in srgb, var(--jj-accent) 10%, var(--jj-bg));
+  color: var(--jj-fg);
+}
+
+.expander .chev {
+  color: var(--jj-accent);
+}
+
 .notice {
   padding: 10px 12px;
   color: var(--jj-fg-muted);

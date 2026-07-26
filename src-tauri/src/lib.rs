@@ -336,6 +336,27 @@ fn set_viewed(
     Ok(())
 }
 
+/// Full text of a file, for expanding diff context. `revset: None` = the on-disk
+/// working-copy version, matching what the live worktree diff shows.
+#[tauri::command]
+async fn file_content(
+    state: tauri::State<'_, AppState>,
+    revset: Option<String>,
+    path: String,
+) -> Result<String, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || match revset {
+        Some(revset) => vcs(repo.file_content(&revset, &path)),
+        None => {
+            let full = repo.root().join(&path);
+            std::fs::read_to_string(&full).map_err(|error| {
+                format!("cannot read {}: {error}", full.display())
+            })
+        }
+    })
+    .await
+}
+
 /// Stored walkthrough for a change, plus whether it still matches the current diff.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -487,7 +508,8 @@ pub fn run() {
             generate_walkthrough,
             open_repository,
             pick_repository,
-            recent_repos
+            recent_repos,
+            file_content
         ])
         .setup(|app| {
             let state = app.state::<AppState>();

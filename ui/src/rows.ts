@@ -7,6 +7,15 @@ export type DiffLayout = 'split' | 'unified';
 export type Row =
   | { kind: 'file'; fileIndex: number; file: FilePatch }
   | { kind: 'hunk'; fileIndex: number; label: string }
+  /** Clickable gap between hunks: pulls more context from the full file. */
+  | {
+      kind: 'expander';
+      fileIndex: number;
+      path: string;
+      hunkId: string;
+      direction: 'up' | 'down';
+      hidden: number;
+    }
   | { kind: 'notice'; fileIndex: number; text: string }
   | {
       kind: 'unified';
@@ -35,12 +44,21 @@ export interface SideTexts {
   new: string[];
 }
 
+/** Extra context lines pulled in around a hunk, keyed by hunk id. */
+export interface Expansion {
+  up: number;
+  down: number;
+}
+
 export function buildRows(
   files: FilePatch[],
   layout: DiffLayout,
   viewed: ReadonlySet<string> = new Set(),
   /** When set (walkthrough step), only these hunks render — files without any are skipped. */
   hunkFilter: ReadonlySet<string> | null = null,
+  /** Full new-side file text, split into lines, for context expansion. */
+  fileLines: ReadonlyMap<string, string[]> = new Map(),
+  expansions: ReadonlyMap<string, Expansion> = new Map(),
 ): Row[] {
   const rows: Row[] = [];
   files.forEach((file, fileIndex) => {
@@ -75,11 +93,32 @@ export function buildRows(
       return { side: 'new', index: newIndex++ };
     };
 
+    const lines = fileLines.get(file.path);
+    let previousEnd = 0; // last new-side line already shown, for gap sizing
     for (const hunk of file.hunks) {
       // Filtered-out hunks still consume highlight indices (refFor) so lookups stay in
       // sync with sideTexts(), which always walks every hunk.
       const included = !hunkFilter || hunkFilter.has(hunk.id);
+      const expansion = expansions.get(hunk.id) ?? { up: 0, down: 0 };
       if (included) {
+        // The gap above this hunk is known from hunk boundaries alone, so the expander
+        // renders before any file content has been fetched — clicking it is what loads
+        // the file. Expanded lines only appear once `lines` is present.
+        const gapStart = previousEnd + 1;
+        const shownFrom = lines
+          ? Math.max(gapStart, hunk.newStart - expansion.up)
+          : hunk.newStart;
+        const stillHidden = shownFrom - gapStart;
+        if (stillHidden > 0) {
+          rows.push({
+            kind: 'expander',
+            fileIndex,
+            path: file.path,
+            hunkId: hunk.id,
+            direction: 'up',
+            hidden: stillHidden,
+          });
+        }
         rows.push({
           kind: 'hunk',
           fileIndex,
@@ -87,6 +126,11 @@ export function buildRows(
             hunk.context ? ' ' + hunk.context : ''
           }`,
         });
+        if (lines) {
+          for (let n = shownFrom; n < hunk.newStart; n++) {
+            pushContextLine(rows, fileIndex, layout, lines[n - 1] ?? '', n);
+          }
+        }
       }
       if (layout === 'unified') {
         for (const line of hunk.lines) {
@@ -98,9 +142,57 @@ export function buildRows(
       } else {
         pushSplitRows(rows, fileIndex, hunk.lines, refFor, included);
       }
+
+      previousEnd = hunk.newStart + hunk.newLines - 1;
+      if (included && lines && expansion.down > 0) {
+        const until = Math.min(previousEnd + expansion.down, lines.length);
+        for (let n = previousEnd + 1; n <= until; n++) {
+          pushContextLine(rows, fileIndex, layout, lines[n - 1] ?? '', n);
+        }
+        previousEnd = until;
+      }
+    }
+
+    // Trailing gap. Without the file loaded the remaining length is unknown, so the
+    // expander is offered optimistically and disappears once the end is reached.
+    const lastHunk = file.hunks[file.hunks.length - 1];
+    const remaining = lines ? lines.length - previousEnd : -1;
+    if (lastHunk && remaining !== 0 && (!hunkFilter || hunkFilter.has(lastHunk.id))) {
+      rows.push({
+        kind: 'expander',
+        fileIndex,
+        path: file.path,
+        hunkId: lastHunk.id,
+        direction: 'down',
+        hidden: remaining > 0 ? remaining : 0,
+      });
     }
   });
   return rows;
+}
+
+/** Emit one expanded-context line in whichever layout is active. */
+function pushContextLine(
+  rows: Row[],
+  fileIndex: number,
+  layout: DiffLayout,
+  text: string,
+  lineNumber: number,
+) {
+  // Expanded context is unchanged code: same number both sides, no highlight tokens
+  // (they are keyed to hunk lines) and no word spans.
+  const line: Line = {
+    kind: 'context',
+    text,
+    oldLine: lineNumber,
+    newLine: lineNumber,
+    spans: [],
+  };
+  if (layout === 'unified') {
+    rows.push({ kind: 'unified', fileIndex, line, hl: null });
+  } else {
+    rows.push({ kind: 'split', fileIndex, left: line, right: line, hlLeft: null, hlRight: null });
+  }
 }
 
 /** Pair removed/added runs side-by-side; context spans both sides. */

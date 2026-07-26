@@ -242,3 +242,24 @@ export const mockGenerateWalkthrough = (changeId: string): Promise<Walkthrough> 
       resolve(mockWalkthrough);
     }, 900),
   );
+
+/** Synthetic full-file text so context expansion is exercisable in the browser. */
+export const mockFileContent = (path: string): string => {
+  if (path === 'src/sync/engine.ts') {
+    const lines: string[] = [];
+    for (let n = 1; n <= 60; n++) {
+      if (n === 12) lines.push('export async function sync(options: SyncOptions) {');
+      else if (n === 13) lines.push('  const client = await connect(options);');
+      else if (n === 14) lines.push('  const outcome = await client.pull();');
+      else if (n === 15) lines.push('  await retryWithBackoff(() => client.push(outcome));');
+      else if (n === 16) lines.push('  return report(client);');
+      else if (n === 17) lines.push('}');
+      else if (n === 41) lines.push('const MAX_ATTEMPTS = 5;');
+      else if (n === 42) lines.push('const BASE_DELAY_MS = 250;');
+      else if (n === 43) lines.push('export { MAX_ATTEMPTS };');
+      else lines.push(`// context line ${n}`);
+    }
+    return lines.join('\n');
+  }
+  return Array.from({ length: 20 }, (_, i) => `// line ${i + 1}`).join('\n');
+};

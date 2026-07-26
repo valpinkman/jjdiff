@@ -16,6 +16,7 @@ import {
   getDiff,
   getInterdiffSinceReviewed,
   getLaunchOptions,
+  getFileContent,
   getRecentRepos,
   getRepoState,
   getReviewStatus,
@@ -88,6 +89,9 @@ export class App extends LitElement {
   @state() private wordWrap = false;
   /** File the diff viewport is currently inside (sticky breadcrumb). */
   @state() private visibleFile: string | null = null;
+  /** Full file text for context expansion, fetched on demand. */
+  @state() private fileLines: ReadonlyMap<string, string[]> = new Map();
+  @state() private expansions: ReadonlyMap<string, { up: number; down: number }> = new Map();
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -334,6 +338,9 @@ export class App extends LitElement {
         );
       }
       this.actionError = null;
+      // Expanded context belongs to the previous diff; drop it with the diff.
+      this.fileLines = new Map();
+      this.expansions = new Map();
       if (this.focusPath && !this.files.some((f) => f.path === this.focusPath)) {
         this.focusPath = null;
       }
@@ -898,6 +905,7 @@ export class App extends LitElement {
         @visible-file=${(event: CustomEvent<{ path: string }>) => {
           this.visibleFile = event.detail.path;
         }}
+        @expand-context=${this.onExpandContext}
       >
         ${change
           ? html`<div class="describe">
@@ -1059,6 +1067,8 @@ export class App extends LitElement {
           .hunkFilter=${this.walkFilter}
           .searchQuery=${this.searchOpen ? this.searchQuery : null}
           .wordWrap=${this.wordWrap}
+          .fileLines=${this.fileLines}
+          .expansions=${this.expansions}
         ></jj-patch-view>
       </main>
       ${this.barOpen
@@ -1069,6 +1079,34 @@ export class App extends LitElement {
         : nothing}
     `;
   }
+
+  /** Pull ~20 more lines of context around a hunk, fetching the file once. */
+  private onExpandContext = async (
+    event: CustomEvent<{ path: string; hunkId: string; direction: 'up' | 'down' }>,
+  ) => {
+    const { path, hunkId, direction } = event.detail;
+    const STEP = 20;
+    try {
+      if (!this.fileLines.has(path)) {
+        const text = await getFileContent(
+          this.isWorkingCopySelected ? null : this.selected,
+          path,
+        );
+        const next = new Map(this.fileLines);
+        next.set(path, text.split('\n'));
+        this.fileLines = next;
+      }
+      const current = this.expansions.get(hunkId) ?? { up: 0, down: 0 };
+      const expanded = new Map(this.expansions);
+      expanded.set(hunkId, {
+        up: direction === 'up' ? current.up + STEP : current.up,
+        down: direction === 'down' ? current.down + STEP : current.down,
+      });
+      this.expansions = expanded;
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  };
 
   private onSquashFile = (event: CustomEvent<{ path: string; into: string }>) => {
     void this.run(async () => {

@@ -161,6 +161,13 @@ impl Repo {
             .filter(|id| !id.bytes().all(|b| b == b'0')))
     }
 
+    /// Full contents of `path` at `revset` — used to expand diff context beyond the
+    /// hunks jj emitted. `jj file show` writes raw bytes; non-UTF-8 files are rejected
+    /// rather than lossily rendered into a code view.
+    pub fn file_content(&self, revset: &str, path: &str) -> Result<String> {
+        self.runner.read(&["file", "show", "-r", revset, path])
+    }
+
     /// How a change evolved: one entry per predecessor commit, newest first. Entry 0 is the
     /// current commit. Powers "what changed since I last reviewed" interdiffs.
     ///
