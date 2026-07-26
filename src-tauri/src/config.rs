@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub ui: UiConfig,
     pub keymap: Keymap,
+    pub walkthrough: WalkthroughConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WalkthroughConfig {
+    /// Claude model override; empty = the CLI's configured default.
+    #[serde(alias = "claude-model")]
+    pub claude_model: String,
+    /// Extra instructions appended to every generation prompt.
+    pub prompt: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

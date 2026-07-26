@@ -27,6 +27,8 @@ export class PatchView extends LitElement {
   @property({ attribute: false }) squashTargets: { changeId: string; label: string }[] = [];
   /** Paths with unresolved conflicts in the shown revision. */
   @property({ attribute: false }) conflicted: ReadonlySet<string> = new Set();
+  /** Active walkthrough step's hunk ids; null = show everything. */
+  @property({ attribute: false }) hunkFilter: ReadonlySet<string> | null = null;
 
   private highlights = new HighlightStore();
 
@@ -80,7 +82,7 @@ export class PatchView extends LitElement {
     if (this.files.length === 0) {
       return html`<p class="jj-empty">No changes.</p>`;
     }
-    const rows = buildRows(this.files, this.layout, this.viewed);
+    const rows = buildRows(this.files, this.layout, this.viewed, this.hunkFilter);
     // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows
     // into its shadow root, which would cut them off from theme.css and break cross-row text
     // selection — the whole reason this component is light DOM.

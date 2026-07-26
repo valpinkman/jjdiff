@@ -23,6 +23,9 @@ struct Data {
     /// `repo\u{1}change_id` → commit id at the time the change was marked reviewed.
     #[serde(default)]
     reviewed: HashMap<String, String>,
+    /// `repo\u{1}change_id` → generated walkthrough (carries its own diff fingerprint).
+    #[serde(default)]
+    walkthroughs: HashMap<String, crate::walkthrough::Walkthrough>,
 }
 
 #[derive(Default)]
@@ -78,6 +81,22 @@ impl ReviewStore {
         self.data
             .reviewed
             .insert(Self::key(repo, change_id), commit_id.to_string());
+        self.persist();
+    }
+
+    pub fn walkthrough(&self, repo: &str, change_id: &str) -> Option<crate::walkthrough::Walkthrough> {
+        self.data.walkthroughs.get(&Self::key(repo, change_id)).cloned()
+    }
+
+    pub fn set_walkthrough(
+        &mut self,
+        repo: &str,
+        change_id: &str,
+        walkthrough: crate::walkthrough::Walkthrough,
+    ) {
+        self.data
+            .walkthroughs
+            .insert(Self::key(repo, change_id), walkthrough);
         self.persist();
     }
 

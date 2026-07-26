@@ -261,6 +261,34 @@ jj-app .banner.conflict {
   color: var(--jj-removed-fg);
 }
 
+jj-app .walk-banner {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--jj-border);
+  background: color-mix(in srgb, var(--jj-accent) 7%, var(--jj-bg));
+}
+
+jj-app .walk-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+jj-app .walk-progress {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--jj-accent);
+  white-space: nowrap;
+}
+
+jj-app .walk-narrative {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 72ch;
+}
+
 jj-app .status {
   padding: 4px 12px;
   font-size: 11px;

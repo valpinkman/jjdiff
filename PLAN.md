@@ -135,10 +135,19 @@ Deliberate cut: no in-app `jj resolve` launcher — interactive merge editors sp
 GUI without a TTY hang more often than they work; the conflict banner points at the
 terminal instead.
 
-**Later.** Signed macOS build + Homebrew tap (needs Apple identity / CI); GitHub PR review
-via `gh` on colocated bookmarks; LLM walkthroughs (port codiff's agent-CLI pattern — it's
-VCS-agnostic); shared-review web service; hunk-level squash/split; rename detection in the
-live working-copy view; nested .gitignore support in the fs watcher.
+**M5 — guided walkthroughs (Claude backend). ✅ DONE.** `jjdiff -w` and in-app generation:
+structured diff (stable hunk ids) → prompt with guide + JSON contract → Claude Code CLI
+headless (`claude -p --output-format json`, stdin prompt, timeout, hallucinated-id
+filtering) → stored per **change id** with a diff fingerprint, so an evolved change flags
+the walkthrough stale and offers regeneration. Guided mode: overview + steps, each step
+filters the diff to its hunks; ←/→ navigation. Backend sits behind an `AgentBackend` trait —
+Claude only for now, more CLIs later. Verified end-to-end against the real CLI
+(`cargo test -p jjdiff-app real_claude -- --ignored`).
+
+**Later.** More walkthrough backends (Codex/OpenCode) + agent-authored walkthroughs (skill
+shim); signed macOS build + Homebrew tap (needs Apple identity / CI); GitHub PR review via
+`gh` on colocated bookmarks; shared-review web service; hunk-level squash/split; rename
+detection in the live working-copy view; nested .gitignore support in the fs watcher.
 
 ## Risks
 

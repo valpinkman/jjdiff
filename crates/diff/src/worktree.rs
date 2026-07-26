@@ -83,6 +83,7 @@ pub fn diff_worktree(
             patches.push(patch);
         }
     }
+    crate::assign_hunk_ids(&mut patches);
     Ok(patches)
 }
 
@@ -263,6 +264,7 @@ fn diff_text(old_text: &str, new_text: &str, options: WorktreeDiffOptions) -> Ve
         let new_end = last.new_range().end;
 
         let mut hunk = Hunk {
+            id: String::new(),
             old_start: old_start as u32 + 1,
             old_lines: (old_end - old_start) as u32,
             new_start: new_start as u32 + 1,

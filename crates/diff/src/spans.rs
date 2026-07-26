@@ -185,6 +185,7 @@ mod tests {
     #[test]
     fn pairs_removed_and_added_runs() {
         let mut hunk = Hunk {
+            id: String::new(),
             old_start: 1,
             old_lines: 2,
             new_start: 1,

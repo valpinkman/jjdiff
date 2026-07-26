@@ -1,6 +1,15 @@
 // Fixture backend for running the UI in a plain browser (`pnpm dev` without Tauri).
 // Lets UI work be verified visually without a jj repo or the native shell.
-import type { Change, Config, FilePatch, Interdiff, RepoState, ReviewStatus } from './ipc.js';
+import type {
+  Change,
+  Config,
+  FilePatch,
+  Interdiff,
+  RepoState,
+  ReviewStatus,
+  Walkthrough,
+  WalkthroughStatus,
+} from './ipc.js';
 
 const change = (partial: Partial<Change> & Pick<Change, 'changeId' | 'description'>): Change => ({
   commitId: partial.changeId.repeat(2).slice(0, 40),
@@ -47,6 +56,7 @@ export const mockFiles: FilePatch[] = [
     removed: 2,
     hunks: [
       {
+        id: 'src/sync/engine.ts#0',
         oldStart: 12,
         oldLines: 7,
         newStart: 12,
@@ -63,6 +73,7 @@ export const mockFiles: FilePatch[] = [
         ],
       },
       {
+        id: 'src/sync/engine.ts#1',
         oldStart: 40,
         oldLines: 4,
         newStart: 41,
@@ -87,6 +98,7 @@ export const mockFiles: FilePatch[] = [
     removed: 0,
     hunks: [
       {
+        id: 'src/sync/backoff.ts#0',
         oldStart: 0,
         oldLines: 0,
         newStart: 1,
@@ -139,3 +151,36 @@ export const mockInterdiff: Interdiff = {
   fromCommit: 'anoldercommitid0000000000000000000000000',
   toCommit: mockRepoState.stack[1]!.commitId,
 };
+
+export const mockWalkthrough: Walkthrough = {
+  summary:
+    'This change adds retry-with-backoff to the sync engine: a new backoff helper, and the push path now routes through it so transient failures no longer abort a sync.',
+  steps: [
+    {
+      title: 'New backoff helper',
+      narrative:
+        'A small retry loop with exponential delay. Read this first — everything else builds on it.',
+      hunkIds: ['src/sync/backoff.ts#0'],
+    },
+    {
+      title: 'Sync engine uses the helper',
+      narrative:
+        'The pull result is renamed to outcome and pushes are wrapped in retryWithBackoff, so a flaky network no longer fails the whole sync.',
+      hunkIds: ['src/sync/engine.ts#0'],
+    },
+    {
+      title: 'Tuning constants',
+      narrative: 'DELAY_MS becomes BASE_DELAY_MS at 250ms to match the exponential schedule.',
+      hunkIds: ['src/sync/engine.ts#1'],
+    },
+  ],
+  fingerprint: 'mockfingerprint000',
+};
+
+export const mockWalkthroughStatus = (changeId: string): WalkthroughStatus =>
+  changeId === 'wcwcwcwcwcwcwcwcwcwc'
+    ? { walkthrough: mockWalkthrough, stale: false }
+    : { walkthrough: null, stale: false };
+
+export const mockGenerateWalkthrough = (): Promise<Walkthrough> =>
+  new Promise((resolve) => setTimeout(() => resolve(mockWalkthrough), 900));

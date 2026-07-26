@@ -39,11 +39,16 @@ export function buildRows(
   files: FilePatch[],
   layout: DiffLayout,
   viewed: ReadonlySet<string> = new Set(),
+  /** When set (walkthrough step), only these hunks render — files without any are skipped. */
+  hunkFilter: ReadonlySet<string> | null = null,
 ): Row[] {
   const rows: Row[] = [];
   files.forEach((file, fileIndex) => {
+    if (hunkFilter && !file.hunks.some((hunk) => hunkFilter.has(hunk.id))) {
+      return;
+    }
     rows.push({ kind: 'file', fileIndex, file });
-    if (viewed.has(file.path)) {
+    if (!hunkFilter && viewed.has(file.path)) {
       // Viewed files collapse — that is the point of the flag.
       return;
     }
@@ -70,19 +75,27 @@ export function buildRows(
     };
 
     for (const hunk of file.hunks) {
-      rows.push({
-        kind: 'hunk',
-        fileIndex,
-        label: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@${
-          hunk.context ? ' ' + hunk.context : ''
-        }`,
-      });
+      // Filtered-out hunks still consume highlight indices (refFor) so lookups stay in
+      // sync with sideTexts(), which always walks every hunk.
+      const included = !hunkFilter || hunkFilter.has(hunk.id);
+      if (included) {
+        rows.push({
+          kind: 'hunk',
+          fileIndex,
+          label: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@${
+            hunk.context ? ' ' + hunk.context : ''
+          }`,
+        });
+      }
       if (layout === 'unified') {
         for (const line of hunk.lines) {
-          rows.push({ kind: 'unified', fileIndex, line, hl: refFor(line) });
+          const hl = refFor(line);
+          if (included) {
+            rows.push({ kind: 'unified', fileIndex, line, hl });
+          }
         }
       } else {
-        pushSplitRows(rows, fileIndex, hunk.lines, refFor);
+        pushSplitRows(rows, fileIndex, hunk.lines, refFor, included);
       }
     }
   });
@@ -95,6 +108,7 @@ function pushSplitRows(
   fileIndex: number,
   lines: Line[],
   refFor: (line: Line) => HlRef,
+  emit: boolean,
 ) {
   let removed: { line: Line; hl: HlRef }[] = [];
   let added: { line: Line; hl: HlRef }[] = [];
@@ -102,14 +116,16 @@ function pushSplitRows(
   const flush = () => {
     const count = Math.max(removed.length, added.length);
     for (let i = 0; i < count; i++) {
-      rows.push({
-        kind: 'split',
-        fileIndex,
-        left: removed[i]?.line ?? null,
-        right: added[i]?.line ?? null,
-        hlLeft: removed[i]?.hl ?? null,
-        hlRight: added[i]?.hl ?? null,
-      });
+      if (emit) {
+        rows.push({
+          kind: 'split',
+          fileIndex,
+          left: removed[i]?.line ?? null,
+          right: added[i]?.line ?? null,
+          hlLeft: removed[i]?.hl ?? null,
+          hlRight: added[i]?.hl ?? null,
+        });
+      }
     }
     removed = [];
     added = [];
@@ -124,7 +140,9 @@ function pushSplitRows(
     } else {
       flush();
       const hl = refFor(line);
-      rows.push({ kind: 'split', fileIndex, left: line, right: line, hlLeft: hl, hlRight: hl });
+      if (emit) {
+        rows.push({ kind: 'split', fileIndex, left: line, right: line, hlLeft: hl, hlRight: hl });
+      }
     }
   }
   flush();

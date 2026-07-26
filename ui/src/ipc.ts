@@ -42,6 +42,8 @@ export interface Line {
 }
 
 export interface Hunk {
+  /** Stable within one diff: `<path>#<index>`. Walkthrough steps reference these. */
+  id: string;
   oldStart: number;
   oldLines: number;
   newStart: number;
@@ -65,6 +67,27 @@ export interface FilePatch {
 export interface LaunchOptions {
   repoPath: string;
   revset: string | null;
+  /** `-w`: generate a walkthrough for the launch target immediately. */
+  walkthrough: boolean;
+}
+
+export interface WalkthroughStep {
+  title: string;
+  narrative: string;
+  hunkIds: string[];
+}
+
+export interface Walkthrough {
+  summary: string;
+  steps: WalkthroughStep[];
+  /** Fingerprint of the diff this was generated against. */
+  fingerprint: string;
+}
+
+export interface WalkthroughStatus {
+  walkthrough: Walkthrough | null;
+  /** True when the change's diff no longer matches the walkthrough's fingerprint. */
+  stale: boolean;
 }
 
 export interface Config {
@@ -102,7 +125,29 @@ const mock = async <T>(load: (m: typeof import('./mock.js')) => T): Promise<T> =
 export const getLaunchOptions = (): Promise<LaunchOptions> =>
   IN_TAURI
     ? invoke<LaunchOptions>('launch_options')
-    : Promise.resolve({ repoPath: '/mock', revset: null });
+    : Promise.resolve({ repoPath: '/mock', revset: null, walkthrough: false });
+export const getWalkthrough = (
+  changeId: string,
+  revset: string | null,
+  ignoreWhitespace: boolean,
+): Promise<WalkthroughStatus> =>
+  IN_TAURI
+    ? invoke<WalkthroughStatus>('get_walkthrough', { changeId, revset, ignoreWhitespace })
+    : mock((m) => m.mockWalkthroughStatus(changeId));
+export const generateWalkthrough = (
+  changeId: string,
+  revset: string | null,
+  ignoreWhitespace: boolean,
+  context: string,
+): Promise<Walkthrough> =>
+  IN_TAURI
+    ? invoke<Walkthrough>('generate_walkthrough', {
+        changeId,
+        revset,
+        ignoreWhitespace,
+        context,
+      })
+    : mock((m) => m.mockGenerateWalkthrough()).then((walkthrough) => walkthrough);
 export const getConfig = (): Promise<Config> =>
   IN_TAURI ? invoke<Config>('get_config') : mock((m) => m.mockConfig);
 export const getRepoState = (): Promise<RepoState> =>

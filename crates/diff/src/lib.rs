@@ -44,6 +44,34 @@ pub struct FilePatch {
     pub hunks: Vec<Hunk>,
 }
 
+/// Assign hunk ids (`<path>#<index>`). Both diff producers call this before returning, so
+/// every hunk the UI or a walkthrough sees carries a referenceable id.
+pub fn assign_hunk_ids(files: &mut [FilePatch]) {
+    for file in files {
+        for (index, hunk) in file.hunks.iter_mut().enumerate() {
+            hunk.id = format!("{}#{index}", file.path);
+        }
+    }
+}
+
+/// Content fingerprint of a diff, for walkthrough staleness detection. Hashes hunk ids,
+/// line kinds, and text — stable across re-reads of identical content.
+pub fn diff_fingerprint(files: &[FilePatch]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for file in files {
+        file.path.hash(&mut hasher);
+        for hunk in &file.hunks {
+            hunk.id.hash(&mut hasher);
+            for line in &hunk.lines {
+                (line.kind as u8).hash(&mut hasher);
+                line.text.hash(&mut hasher);
+            }
+        }
+    }
+    format!("{:016x}", hasher.finish())
+}
+
 impl FilePatch {
     fn recount(&mut self) {
         self.added = 0;
@@ -63,6 +91,8 @@ impl FilePatch {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hunk {
+    /// Stable within one diff: `<path>#<index>`. Walkthrough steps reference these.
+    pub id: String,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,

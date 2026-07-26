@@ -64,6 +64,7 @@ pub fn parse_git_patch(patch: &str) -> Result<Vec<FilePatch>, DiffError> {
         }
     }
     flush(&mut files, &mut current, &mut hunk);
+    crate::assign_hunk_ids(&mut files);
     Ok(files)
 }
 
@@ -157,7 +158,7 @@ fn parse_hunk_header(header: &str, line: usize) -> Result<Hunk, DiffError> {
     let new = parts.next().ok_or_else(|| malformed("missing new range"))?;
     let (old_start, old_lines) = parse_range(old.strip_prefix('-').unwrap_or(old));
     let (new_start, new_lines) = parse_range(new.strip_prefix('+').unwrap_or(new));
-    Ok(Hunk { old_start, old_lines, new_start, new_lines, context, lines: Vec::new() })
+    Ok(Hunk { id: String::new(), old_start, old_lines, new_start, new_lines, context, lines: Vec::new() })
 }
 
 fn parse_range(range: &str) -> (u32, u32) {

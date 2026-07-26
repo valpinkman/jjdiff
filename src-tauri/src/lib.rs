@@ -6,6 +6,7 @@
 
 mod config;
 mod viewed;
+pub mod walkthrough;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -19,22 +20,26 @@ use jjdiff_vcs::{Change, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
-/// `jjdiff [revset] [-R|--repo <path>]`
+/// `jjdiff [revset] [-R|--repo <path>] [-w|--walkthrough]`
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOptions {
     pub repo_path: PathBuf,
     pub revset: Option<String>,
+    /// Generate a walkthrough for the launch target immediately.
+    pub walkthrough: bool,
 }
 
 impl LaunchOptions {
     fn from_env() -> LaunchOptions {
         let mut repo_path: Option<PathBuf> = None;
         let mut revset: Option<String> = None;
+        let mut walkthrough = false;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "-R" | "--repo" => repo_path = args.next().map(PathBuf::from),
+                "-w" | "--walkthrough" => walkthrough = true,
                 // Ignore unknown flags (tauri dev passes its own).
                 flag if flag.starts_with('-') => {}
                 positional if revset.is_none() => revset = Some(positional.to_string()),
@@ -44,7 +49,7 @@ impl LaunchOptions {
         let repo_path = repo_path
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        LaunchOptions { repo_path, revset }
+        LaunchOptions { repo_path, revset, walkthrough }
     }
 }
 
@@ -127,20 +132,17 @@ async fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, Stri
     .await
 }
 
-/// Structured diff for one revision — or the live working copy when `revset` is `None`.
-///
-/// Working-copy diffs never touch jj: they run fs-vs-`@-` through gix (no snapshot, no
-/// operation written). Revset diffs parse `jj diff --git` output.
-#[tauri::command]
-async fn diff(
-    state: tauri::State<'_, AppState>,
-    revset: Option<String>,
+/// Shared by `diff` and walkthrough generation. `revset: None` = live working copy
+/// (fs-vs-`@-` through gix — no snapshot, no operation written); otherwise parses
+/// `jj diff --git` output.
+fn compute_diff(
+    repo: &Repo,
+    revset: Option<&str>,
     ignore_whitespace: bool,
 ) -> Result<Vec<FilePatch>, String> {
-    let repo = repo_handle(&state)?;
-    blocking(move || match revset {
+    match revset {
         Some(revset) => {
-            let patch = vcs(repo.patch_for(&revset, ignore_whitespace))?;
+            let patch = vcs(repo.patch_for(revset, ignore_whitespace))?;
             jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())
         }
         None => {
@@ -152,8 +154,18 @@ async fn diff(
             )
             .map_err(|e| e.to_string())
         }
-    })
-    .await
+    }
+}
+
+/// Structured diff for one revision — or the live working copy when `revset` is `None`.
+#[tauri::command]
+async fn diff(
+    state: tauri::State<'_, AppState>,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+) -> Result<Vec<FilePatch>, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || compute_diff(&repo, revset.as_deref(), ignore_whitespace)).await
 }
 
 /// Interdiff from the last-reviewed commit of `change_id` to its current commit.
@@ -264,6 +276,63 @@ fn set_viewed(
     Ok(())
 }
 
+/// Stored walkthrough for a change, plus whether it still matches the current diff.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WalkthroughStatus {
+    walkthrough: Option<walkthrough::Walkthrough>,
+    stale: bool,
+}
+
+#[tauri::command]
+async fn get_walkthrough(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+) -> Result<WalkthroughStatus, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    let stored = state.review.lock().expect("review lock").walkthrough(&repo_key, &change_id);
+    let Some(stored) = stored else {
+        return Ok(WalkthroughStatus { walkthrough: None, stale: false });
+    };
+    blocking(move || {
+        let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
+        let stale = jjdiff_diff::diff_fingerprint(&files) != stored.fingerprint;
+        Ok(WalkthroughStatus { walkthrough: Some(stored), stale })
+    })
+    .await
+}
+
+/// Generate (or regenerate) a walkthrough for `change_id` via the Claude CLI and store it.
+#[tauri::command]
+async fn generate_walkthrough(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+    context: String,
+) -> Result<walkthrough::Walkthrough, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    let cfg = config::load().walkthrough;
+    let generated = blocking(move || {
+        let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
+        let backend = walkthrough::ClaudeBackend {
+            model: (!cfg.claude_model.is_empty()).then(|| cfg.claude_model.clone()),
+        };
+        walkthrough::generate(&backend, &files, &context, &cfg.prompt)
+    })
+    .await?;
+    state
+        .review
+        .lock()
+        .expect("review lock")
+        .set_walkthrough(&repo_key, &change_id, generated.clone());
+    Ok(generated)
+}
+
 /// Record `commit_id` as the reviewed baseline for `change_id`.
 #[tauri::command]
 fn mark_reviewed(
@@ -305,7 +374,9 @@ pub fn run() {
             conflicts,
             review_status,
             set_viewed,
-            mark_reviewed
+            mark_reviewed,
+            get_walkthrough,
+            generate_walkthrough
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
