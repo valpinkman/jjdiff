@@ -16,12 +16,15 @@ import {
   getDiff,
   getInterdiffSinceReviewed,
   getLaunchOptions,
+  getRecentRepos,
   getRepoState,
   getReviewStatus,
   getWalkthrough,
   markReviewed,
   newChange,
   onRepoChanged,
+  openRepository,
+  pickRepository,
   setViewed,
   squashPaths,
   type Change,
@@ -29,6 +32,7 @@ import {
   type RepoState,
   type Walkthrough,
 } from './ipc.js';
+import { folderIcon } from './file-icons.js';
 import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import './patch-view.js';
 import './walkthrough-panel.js';
@@ -74,6 +78,8 @@ export class App extends LitElement {
   @state() private generating = false;
   /** Guided review across the whole stack: changes ordered oldest → newest. */
   @state() private stackReview: Change[] | null = null;
+  @state() private repoMenuOpen = false;
+  @state() private recentRepos: string[] = [];
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -84,12 +90,56 @@ export class App extends LitElement {
     super.connectedCallback();
     void this.start();
     window.addEventListener('keydown', this.onGlobalKey);
+    window.addEventListener('click', this.onWindowClick);
   }
 
   override disconnectedCallback() {
     this.unlisten?.();
     window.removeEventListener('keydown', this.onGlobalKey);
+    window.removeEventListener('click', this.onWindowClick);
     super.disconnectedCallback();
+  }
+
+  /** Close the repo menu on any click outside it. */
+  private onWindowClick = (event: MouseEvent) => {
+    if (!this.repoMenuOpen) return;
+    const path = event.composedPath();
+    if (!path.some((node) => node instanceof HTMLElement && node.classList?.contains('repo-menu-root'))) {
+      this.repoMenuOpen = false;
+    }
+  };
+
+  private async toggleRepoMenu() {
+    if (!this.repoMenuOpen) {
+      this.recentRepos = await getRecentRepos();
+    }
+    this.repoMenuOpen = !this.repoMenuOpen;
+  }
+
+  /** Full reset after switching repos — nothing from the old repo may leak. */
+  private async switchRepo(path: string) {
+    this.repoMenuOpen = false;
+    await this.run(async () => {
+      await openRepository(path);
+      this.selected = null;
+      this.seededFor = null;
+      this.focusPath = null;
+      this.walkthrough = null;
+      this.walkActive = false;
+      this.walkStep = -1;
+      this.stackReview = null;
+      this.viewMode = 'full';
+      this.sidebarTab = 'stack';
+      await this.refresh();
+    });
+  }
+
+  private async openFolder() {
+    this.repoMenuOpen = false;
+    const picked = await pickRepository();
+    if (picked) {
+      await this.switchRepo(picked);
+    }
   }
 
   private async start() {
@@ -603,8 +653,29 @@ export class App extends LitElement {
       : this.files;
     return html`
       <header>
-        <span class="root">${basename(this.repo.root)}</span>
-        <span class="version">jj ${this.repo.jjVersion}</span>
+        <span class="repo-menu-root">
+          <button class="repo-button" @click=${this.toggleRepoMenu} title=${this.repo.root}>
+            <span class="repo-icon">${folderIcon(false)}</span>
+            <span class="root">${basename(this.repo.root)}</span>
+            <span class="caret">▾</span>
+          </button>
+          ${this.repoMenuOpen
+            ? html`<div class="repo-menu">
+                ${this.recentRepos.map(
+                  (path) => html`
+                    <button class="repo-item" @click=${() => void this.switchRepo(path)}>
+                      <span class="repo-icon">${folderIcon(false)}</span>
+                      <span class="repo-name">${basename(path)}</span>
+                      <span class="repo-path">${path}</span>
+                    </button>
+                  `,
+                )}
+                <button class="repo-item open-folder" @click=${() => void this.openFolder()}>
+                  Open Folder…
+                </button>
+              </div>`
+            : nothing}
+        </span>
         <span class="spacer"></span>
         ${this.repo.stack.filter((c) => !c.immutable && !c.empty).length > 1
           ? html`<button

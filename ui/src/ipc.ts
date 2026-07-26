@@ -186,5 +186,16 @@ export const setViewed = (changeId: string, path: string, viewed: boolean) =>
 export const markReviewed = (changeId: string, commitId: string) =>
   IN_TAURI ? invoke<void>('mark_reviewed', { changeId, commitId }) : Promise.resolve();
 
+/** Switch the app to another repository (path must be a colocated jj repo). */
+export const openRepository = (path: string) =>
+  IN_TAURI ? invoke<void>('open_repository', { path }) : Promise.resolve();
+/** Native folder picker; resolves null on cancel (and always in the browser mock). */
+export const pickRepository = (): Promise<string | null> =>
+  IN_TAURI ? invoke<string | null>('pick_repository') : Promise.resolve(null);
+export const getRecentRepos = (): Promise<string[]> =>
+  IN_TAURI
+    ? invoke<string[]>('recent_repos')
+    : Promise.resolve(['/Users/dev/projects/example', '/Users/dev/projects/other-app', '/Users/dev/oss/jj']);
+
 export const onRepoChanged = (callback: () => void): Promise<UnlistenFn> =>
   IN_TAURI ? listen('repo-changed', callback) : Promise.resolve(() => {});

@@ -107,13 +107,116 @@ jj-app > header {
   background: var(--jj-bg-panel);
 }
 
-jj-app > header .root {
+jj-app .repo-menu-root {
+  position: relative;
+  display: inline-flex;
+}
+
+jj-app .repo-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--jj-fg);
+  font: inherit;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+jj-app .repo-button:hover {
+  border-color: var(--jj-border);
+  background: var(--jj-bg);
+}
+
+jj-app .repo-button .root {
   font-weight: 600;
 }
 
-jj-app > header .version {
+jj-app .repo-button .caret {
+  font-size: 8px;
   color: var(--jj-fg-muted);
-  font-size: 11px;
+}
+
+jj-app .repo-icon {
+  display: inline-flex;
+}
+
+jj-app .repo-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 300px;
+  max-width: 420px;
+  background: var(--jj-bg);
+  border: 1px solid var(--jj-fg);
+  box-shadow: var(--jj-shadow-pop);
+  z-index: 50;
+  animation: bar-in 0.14s ease-out;
+}
+
+@keyframes bar-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+jj-app .repo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--jj-border);
+  background: none;
+  color: var(--jj-fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+  box-sizing: border-box;
+}
+
+jj-app .repo-item:hover {
+  background: var(--jj-bg-panel);
+}
+
+jj-app .repo-item:last-child {
+  border-bottom: 0;
+}
+
+jj-app .repo-item .repo-icon {
+  align-self: center;
+}
+
+jj-app .repo-item .repo-name {
+  font-weight: 600;
+  flex: none;
+}
+
+jj-app .repo-item .repo-path {
+  font-family: var(--jj-mono);
+  font-size: 10px;
+  color: var(--jj-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  flex: 1;
+  min-width: 0;
+}
+
+jj-app .repo-item.open-folder {
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--jj-accent);
+  justify-content: center;
 }
 
 jj-app .spacer {

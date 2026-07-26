@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
 use jjdiff_vcs::{Change, Repo};
@@ -57,7 +57,61 @@ struct AppState {
     launch: LaunchOptions,
     repo: Mutex<Option<Repo>>,
     review: Mutex<ReviewStore>,
+    recents: Mutex<Vec<String>>,
+    recents_path: Mutex<Option<PathBuf>>,
     _watchers: Mutex<Vec<RepoWatcher>>,
+}
+
+const MAX_RECENTS: usize = 8;
+
+fn load_recents(path: &PathBuf) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn remember_repo(state: &tauri::State<'_, AppState>, root: &str) {
+    let mut recents = state.recents.lock().expect("recents lock");
+    recents.retain(|entry| entry != root);
+    recents.insert(0, root.to_string());
+    recents.truncate(MAX_RECENTS);
+    if let Some(path) = state.recents_path.lock().expect("recents path").as_ref() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&*recents) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+/// (Re)start both watchers for `repo` and point the window title at it.
+fn attach_repo(app: &AppHandle, repo: &Repo) -> Vec<RepoWatcher> {
+    if let Some(window) = app.get_webview_window("main") {
+        let name = repo
+            .root()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = window.set_title(&format!("jjdiff — {name}"));
+    }
+    let mut watchers = Vec::new();
+    let handle = app.clone();
+    match jjdiff_watch::watch_op_heads(&repo.op_heads_dir(), Duration::from_millis(250), move || {
+        let _ = handle.emit("repo-changed", ());
+    }) {
+        Ok(watcher) => watchers.push(watcher),
+        Err(error) => eprintln!("jjdiff: op watcher disabled: {error}"),
+    }
+    let handle = app.clone();
+    match jjdiff_watch::watch_working_copy(repo.root(), Duration::from_millis(400), move || {
+        let _ = handle.emit("repo-changed", ());
+    }) {
+        Ok(watcher) => watchers.push(watcher),
+        Err(error) => eprintln!("jjdiff: fs watcher disabled: {error}"),
+    }
+    watchers
 }
 
 /// Serializable snapshot for the UI.
@@ -336,6 +390,46 @@ async fn generate_walkthrough(
     Ok(generated)
 }
 
+/// Switch the app to another repository (must be a colocated jj repo).
+#[tauri::command]
+async fn open_repository(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let repo = tauri::async_runtime::spawn_blocking(move || {
+        Repo::discover(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let watchers = attach_repo(&app, &repo);
+    remember_repo(&state, &repo.root().to_string_lossy());
+    *state._watchers.lock().expect("watcher lock") = watchers;
+    *state.repo.lock().expect("repo lock") = Some(repo);
+    let _ = app.emit("repo-changed", ());
+    Ok(())
+}
+
+/// Native folder picker; returns the chosen path (not yet opened) or None on cancel.
+#[tauri::command]
+async fn pick_repository(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog().file().pick_folder(move |folder| {
+        let _ = tx.send(folder);
+    });
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(picked.map(|p| p.to_string()))
+}
+
+#[tauri::command]
+fn recent_repos(state: tauri::State<'_, AppState>) -> Vec<String> {
+    state.recents.lock().expect("recents lock").clone()
+}
+
 /// Record `commit_id` as the reviewed baseline for `change_id`.
 #[tauri::command]
 fn mark_reviewed(
@@ -359,10 +453,13 @@ pub fn run() {
         launch,
         repo: Mutex::new(None),
         review: Mutex::new(ReviewStore::default()),
+        recents: Mutex::new(Vec::new()),
+        recents_path: Mutex::new(None),
         _watchers: Mutex::new(Vec::new()),
     };
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             launch_options,
@@ -379,55 +476,31 @@ pub fn run() {
             set_viewed,
             mark_reviewed,
             get_walkthrough,
-            generate_walkthrough
+            generate_walkthrough,
+            open_repository,
+            pick_repository,
+            recent_repos
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
 
-            let review_path = app
-                .path()
-                .app_data_dir()
+            let data_dir = app.path().app_data_dir().ok();
+            let review_path = data_dir
+                .as_ref()
                 .map(|dir| dir.join("review.json"))
-                .unwrap_or_else(|_| PathBuf::from(".jjdiff-review.json"));
+                .unwrap_or_else(|| PathBuf::from(".jjdiff-review.json"));
             *state.review.lock().expect("review lock") = ReviewStore::load(review_path);
+            if let Some(dir) = data_dir {
+                let recents_path = dir.join("recents.json");
+                *state.recents.lock().expect("recents lock") = load_recents(&recents_path);
+                *state.recents_path.lock().expect("recents path") = Some(recents_path);
+            }
 
             // Watchers are not fatal: without them the UI still works, it just won't
             // live-refresh.
             if let Ok(repo) = Repo::discover(&state.launch.repo_path) {
-                if let Some(window) = app.get_webview_window("main") {
-                    let name = repo
-                        .root()
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let _ = window.set_title(&format!("jjdiff — {name}"));
-                }
-                let mut watchers = Vec::new();
-
-                let handle = app.handle().clone();
-                match jjdiff_watch::watch_op_heads(
-                    &repo.op_heads_dir(),
-                    Duration::from_millis(250),
-                    move || {
-                        let _ = handle.emit("repo-changed", ());
-                    },
-                ) {
-                    Ok(watcher) => watchers.push(watcher),
-                    Err(error) => eprintln!("jjdiff: op watcher disabled: {error}"),
-                }
-
-                let handle = app.handle().clone();
-                match jjdiff_watch::watch_working_copy(
-                    repo.root(),
-                    Duration::from_millis(400),
-                    move || {
-                        let _ = handle.emit("repo-changed", ());
-                    },
-                ) {
-                    Ok(watcher) => watchers.push(watcher),
-                    Err(error) => eprintln!("jjdiff: fs watcher disabled: {error}"),
-                }
-
+                let watchers = attach_repo(app.handle(), &repo);
+                remember_repo(&state, &repo.root().to_string_lossy());
                 *state._watchers.lock().expect("watcher lock") = watchers;
                 *state.repo.lock().expect("repo lock") = Some(repo);
             }
