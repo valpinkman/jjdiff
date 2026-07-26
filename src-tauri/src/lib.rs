@@ -16,7 +16,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
-use jjdiff_vcs::{Change, Repo};
+use jjdiff_vcs::{Change, Operation, Outcome, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
@@ -182,15 +182,19 @@ fn get_config() -> config::Config {
 }
 
 #[tauri::command]
-async fn repo_state(state: tauri::State<'_, AppState>) -> Result<RepoState, String> {
+async fn repo_state(
+    state: tauri::State<'_, AppState>,
+    revset: Option<String>,
+) -> Result<RepoState, String> {
     let repo = repo_handle(&state)?;
+    let graph_revset = revset.unwrap_or_else(|| "ancestors(@ | bookmarks())".to_string());
     blocking(move || {
         Ok(RepoState {
             root: repo.root().to_path_buf(),
             jj_version: vcs(repo.jj_version())?,
             working_copy: vcs(repo.working_copy())?,
             stack: vcs(repo.stack())?,
-            graph: vcs(repo.graph(60))?,
+            graph: vcs(repo.graph(&graph_revset, 200))?,
         })
     })
     .await
@@ -262,42 +266,264 @@ async fn interdiff_since_reviewed(
     .await
 }
 
-#[tauri::command]
-async fn describe(
-    state: tauri::State<'_, AppState>,
-    change_id: String,
-    message: String,
-) -> Result<(), String> {
-    let repo = repo_handle(&state)?;
-    blocking(move || vcs(repo.describe(&change_id, &message))).await
+/// Every mutation follows the same shape: run it off the main thread, then emit
+/// `repo-changed` so the UI reloads. The returned [`Outcome`] carries jj's own narration
+/// plus the operation id, which is what makes a one-click undo possible.
+async fn run_mutation<F>(app: &AppHandle, repo: Repo, task: F) -> Result<Outcome, String>
+where
+    F: FnOnce(&Repo) -> jjdiff_vcs::Result<Outcome> + Send + 'static,
+{
+    let outcome = blocking(move || vcs(task(&repo))).await?;
+    let _ = app.emit("repo-changed", ());
+    Ok(outcome)
 }
 
 #[tauri::command]
-async fn new_change(state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn describe(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    message: String,
+) -> Result<Outcome, String> {
     let repo = repo_handle(&state)?;
-    blocking(move || vcs(repo.new_change())).await
+    run_mutation(&app, repo, move |repo| repo.describe(&change_id, &message)).await
+}
+
+#[tauri::command]
+async fn new_change(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    parents: Vec<String>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.new_change(&parents)).await
+}
+
+/// `jj edit` — move the working copy onto an existing change.
+#[tauri::command]
+async fn edit_change(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.edit(&revset)).await
 }
 
 /// Move working-copy `paths` into `into` (defaults to the parent): jj-native partial commit.
 #[tauri::command]
 async fn squash_paths(
+    app: AppHandle,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     into: Option<String>,
-) -> Result<(), String> {
+    from: Option<String>,
+) -> Result<Outcome, String> {
     let repo = repo_handle(&state)?;
-    blocking(move || {
-        let target = into.as_deref().unwrap_or("@-");
-        vcs(repo.squash_paths("@", target, &paths))
+    run_mutation(&app, repo, move |repo| {
+        repo.squash_paths(
+            from.as_deref().unwrap_or("@"),
+            into.as_deref().unwrap_or("@-"),
+            &paths,
+        )
     })
     .await
 }
 
-/// `jj absorb`: returns jj's summary of which hunks moved into which changes.
 #[tauri::command]
-async fn absorb(state: tauri::State<'_, AppState>) -> Result<String, String> {
+async fn absorb(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Outcome, String> {
     let repo = repo_handle(&state)?;
-    blocking(move || vcs(repo.absorb())).await
+    run_mutation(&app, repo, |repo| repo.absorb()).await
+}
+
+/// File-level split: `paths` stay in the change, the rest move to a new child.
+#[tauri::command]
+async fn split_paths(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+    paths: Vec<String>,
+) -> Result<Outcome, String> {
+    if paths.is_empty() {
+        return Err("select at least one file to split out".into());
+    }
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.split_paths(&revset, &paths)).await
+}
+
+#[tauri::command]
+async fn abandon_change(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.abandon(&revset)).await
+}
+
+#[tauri::command]
+async fn duplicate_change(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.duplicate(&revset)).await
+}
+
+#[tauri::command]
+async fn backout_change(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.backout(&revset)).await
+}
+
+/// `mode` is "revision" (just it), "source" (it and descendants) or "branch".
+#[tauri::command]
+async fn rebase_change(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    mode: String,
+    revset: String,
+    destination: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.rebase(&mode, &revset, &destination)).await
+}
+
+/// Discard working-copy changes to `paths` (all when empty). Undoable via the op log.
+#[tauri::command]
+async fn restore_paths(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.restore_paths(&paths)).await
+}
+
+#[tauri::command]
+async fn set_bookmark(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    revset: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.bookmark_set(&name, &revset)).await
+}
+
+#[tauri::command]
+async fn delete_bookmark(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.bookmark_delete(&name)).await
+}
+
+#[tauri::command]
+async fn git_fetch(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    remote: Option<String>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.git_fetch(remote.as_deref())).await
+}
+
+/// Push a bookmark, or `change` to auto-name one from the change id. The forge prints a
+/// ready-made pull-request URL on a branch-creating push; [`pull_request_url`] finds it.
+#[tauri::command]
+async fn git_push(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    remote: Option<String>,
+    bookmark: Option<String>,
+    change: Option<String>,
+) -> Result<PushResult, String> {
+    let repo = repo_handle(&state)?;
+    let outcome = run_mutation(&app, repo, move |repo| {
+        repo.git_push(remote.as_deref(), bookmark.as_deref(), change.as_deref())
+    })
+    .await?;
+    let url = pull_request_url(&outcome.message);
+    Ok(PushResult { outcome, pull_request_url: url })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PushResult {
+    #[serde(flatten)]
+    outcome: Outcome,
+    /// Forge-provided "create a pull request" link, when the push produced one.
+    pull_request_url: Option<String>,
+}
+
+/// Scrape the pull-request URL forges print on a branch-creating push. Works for tangled,
+/// GitHub, GitLab and Gitea without any forge API, auth, or per-forge code.
+fn pull_request_url(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find(|token| {
+            let token = token.trim_end_matches(['.', ',']);
+            token.starts_with("http")
+                && ["pulls/new", "pull/new", "merge_requests/new", "compare/", "/pulls?"]
+                    .iter()
+                    .any(|marker| token.contains(marker))
+        })
+        .map(|token| {
+            token
+                .trim_end_matches(['.', ','])
+                .to_string()
+        })
+}
+
+#[tauri::command]
+async fn remotes(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || vcs(repo.remotes())).await
+}
+
+// -- Operation log / undo --
+
+#[tauri::command]
+async fn operation_log(
+    state: tauri::State<'_, AppState>,
+    limit: usize,
+) -> Result<Vec<Operation>, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || vcs(repo.operations(limit))).await
+}
+
+#[tauri::command]
+async fn undo(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, |repo| repo.undo()).await
+}
+
+#[tauri::command]
+async fn restore_operation(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    operation: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.op_restore(&operation)).await
+}
+
+#[tauri::command]
+async fn revert_operation(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    operation: String,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state)?;
+    run_mutation(&app, repo, move |repo| repo.op_revert(&operation)).await
 }
 
 #[tauri::command]
@@ -381,15 +607,14 @@ async fn file_content(
         Some(revset) => vcs(repo.file_content(&revset, &path)),
         None => {
             let full = repo.root().join(&path);
-            std::fs::read_to_string(&full).map_err(|error| {
-                format!("cannot read {}: {error}", full.display())
-            })
+            std::fs::read_to_string(&full)
+                .map_err(|error| format!("cannot read {}: {error}", full.display()))
         }
     })
     .await
 }
 
-/// Stored walkthrough for a change, plus whether it still matches the current diff.
+/// Stored walkthrough for a change/// Stored walkthrough for a change, plus whether it still matches the current diff.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WalkthroughStatus {
@@ -542,7 +767,23 @@ pub fn run() {
             pick_repository,
             recent_repos,
             file_content,
-            import_walkthrough
+            import_walkthrough,
+            edit_change,
+            split_paths,
+            abandon_change,
+            duplicate_change,
+            backout_change,
+            rebase_change,
+            restore_paths,
+            set_bookmark,
+            delete_bookmark,
+            git_fetch,
+            git_push,
+            remotes,
+            operation_log,
+            undo,
+            restore_operation,
+            revert_operation
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
@@ -571,4 +812,42 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running jjdiff");
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::pull_request_url;
+
+    #[test]
+    fn scrapes_forge_pull_request_urls() {
+        // tangled (verbatim from a real push)
+        let tangled = "remote: →  Open pull request:\nremote:    https://tangled.org/valpinkman.tngl.sh/jjdiff/pulls/new?source=branch&sourceBranch=x&targetBranch=main";
+        assert_eq!(
+            pull_request_url(tangled).as_deref(),
+            Some("https://tangled.org/valpinkman.tngl.sh/jjdiff/pulls/new?source=branch&sourceBranch=x&targetBranch=main")
+        );
+
+        let github = "remote: Create a pull request for 'feature' on GitHub by visiting:\nremote:   https://github.com/owner/repo/pull/new/feature";
+        assert_eq!(
+            pull_request_url(github).as_deref(),
+            Some("https://github.com/owner/repo/pull/new/feature")
+        );
+
+        let gitlab = "remote: To create a merge request for feature, visit:\nremote:   https://gitlab.com/owner/repo/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature";
+        assert!(pull_request_url(gitlab).unwrap().contains("merge_requests/new"));
+
+        // Trailing punctuation must not end up in the URL.
+        let punctuated = "see https://github.com/o/r/pull/new/x.";
+        assert_eq!(
+            pull_request_url(punctuated).as_deref(),
+            Some("https://github.com/o/r/pull/new/x")
+        );
+    }
+
+    #[test]
+    fn ordinary_push_output_has_no_url() {
+        assert!(pull_request_url("bookmark: main [move forward from a to b]").is_none());
+        assert!(pull_request_url("Nothing changed.").is_none());
+    }
 }

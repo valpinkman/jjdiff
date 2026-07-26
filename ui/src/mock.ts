@@ -9,6 +9,7 @@ import type {
   ReviewStatus,
   Walkthrough,
   WalkthroughStatus,
+  Operation,
 } from './ipc.js';
 
 const change = (partial: Partial<Change> & Pick<Change, 'changeId' | 'description'>): Change => ({
@@ -263,3 +264,38 @@ export const mockFileContent = (path: string): string => {
   }
   return Array.from({ length: 20 }, (_, i) => `// line ${i + 1}`).join('\n');
 };
+
+export const mockOperations: Operation[] = [
+  {
+    id: 'op1',
+    description: 'describe commit 459309ebf873',
+    args: 'jj describe -r @ -m "Plan Phase 2"',
+    time: '2026-07-26T21:02:00+02:00',
+    user: 'valpinkman',
+    snapshot: false,
+  },
+  {
+    id: 'op2',
+    description: 'push all deleted bookmarks/tags to git remote origin',
+    args: 'jj git push --remote origin --deleted',
+    time: '2026-07-26T20:58:00+02:00',
+    user: 'valpinkman',
+    snapshot: false,
+  },
+  {
+    id: 'op3',
+    description: 'snapshot working copy',
+    args: null,
+    time: '2026-07-26T20:57:00+02:00',
+    user: 'valpinkman',
+    snapshot: true,
+  },
+  {
+    id: 'op4',
+    description: 'rebase commit 1da27fbb6a60 onto main',
+    args: 'jj rebase -r worktree-correctness -d main',
+    time: '2026-07-26T20:40:00+02:00',
+    user: 'valpinkman',
+    snapshot: false,
+  },
+];

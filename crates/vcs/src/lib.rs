@@ -11,7 +11,7 @@
 mod change;
 mod runner;
 
-pub use change::{Change, EvologEntry, Signature};
+pub use change::{Change, EvologEntry, Operation, Signature};
 pub use runner::JjRunner;
 
 use std::path::{Path, PathBuf};
@@ -37,6 +37,15 @@ pub enum VcsError {
 }
 
 pub type Result<T> = std::result::Result<T, VcsError>;
+
+/// What a mutation did: jj's own narration, and the operation it produced so the UI can
+/// offer an undo for exactly that step.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outcome {
+    pub message: String,
+    pub operation: String,
+}
 
 /// A discovered, colocated jj repository. Cheap to clone (two paths) — commands clone it out
 /// of app state so blocking jj work can run off the main thread.
@@ -112,11 +121,10 @@ impl Repo {
     /// Recent history for the graph view: ancestors of `@` and every bookmark, capped.
     /// jj log order is reverse-topological (children before parents), which the UI's
     /// lane-assignment algorithm depends on.
-    pub fn graph(&self, limit: usize) -> Result<Vec<Change>> {
+    pub fn graph(&self, revset: &str, limit: usize) -> Result<Vec<Change>> {
         let limit = limit.to_string();
         let out = self.runner.read(&[
-            "log", "--no-graph", "-n", &limit, "-r", "ancestors(@ | bookmarks())", "-T",
-            LOG_TEMPLATE,
+            "log", "--no-graph", "-n", &limit, "-r", revset, "-T", LOG_TEMPLATE,
         ])?;
         out.lines()
             .filter(|l| !l.is_empty())
@@ -219,34 +227,174 @@ impl Repo {
             .collect())
     }
 
+    // -- Operation log --
+
+    /// Recent operations, newest first. `json(self)` yields id, parents, timestamps,
+    /// description and the literal argv — no parsing required.
+    pub fn operations(&self, limit: usize) -> Result<Vec<Operation>> {
+        let limit = limit.to_string();
+        let out = self.runner.read(&[
+            "op", "log", "--no-graph", "-n", &limit, "-T", r#"json(self) ++ "\n""#,
+        ])?;
+        out.lines()
+            .filter(|line| !line.is_empty())
+            .map(change::parse_operation)
+            .collect()
+    }
+
+    /// Id of the operation at the head of the log — the one `undo` would reverse.
+    pub fn current_operation(&self) -> Result<String> {
+        Ok(self
+            .operations(1)?
+            .into_iter()
+            .next()
+            .map(|op| op.id)
+            .unwrap_or_default())
+    }
+
     // -- Mutations (jj-native verbs; no staging axis) --
+    //
+    // Every mutation goes through `mutate()`, which returns jj's own narration plus the
+    // operation id it produced, so the UI can report what happened and offer an undo.
 
-    /// `jj absorb`: route working-copy hunks into the ancestor changes that last touched
-    /// those lines. Returns jj's summary of what moved where.
-    pub fn absorb(&self) -> Result<String> {
-        self.runner.mutate_capturing_stderr(&["absorb"])
+    fn mutate(&self, args: &[&str]) -> Result<Outcome> {
+        let message = self.runner.mutate_capturing_stderr(args)?;
+        Ok(Outcome { message, operation: self.current_operation().unwrap_or_default() })
     }
 
-    pub fn describe(&self, change_id: &str, message: &str) -> Result<()> {
-        self.runner
-            .mutate(&["describe", "-r", change_id, "-m", message])?;
-        Ok(())
+    pub fn describe(&self, change_id: &str, message: &str) -> Result<Outcome> {
+        self.mutate(&["describe", "-r", change_id, "-m", message])
     }
 
-    pub fn new_change(&self) -> Result<()> {
-        self.runner.mutate(&["new"])?;
-        Ok(())
+    /// `jj new` on top of `parents` (the working copy when empty).
+    pub fn new_change(&self, parents: &[String]) -> Result<Outcome> {
+        let mut args = vec!["new"];
+        args.extend(parents.iter().map(String::as_str));
+        self.mutate(&args)
     }
 
-    /// Move `paths` (all paths when empty) from one change into another.
-    pub fn squash_paths(&self, from: &str, into: &str, paths: &[String]) -> Result<()> {
+    /// `jj edit` — move the working copy onto an existing change.
+    pub fn edit(&self, revset: &str) -> Result<Outcome> {
+        self.mutate(&["edit", revset])
+    }
+
+    /// Move `paths` (all when empty) from one change into another.
+    pub fn squash_paths(&self, from: &str, into: &str, paths: &[String]) -> Result<Outcome> {
         let mut args: Vec<&str> = vec!["squash", "--from", from, "--into", into];
         if !paths.is_empty() {
             args.push("--");
             args.extend(paths.iter().map(String::as_str));
         }
-        self.runner.mutate(&args)?;
-        Ok(())
+        self.mutate(&args)
+    }
+
+    /// `jj absorb`: route working-copy hunks into the ancestors that last touched them.
+    pub fn absorb(&self) -> Result<Outcome> {
+        self.mutate(&["absorb"])
+    }
+
+    /// File-level `jj split`: the named paths move to the first commit, the rest to a
+    /// child. Non-interactive on purpose — hunk-level splitting needs a diff-editor shim.
+    pub fn split_paths(&self, revset: &str, paths: &[String]) -> Result<Outcome> {
+        let mut args: Vec<&str> = vec!["split", "-r", revset, "--"];
+        args.extend(paths.iter().map(String::as_str));
+        self.mutate(&args)
+    }
+
+    pub fn abandon(&self, revset: &str) -> Result<Outcome> {
+        self.mutate(&["abandon", revset])
+    }
+
+    pub fn duplicate(&self, revset: &str) -> Result<Outcome> {
+        self.mutate(&["duplicate", revset])
+    }
+
+    /// Undo a change's effect as a new child commit (git revert's equivalent).
+    pub fn backout(&self, revset: &str) -> Result<Outcome> {
+        self.mutate(&["backout", "-r", revset])
+    }
+
+    /// `jj rebase` with the caller's choice of scope: "revision", "source", or "branch".
+    pub fn rebase(&self, mode: &str, revset: &str, destination: &str) -> Result<Outcome> {
+        let flag = match mode {
+            "source" => "-s",
+            "branch" => "-b",
+            _ => "-r",
+        };
+        self.mutate(&["rebase", flag, revset, "-d", destination])
+    }
+
+    /// Discard working-copy changes to `paths` (all when empty). Destructive, but the
+    /// operation log makes it recoverable.
+    pub fn restore_paths(&self, paths: &[String]) -> Result<Outcome> {
+        let mut args: Vec<&str> = vec!["restore"];
+        if !paths.is_empty() {
+            args.push("--");
+            args.extend(paths.iter().map(String::as_str));
+        }
+        self.mutate(&args)
+    }
+
+    // -- Bookmarks --
+
+    pub fn bookmark_set(&self, name: &str, revset: &str) -> Result<Outcome> {
+        self.mutate(&["bookmark", "set", name, "-r", revset])
+    }
+
+    pub fn bookmark_delete(&self, name: &str) -> Result<Outcome> {
+        self.mutate(&["bookmark", "delete", name])
+    }
+
+    // -- Remote --
+
+    pub fn git_fetch(&self, remote: Option<&str>) -> Result<Outcome> {
+        let mut args = vec!["git", "fetch"];
+        if let Some(remote) = remote {
+            args.extend(["--remote", remote]);
+        }
+        self.mutate(&args)
+    }
+
+    /// Push a bookmark, or `--change` to auto-name one from the change id.
+    pub fn git_push(
+        &self,
+        remote: Option<&str>,
+        bookmark: Option<&str>,
+        change: Option<&str>,
+    ) -> Result<Outcome> {
+        let mut args = vec!["git", "push"];
+        if let Some(remote) = remote {
+            args.extend(["--remote", remote]);
+        }
+        if let Some(bookmark) = bookmark {
+            args.extend(["-b", bookmark]);
+        }
+        if let Some(change) = change {
+            args.extend(["-c", change]);
+        }
+        self.mutate(&args)
+    }
+
+    pub fn remotes(&self) -> Result<Vec<String>> {
+        let out = self.runner.read(&["git", "remote", "list"])?;
+        Ok(out
+            .lines()
+            .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+            .collect())
+    }
+
+    // -- Undo / time travel --
+
+    pub fn undo(&self) -> Result<Outcome> {
+        self.mutate(&["undo"])
+    }
+
+    pub fn op_restore(&self, operation: &str) -> Result<Outcome> {
+        self.mutate(&["op", "restore", operation])
+    }
+
+    pub fn op_revert(&self, operation: &str) -> Result<Outcome> {
+        self.mutate(&["op", "revert", operation])
     }
 
     pub fn user_identity(&self) -> Result<(String, String)> {

@@ -8,7 +8,22 @@ import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
 import {
+  abandonChange,
   absorb,
+  backoutChange,
+  deleteBookmark,
+  duplicateChange,
+  editChange,
+  getOperationLog,
+  getRemotes,
+  gitFetch,
+  gitPush,
+  rebaseChange,
+  restoreOperation,
+  restorePaths,
+  setBookmark,
+  splitPaths,
+  undo,
   describeChange,
   generateWalkthrough,
   getConfig,
@@ -32,6 +47,8 @@ import {
   type Change,
   type FilePatch,
   type RepoState,
+  type Operation,
+  type Outcome,
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
@@ -43,6 +60,29 @@ import type { DiffLayout } from './rows.js';
 
 /** What the main pane shows for the selected change. */
 type ViewMode = 'full' | 'interdiff';
+
+/** Revsets people actually reach for; the empty one restores the default view. */
+const REVSET_PRESETS: { label: string; revset: string }[] = [
+  { label: 'All', revset: '' },
+  { label: 'Stack', revset: 'trunk()..@ | @' },
+  { label: 'Recent', revset: 'ancestors(@, 50)' },
+  { label: 'Mine', revset: 'mine()' },
+  { label: 'Conflicts', revset: 'conflicts()' },
+  { label: 'Bookmarks', revset: 'ancestors(bookmarks(), 5)' },
+];
+
+/** Compact relative age: now, 5m, 3h, 2d. */
+function relativeTime(timestamp: string): string {
+  const then = Date.parse(timestamp);
+  if (Number.isNaN(then)) return '';
+  const seconds = Math.max(0, (Date.now() - then) / 1000);
+  if (seconds < 60) return 'now';
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.floor(minutes)}m ago`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.floor(hours)}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 /**
  * App shell. LIGHT DOM, non-negotiably: the diff pane (jj-patch-view) is a descendant, and
@@ -72,7 +112,9 @@ export class App extends LitElement {
   @state() private description = '';
   @state() private barOpen = false;
   @state() private viewMode: ViewMode = 'full';
-  @state() private sidebarTab: 'stack' | 'files' | 'steps' = 'stack';
+  @state() private sidebarTab: 'stack' | 'files' | 'steps' | 'ops' = 'stack';
+  /** Non-working-copy selection opens the detail view instead of jumping to Files. */
+  @state() private detailView = false;
   @state() private walkthrough: Walkthrough | null = null;
   @state() private walkStale = false;
   @state() private walkActive = false;
@@ -88,6 +130,13 @@ export class App extends LitElement {
   @state() private searchCount = 0;
   @state() private searchCurrent = -1;
   @state() private wordWrap = false;
+  /** Last mutation's narration + the operation that would undo it. */
+  @state() private lastOutcome: (Outcome & { pullRequestUrl?: string | null }) | null = null;
+  @state() private operations: Operation[] = [];
+  @state() private busy: string | null = null;
+  /** Revset scoping the Log graph; null = the default. */
+  @state() private graphRevset: string | null = null;
+  @state() private revsetDraft = '';
   /** File the diff viewport is currently inside (sticky breadcrumb). */
   @state() private visibleFile: string | null = null;
   /** Full file text for context expansion, fetched on demand. */
@@ -325,7 +374,7 @@ export class App extends LitElement {
 
   private async refresh() {
     try {
-      this.repo = await getRepoState();
+      this.repo = await getRepoState(this.graphRevset ?? undefined);
       this.error = null;
       // Seed the description editor only when the selection target changed — a background
       // refresh must not clobber what the user is typing.
@@ -400,9 +449,12 @@ export class App extends LitElement {
     this.walkActive = false;
     this.walkStep = -1;
     this.stackReview = null;
-    this.sidebarTab = 'files';
-    const target = this.repo?.stack.find((c) => c.changeId === change.changeId);
-    this.description = target?.description ?? '';
+    // The working copy keeps the edit-first layout; anything else opens the detail view
+    // rather than jumping to Files, which used to throw away the change's identity.
+    this.detailView = !change.workingCopy;
+    // Seed from the clicked change itself: older changes live in `graph`, not `stack`,
+    // so a stack-only lookup silently blanked their description.
+    this.description = change.description;
     this.seededFor = change.changeId;
     void this.loadDiff();
     void this.loadReview();
@@ -572,6 +624,42 @@ export class App extends LitElement {
     return new Set(this.walkthrough.steps[this.walkStep]?.hunkIds ?? []);
   }
 
+  /** Run a jj mutation: capture its narration for the toast, refresh, surface errors. */
+  private async command(label: string, action: () => Promise<Outcome>) {
+    if (this.busy) return;
+    this.busy = label;
+    try {
+      const outcome = await action();
+      this.lastOutcome = outcome;
+      this.actionError = null;
+      await this.refresh();
+      if (this.sidebarTab === 'ops') {
+        await this.loadOperations();
+      }
+    } catch (error) {
+      this.actionError = String(error);
+      this.lastOutcome = null;
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** Scope the Log graph. jj validates the revset; its error is surfaced verbatim. */
+  private applyRevset(revset: string) {
+    const next = revset.trim();
+    this.graphRevset = next === '' ? null : next;
+    this.revsetDraft = next;
+    void this.refresh();
+  }
+
+  private async loadOperations() {
+    try {
+      this.operations = await getOperationLog(100);
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
+
   private async run(action: () => Promise<void>) {
     try {
       await action();
@@ -584,31 +672,155 @@ export class App extends LitElement {
 
   private saveDescription() {
     const change = this.selectedChange;
-    if (!change) return;
-    void this.run(async () => {
-      await describeChange(change.changeId, this.description);
-      await this.refresh();
-    });
+    if (!change || change.immutable) return;
+    void this.command('describe', () => describeChange(change.changeId, this.description));
   }
 
   private commitAndNew() {
     const change = this.selectedChange;
     if (!change) return;
-    void this.run(async () => {
+    void this.command('commit', async () => {
       await describeChange(change.changeId, this.description);
-      await newChange();
+      const outcome = await newChange();
       this.selected = null;
       this.seededFor = null;
-      await this.refresh();
+      this.detailView = false;
+      return outcome;
     });
   }
 
   private runAbsorb() {
-    void this.run(async () => {
-      const summary = await absorb();
-      this.actionInfo = summary || 'Nothing to absorb.';
-      await this.refresh();
+    void this.command('absorb', () => absorb());
+  }
+
+  /** Actions available on the selected change, gated by jj's own rules. */
+  private editSelected() {
+    const change = this.selectedChange;
+    if (!change) return;
+    void this.command('edit', async () => {
+      const outcome = await editChange(change.changeId);
+      this.selected = null;
+      this.seededFor = null;
+      this.detailView = false;
+      return outcome;
     });
+  }
+
+  private newOnSelected() {
+    const change = this.selectedChange;
+    if (!change) return;
+    void this.command('new', async () => {
+      const outcome = await newChange([change.changeId]);
+      this.selected = null;
+      this.seededFor = null;
+      this.detailView = false;
+      return outcome;
+    });
+  }
+
+  private abandonSelected() {
+    const change = this.selectedChange;
+    if (!change || change.immutable) return;
+    const label = change.description.split('\n')[0] || change.changeId.slice(0, 8);
+    if (!confirm(`Abandon "${label}"?\n\nUndoable from the Ops tab.`)) return;
+    void this.command('abandon', async () => {
+      const outcome = await abandonChange(change.changeId);
+      this.selected = null;
+      this.detailView = false;
+      return outcome;
+    });
+  }
+
+  private duplicateSelected() {
+    const change = this.selectedChange;
+    if (!change) return;
+    void this.command('duplicate', () => duplicateChange(change.changeId));
+  }
+
+  private backoutSelected() {
+    const change = this.selectedChange;
+    if (!change) return;
+    void this.command('backout', () => backoutChange(change.changeId));
+  }
+
+  private rebaseSelected() {
+    const change = this.selectedChange;
+    if (!change || change.immutable || !this.repo) return;
+    const destination = prompt(
+      'Rebase onto which revision?\n\nA change id, bookmark, or revset (e.g. main, @-).',
+      'main',
+    );
+    if (!destination) return;
+    void this.command('rebase', () =>
+      rebaseChange('source', change.changeId, destination.trim()),
+    );
+  }
+
+  private splitSelectedFiles() {
+    const change = this.selectedChange;
+    if (!change || change.immutable) return;
+    const paths = this.focusPath ? [this.focusPath] : [...this.viewedPaths];
+    if (paths.length === 0) {
+      this.actionError =
+        'Select a file (or mark the files to keep as viewed) before splitting.';
+      return;
+    }
+    void this.command('split', () => splitPaths(change.changeId, paths));
+  }
+
+  private restoreSelectedFile() {
+    if (!this.isWorkingCopySelected) return;
+    const paths = this.focusPath ? [this.focusPath] : [];
+    const what = paths.length ? paths[0] : 'ALL working-copy changes';
+    if (!confirm(`Discard ${what}?\n\nUndoable from the Ops tab.`)) return;
+    void this.command('restore', () => restorePaths(paths));
+  }
+
+  private createBookmark() {
+    const change = this.selectedChange;
+    if (!change) return;
+    const name = prompt('Bookmark name:');
+    if (!name?.trim()) return;
+    void this.command('bookmark', () => setBookmark(name.trim(), change.changeId));
+  }
+
+  private removeBookmark(name: string) {
+    if (!confirm(`Delete bookmark "${name}"?`)) return;
+    void this.command('bookmark', () => deleteBookmark(name));
+  }
+
+  private runFetch() {
+    void this.command('fetch', () => gitFetch());
+  }
+
+  /** Push the selected change: an existing bookmark if it has one, else --change. */
+  private runPush() {
+    const change = this.selectedChange;
+    if (!change) return;
+    const bookmark = change.bookmarks[0];
+    void this.command('push', async () => {
+      const result = await gitPush(
+        bookmark ? { bookmark } : { change: change.changeId },
+      );
+      this.lastOutcome = result;
+      return result;
+    });
+  }
+
+  private runUndo() {
+    void this.command('undo', () => undo());
+  }
+
+  private restoreTo(operation: Operation) {
+    if (
+      !confirm(
+        `Restore the repository to just after:\n\n${operation.description}\n\n` +
+          'This rewrites the working copy. It is itself undoable.',
+      )
+    ) {
+      return;
+    }
+    void this.command('op restore', () => restoreOperation(operation.id));
   }
 
   private markCurrentReviewed() {
@@ -826,6 +1038,12 @@ export class App extends LitElement {
               Absorb
             </button>`
           : nothing}
+        <button class="tool" @click=${this.runFetch} title="jj git fetch" ?disabled=${!!this.busy}>
+          Fetch
+        </button>
+        <button class="tool" @click=${this.runUndo} title="Undo the last operation">
+          Undo
+        </button>
         <button class="tool" @click=${this.toggleLayout} title="Toggle diff layout">
           ${this.layout === 'split' ? 'Split' : 'Unified'}
         </button>
@@ -869,15 +1087,79 @@ export class App extends LitElement {
                 ${this.walkStale ? html`<span class="stale-dot" title="Content changed"></span>` : nothing}
               </button>`
             : nothing}
+          <button
+            class="tab ${this.sidebarTab === 'ops' ? 'active' : ''}"
+            @click=${() => {
+              this.sidebarTab = 'ops';
+              void this.loadOperations();
+            }}
+          >
+            Ops
+          </button>
         </nav>
         ${this.sidebarTab === 'stack'
-          ? html`<div class="stack">
+          ? html`<div class="revset-bar">
+                ${REVSET_PRESETS.map(
+                  (preset) => html`<button
+                    class="preset ${(this.graphRevset ?? '') === preset.revset ? 'on' : ''}"
+                    title=${preset.revset}
+                    @click=${() => this.applyRevset(preset.revset)}
+                  >
+                    ${preset.label}
+                  </button>`,
+                )}
+                <input
+                  class="revset-input"
+                  placeholder="revset…"
+                  .value=${this.revsetDraft}
+                  @input=${(event: Event) =>
+                    (this.revsetDraft = (event.target as HTMLInputElement).value)}
+                  @keydown=${(event: KeyboardEvent) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      this.applyRevset(this.revsetDraft);
+                    }
+                  }}
+                />
+              </div>
+              <div class="stack">
               <jj-log-graph
                 .changes=${this.repo.graph}
                 .selected=${selectedId}
                 @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
               ></jj-log-graph>
-            </div>`
+              </div>`
+          : this.sidebarTab === 'ops'
+            ? html`<div class="files">
+                ${this.operations.length === 0
+                  ? html`<div class="ops-empty">No operations recorded yet.</div>`
+                  : this.operations
+                      .filter((operation) => !operation.snapshot)
+                      .map(
+                        (operation, index) => html`<div class="op">
+                          <div class="op-head">
+                            <span class="op-when">${relativeTime(operation.time)}</span>
+                            ${index === 0
+                              ? html`<span class="op-current">current</span>`
+                              : nothing}
+                          </div>
+                          <div class="op-desc">${operation.description}</div>
+                          ${operation.args
+                            ? html`<code class="op-args">${operation.args}</code>`
+                            : nothing}
+                          <div class="op-actions">
+                            ${index === 0
+                              ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
+                              : html`<button
+                                  class="tool"
+                                  @click=${() => this.restoreTo(operation)}
+                                >
+                                  Restore here
+                                </button>`}
+                          </div>
+                        </div>`,
+                      )}
+              </div>`
           : html`
               ${change
                 ? html`<button class="context-card" @click=${() => (this.sidebarTab = 'stack')}>
@@ -925,42 +1207,133 @@ export class App extends LitElement {
         }}
         @expand-context=${this.onExpandContext}
       >
-        ${change
-          ? html`<div class="describe">
-              <textarea
-                placeholder=${isWc ? 'Describe this change…' : 'Description'}
-                .value=${this.description}
-                ?disabled=${change.immutable}
-                @input=${(event: Event) =>
-                  (this.description = (event.target as HTMLTextAreaElement).value)}
-              ></textarea>
-              <button
-                class="tool"
-                ?disabled=${change.immutable || this.description === change.description}
-                @click=${this.saveDescription}
-              >
-                Describe
-              </button>
-              ${isWc
-                ? html`<button
-                    class="tool primary"
-                    ?disabled=${this.files.length === 0 || !this.description.trim()}
-                    title="Describe @ and start a new change on top (jj describe + jj new)"
-                    @click=${this.commitAndNew}
+        ${change && this.detailView
+          ? html`<section class="detail">
+              <header class="detail-head">
+                <span class="detail-id">${change.changeId.slice(0, 12)}</span>
+                ${change.bookmarks.map(
+                  (bookmark) => html`<span class="tag"
+                    >${bookmark}
+                    <button
+                      class="tag-x"
+                      title="Delete bookmark"
+                      @click=${() => this.removeBookmark(bookmark)}
+                    >
+                      ×
+                    </button></span
+                  >`,
+                )}
+                ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
+                ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
+                ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
+                <span class="spacer"></span>
+                <span class="detail-when"
+                  >${change.author.name} · ${relativeTime(change.committer.timestamp)}</span
+                >
+              </header>
+
+              ${change.immutable
+                ? html`<pre class="detail-desc">${change.description || '(no description)'}</pre>`
+                : html`<textarea
+                      class="detail-edit"
+                      .value=${this.description}
+                      @input=${(event: Event) =>
+                        (this.description = (event.target as HTMLTextAreaElement).value)}
+                    ></textarea>
+                    <div class="detail-actions">
+                      <button
+                        class="tool"
+                        ?disabled=${this.description === change.description}
+                        @click=${this.saveDescription}
+                      >
+                        Save description
+                      </button>
+                    </div>`}
+
+              <div class="detail-actions">
+                <button class="tool primary" @click=${this.editSelected}>Work on this</button>
+                <button class="tool" @click=${this.newOnSelected}>New on top</button>
+                <button
+                  class="tool"
+                  ?disabled=${change.immutable}
+                  title="Rebase this change and its descendants onto another revision"
+                  @click=${this.rebaseSelected}
+                >
+                  Rebase…
+                </button>
+                <button
+                  class="tool"
+                  ?disabled=${change.immutable || this.files.length < 2}
+                  title="Move the focused file out into its own change"
+                  @click=${this.splitSelectedFiles}
+                >
+                  Split file
+                </button>
+                <button class="tool" @click=${this.duplicateSelected}>Duplicate</button>
+                <button class="tool" @click=${this.backoutSelected}>Back out</button>
+                <button class="tool" @click=${this.createBookmark}>Bookmark…</button>
+                <button class="tool" @click=${this.runPush}>Push</button>
+                <button
+                  class="tool danger"
+                  ?disabled=${change.immutable}
+                  @click=${this.abandonSelected}
+                >
+                  Abandon
+                </button>
+              </div>
+
+              <div class="detail-files">
+                <span class="detail-label">${this.files.length} file${
+                  this.files.length === 1 ? '' : 's'
+                }</span>
+                ${this.files.map(
+                  (file) => html`<button
+                    class="detail-file"
+                    @click=${() => this.patchView?.scrollToPath(file.path)}
                   >
-                    Commit & New
-                  </button>`
-                : html`<button
-                    class="tool ${this.changedSinceReview ? '' : 'on'}"
-                    title="Record the current commit as reviewed"
-                    @click=${this.markCurrentReviewed}
-                  >
-                    ${this.reviewedCommit && !this.changedSinceReview
-                      ? 'Reviewed ✓'
-                      : 'Mark Reviewed'}
-                  </button>`}
-            </div>`
-          : nothing}
+                    <span class="detail-file-status ${file.status}">${file.status[0]}</span>
+                    <span class="detail-file-path">${file.path}</span>
+                    <span class="detail-file-counts">
+                      ${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
+                      ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}
+                    </span>
+                  </button>`,
+                )}
+              </div>
+            </section>`
+          : change
+            ? html`<div class="describe">
+                <textarea
+                  placeholder="Describe this change…"
+                  .value=${this.description}
+                  @input=${(event: Event) =>
+                    (this.description = (event.target as HTMLTextAreaElement).value)}
+                ></textarea>
+                <button
+                  class="tool"
+                  ?disabled=${this.description === change.description}
+                  @click=${this.saveDescription}
+                >
+                  Describe
+                </button>
+                <button
+                  class="tool primary"
+                  ?disabled=${this.files.length === 0 || !this.description.trim()}
+                  title="Describe @ and start a new change on top (jj describe + jj new)"
+                  @click=${this.commitAndNew}
+                >
+                  Commit & New
+                </button>
+                <button
+                  class="tool"
+                  ?disabled=${this.files.length === 0}
+                  title="Discard the focused file's changes (or all when none is focused)"
+                  @click=${this.restoreSelectedFile}
+                >
+                  Discard…
+                </button>
+              </div>`
+            : nothing}
         ${change?.conflict
           ? html`<div class="banner conflict">
               ⚠ This change has unresolved conflicts

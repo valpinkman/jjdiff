@@ -119,3 +119,83 @@ mod tests {
         assert!(parse_record("not json").is_err());
     }
 }
+
+/// One entry from `jj op log`. jj's `json(self)` gives us everything, including the exact
+/// argv that produced the operation — no output parsing anywhere.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    pub id: String,
+    pub description: String,
+    /// Literal command line, when jj recorded one (snapshots have none).
+    pub args: Option<String>,
+    /// RFC 3339 start time.
+    pub time: String,
+    pub user: String,
+    /// Working-copy snapshots are noise in a user-facing log.
+    pub snapshot: bool,
+}
+
+#[derive(Deserialize)]
+struct OperationRecord {
+    id: String,
+    description: String,
+    time: OperationTime,
+    username: String,
+    #[serde(default)]
+    is_snapshot: bool,
+    #[serde(default)]
+    attributes: OperationAttributes,
+}
+
+#[derive(Deserialize)]
+struct OperationTime {
+    start: String,
+}
+
+#[derive(Deserialize, Default)]
+struct OperationAttributes {
+    #[serde(default)]
+    args: Option<String>,
+}
+
+pub(crate) fn parse_operation(line: &str) -> Result<Operation> {
+    let record: OperationRecord = serde_json::from_str(line)
+        .map_err(|error| VcsError::Parse(format!("bad op record: {error}; line: {line}")))?;
+    Ok(Operation {
+        id: record.id,
+        description: record.description,
+        args: record.attributes.args,
+        time: record.time.start,
+        user: record.username,
+        snapshot: record.is_snapshot,
+    })
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+
+    // Captured verbatim from `jj op log -T 'json(self)'` (jj 0.43.0).
+    const FIXTURE: &str = r#"{"id":"8ac573e89157","parents":["0d1e90d292e0"],"time":{"start":"2026-07-26T21:02:00.742+02:00","end":"2026-07-26T21:02:11.042+02:00"},"description":"push all deleted bookmarks/tags to git remote origin","hostname":"host.local","username":"valpinkman","is_snapshot":false,"workspace_name":"default","attributes":{"args":"jj git push --remote origin --deleted"}}"#;
+
+    #[test]
+    fn parses_operation_record() {
+        let op = parse_operation(FIXTURE).unwrap();
+        assert_eq!(op.id, "8ac573e89157");
+        assert_eq!(op.description, "push all deleted bookmarks/tags to git remote origin");
+        assert_eq!(op.args.as_deref(), Some("jj git push --remote origin --deleted"));
+        assert!(op.time.starts_with("2026-07-26"));
+        assert_eq!(op.user, "valpinkman");
+        assert!(!op.snapshot);
+    }
+
+    #[test]
+    fn tolerates_missing_attributes() {
+        // Snapshot operations carry no argv.
+        let raw = r#"{"id":"abc","parents":[],"time":{"start":"2026-01-01T00:00:00+00:00","end":"2026-01-01T00:00:01+00:00"},"description":"snapshot working copy","hostname":"h","username":"u","is_snapshot":true}"#;
+        let op = parse_operation(raw).unwrap();
+        assert!(op.args.is_none());
+        assert!(op.snapshot);
+    }
+}

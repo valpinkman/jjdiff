@@ -109,6 +109,27 @@ export interface Config {
   };
 }
 
+/** What a mutation did, plus the operation to undo it. */
+export interface Outcome {
+  message: string;
+  operation: string;
+}
+
+export interface PushResult extends Outcome {
+  /** Forge-provided "create a pull request" link, when the push produced one. */
+  pullRequestUrl: string | null;
+}
+
+export interface Operation {
+  id: string;
+  description: string;
+  /** Literal command line; snapshots have none. */
+  args: string | null;
+  time: string;
+  user: string;
+  snapshot: boolean;
+}
+
 export interface ReviewStatus {
   viewed: string[];
   /** Commit id stored when the change was last marked reviewed. */
@@ -160,8 +181,10 @@ export const generateWalkthrough = (
     : mock((m) => m.mockGenerateWalkthrough(changeId)).then((walkthrough) => walkthrough);
 export const getConfig = (): Promise<Config> =>
   IN_TAURI ? invoke<Config>('get_config') : mock((m) => m.mockConfig);
-export const getRepoState = (): Promise<RepoState> =>
-  IN_TAURI ? invoke<RepoState>('repo_state') : mock((m) => m.mockRepoState);
+export const getRepoState = (revset?: string): Promise<RepoState> =>
+  IN_TAURI
+    ? invoke<RepoState>('repo_state', { revset: revset ?? null })
+    : mock((m) => m.mockRepoState);
 export const getDiff = (revset: string | null, ignoreWhitespace: boolean): Promise<FilePatch[]> =>
   IN_TAURI
     ? invoke<FilePatch[]>('diff', { revset, ignoreWhitespace })
@@ -174,15 +197,87 @@ export const getInterdiffSinceReviewed = (
   IN_TAURI
     ? invoke<Interdiff>('interdiff_since_reviewed', { changeId, ignoreWhitespace })
     : mock((m) => m.mockInterdiff);
-export const describeChange = (changeId: string, message: string) =>
-  IN_TAURI ? invoke<void>('describe', { changeId, message }) : Promise.resolve();
-export const newChange = () => (IN_TAURI ? invoke<void>('new_change') : Promise.resolve());
-/** Move working-copy paths into `into` (parent when omitted): jj-native partial commit. */
-export const squashPaths = (paths: string[], into?: string) =>
-  IN_TAURI ? invoke<void>('squash_paths', { paths, into: into ?? null }) : Promise.resolve();
+const mockOutcome = (message: string): Promise<Outcome> =>
+  Promise.resolve({ message, operation: 'mock-op' });
+
+export const describeChange = (changeId: string, message: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('describe', { changeId, message }) : mockOutcome('Described.');
+export const newChange = (parents: string[] = []): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('new_change', { parents }) : mockOutcome('New change created.');
+/** jj edit — move the working copy onto an existing change. */
+export const editChange = (revset: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('edit_change', { revset }) : mockOutcome('Working copy moved.');
+/** Move paths from `from` into `into`: jj-native partial commit. */
+export const squashPaths = (
+  paths: string[],
+  into?: string,
+  from?: string,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('squash_paths', {
+        paths,
+        into: into ?? null,
+        from: from ?? null,
+      })
+    : mockOutcome('Squashed.');
 /** jj absorb — returns jj's summary of what moved where. */
-export const absorb = (): Promise<string> =>
-  IN_TAURI ? invoke<string>('absorb') : Promise.resolve('Absorbed 2 hunks (mock).');
+export const absorb = (): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('absorb') : mockOutcome('Absorbed 2 hunks (mock).');
+/** File-level split: `paths` stay put, the rest move to a new child change. */
+export const splitPaths = (revset: string, paths: string[]): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('split_paths', { revset, paths }) : mockOutcome('Split.');
+export const abandonChange = (revset: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('abandon_change', { revset }) : mockOutcome('Abandoned.');
+export const duplicateChange = (revset: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('duplicate_change', { revset }) : mockOutcome('Duplicated.');
+export const backoutChange = (revset: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('backout_change', { revset }) : mockOutcome('Backed out.');
+/** mode: "revision" | "source" | "branch". */
+export const rebaseChange = (
+  mode: string,
+  revset: string,
+  destination: string,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('rebase_change', { mode, revset, destination })
+    : mockOutcome('Rebased.');
+/** Discard working-copy changes to `paths` (all when empty). */
+export const restorePaths = (paths: string[]): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('restore_paths', { paths }) : mockOutcome('Restored.');
+export const setBookmark = (name: string, revset: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('set_bookmark', { name, revset }) : mockOutcome('Bookmark set.');
+export const deleteBookmark = (name: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('delete_bookmark', { name }) : mockOutcome('Bookmark deleted.');
+export const gitFetch = (remote?: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('git_fetch', { remote: remote ?? null }) : mockOutcome('Fetched.');
+export const gitPush = (options: {
+  remote?: string;
+  bookmark?: string;
+  change?: string;
+}): Promise<PushResult> =>
+  IN_TAURI
+    ? invoke<PushResult>('git_push', {
+        remote: options.remote ?? null,
+        bookmark: options.bookmark ?? null,
+        change: options.change ?? null,
+      })
+    : Promise.resolve({
+        message: 'Pushed (mock).',
+        operation: 'mock-op',
+        pullRequestUrl: 'https://example.test/pulls/new?sourceBranch=demo',
+      });
+export const getRemotes = (): Promise<string[]> =>
+  IN_TAURI ? invoke<string[]>('remotes') : Promise.resolve(['origin']);
+
+// -- Operation log / undo --
+export const getOperationLog = (limit = 100): Promise<Operation[]> =>
+  IN_TAURI ? invoke<Operation[]>('operation_log', { limit }) : mock((m) => m.mockOperations);
+export const undo = (): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('undo') : mockOutcome('Undid the last operation.');
+export const restoreOperation = (operation: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('restore_operation', { operation }) : mockOutcome('Restored.');
+export const revertOperation = (operation: string): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('revert_operation', { operation }) : mockOutcome('Reverted.');
 export const getConflicts = (revset: string): Promise<string[]> =>
   IN_TAURI ? invoke<string[]>('conflicts', { revset }) : Promise.resolve([]);
 export const getReviewStatus = (changeId: string): Promise<ReviewStatus> =>

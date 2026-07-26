@@ -606,6 +606,290 @@ jj-app .crumb-name {
   font-weight: 600;
 }
 
+/* --- Revset filter (Log tab) --- */
+jj-app .revset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--jj-border);
+}
+
+jj-app .preset {
+  border: 1px solid var(--jj-border);
+  background: none;
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+jj-app .preset:hover {
+  color: var(--jj-fg);
+  border-color: var(--jj-fg);
+}
+
+jj-app .preset.on {
+  border-color: var(--jj-accent);
+  color: var(--jj-accent);
+}
+
+jj-app .revset-input {
+  flex: 1;
+  min-width: 90px;
+  border: 1px solid var(--jj-border);
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  padding: 2px 6px;
+}
+
+jj-app .revset-input:focus {
+  outline: none;
+  border-color: var(--jj-accent);
+}
+
+/* --- Change detail view --- */
+jj-app .detail {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--jj-border);
+  overflow-y: auto;
+  max-height: 55%;
+}
+
+jj-app .detail-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+jj-app .detail-id {
+  font-family: var(--jj-mono);
+  font-size: 12px;
+  color: var(--jj-accent);
+}
+
+jj-app .detail-when {
+  font-size: 10.5px;
+  color: var(--jj-fg-muted);
+}
+
+jj-app .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--jj-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--jj-accent);
+  color: var(--jj-accent);
+  padding: 0 4px;
+}
+
+jj-app .tag.muted {
+  border-color: var(--jj-border);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .tag.warn {
+  border-color: var(--jj-removed-fg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .tag-x {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+
+jj-app .detail-desc {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  background: var(--jj-bg-panel);
+  border-left: 3px solid var(--jj-border);
+  font-family: var(--jj-sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  max-width: 78ch;
+}
+
+jj-app .detail-edit {
+  width: 100%;
+  max-width: 78ch;
+  min-height: 54px;
+  box-sizing: border-box;
+  border: 1px solid var(--jj-border);
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+
+jj-app .detail-edit:focus {
+  outline: none;
+  border-color: var(--jj-accent);
+  box-shadow: var(--jj-focus-ring);
+}
+
+jj-app .detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+jj-app button.tool.danger {
+  border-color: var(--jj-removed-fg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app button.tool.danger:hover {
+  background: var(--jj-removed-fg);
+  color: var(--jj-bg);
+}
+
+jj-app .detail-label {
+  display: block;
+  font-family: var(--jj-mono);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--jj-fg-muted);
+  margin-bottom: 3px;
+}
+
+jj-app .detail-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--jj-fg);
+  font-family: var(--jj-mono);
+  font-size: 11.5px;
+  text-align: left;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+jj-app .detail-file:hover {
+  background: var(--jj-bg-panel);
+}
+
+jj-app .detail-file-status {
+  text-transform: uppercase;
+  color: var(--jj-fg-muted);
+  width: 10px;
+}
+
+jj-app .detail-file-status.added { color: var(--jj-added-fg); }
+jj-app .detail-file-status.deleted { color: var(--jj-removed-fg); }
+
+jj-app .detail-file-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+jj-app .detail-file-counts .plus { color: var(--jj-added-fg); }
+jj-app .detail-file-counts .minus { color: var(--jj-removed-fg); }
+
+/* --- Operation log --- */
+jj-app .op {
+  border-bottom: 1px solid var(--jj-border);
+  padding: 7px 4px;
+}
+
+jj-app .op-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+jj-app .op-when {
+  font-family: var(--jj-mono);
+  font-size: 9.5px;
+  color: var(--jj-fg-muted);
+}
+
+jj-app .op-current {
+  font-family: var(--jj-mono);
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--jj-accent);
+  color: var(--jj-accent);
+  padding: 0 4px;
+}
+
+jj-app .op-desc {
+  font-size: 12px;
+  margin: 2px 0;
+}
+
+jj-app .op-args {
+  display: block;
+  font-family: var(--jj-mono);
+  font-size: 10px;
+  color: var(--jj-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+jj-app .op-actions {
+  margin-top: 5px;
+}
+
+jj-app .ops-empty {
+  color: var(--jj-fg-muted);
+  font-style: italic;
+  padding: 8px;
+}
+
+/* --- Mutation outcome + undo --- */
+jj-app .outcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--jj-border);
+  background: color-mix(in srgb, var(--jj-accent) 8%, var(--jj-bg));
+  font-size: 12px;
+}
+
+jj-app .outcome-text {
+  flex: 1;
+  font-family: var(--jj-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 4em;
+  overflow-y: auto;
+}
+
+jj-app a.tool {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
 jj-app .search-bar {
   display: flex;
   align-items: center;
