@@ -1,4 +1,7 @@
-//! jjdiff application shell: launch options, app state, IPC commands, repo watcher.
+//! jjdiff application shell: launch options, app state, IPC commands, repo watchers.
+
+mod config;
+mod viewed;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -10,6 +13,7 @@ use tauri::{Emitter, Manager};
 use jjdiff_diff::FilePatch;
 use jjdiff_vcs::{Change, Repo, VcsError};
 use jjdiff_watch::RepoWatcher;
+use viewed::ViewedStore;
 
 /// `jjdiff [revset] [-R|--repo <path>]`
 #[derive(Debug, Clone, Serialize)]
@@ -43,7 +47,8 @@ impl LaunchOptions {
 struct AppState {
     launch: LaunchOptions,
     repo: Mutex<Option<Repo>>,
-    _watcher: Mutex<Option<RepoWatcher>>,
+    viewed: Mutex<ViewedStore>,
+    _watchers: Mutex<Vec<RepoWatcher>>,
 }
 
 /// Serializable snapshot for the UI.
@@ -67,9 +72,18 @@ fn with_repo<T>(
     f(guard.as_ref().expect("repo present")).map_err(|e| e.to_string())
 }
 
+fn repo_root_string(state: &tauri::State<'_, AppState>) -> Result<String, String> {
+    with_repo(state, |repo| Ok(repo.root().to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 fn launch_options(state: tauri::State<'_, AppState>) -> LaunchOptions {
     state.launch.clone()
+}
+
+#[tauri::command]
+fn get_config() -> config::Config {
+    config::load()
 }
 
 #[tauri::command]
@@ -127,24 +141,70 @@ fn new_change(state: tauri::State<'_, AppState>) -> Result<(), String> {
     with_repo(&state, |repo| repo.new_change())
 }
 
+/// Move `paths` of the working copy into its parent (jj-native partial commit).
+#[tauri::command]
+fn squash_paths(state: tauri::State<'_, AppState>, paths: Vec<String>) -> Result<(), String> {
+    with_repo(&state, |repo| repo.squash_paths("@", "@-", &paths))
+}
+
+#[tauri::command]
+fn viewed_files(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+) -> Result<Vec<String>, String> {
+    let repo = repo_root_string(&state)?;
+    Ok(state.viewed.lock().expect("viewed lock").viewed(&repo, &change_id))
+}
+
+#[tauri::command]
+fn set_viewed(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    path: String,
+    viewed: bool,
+) -> Result<(), String> {
+    let repo = repo_root_string(&state)?;
+    state.viewed.lock().expect("viewed lock").set(&repo, &change_id, &path, viewed);
+    Ok(())
+}
+
 pub fn run() {
     let launch = LaunchOptions::from_env();
-    let state = AppState { launch, repo: Mutex::new(None), _watcher: Mutex::new(None) };
+    let state = AppState {
+        launch,
+        repo: Mutex::new(None),
+        viewed: Mutex::new(ViewedStore::default()),
+        _watchers: Mutex::new(Vec::new()),
+    };
 
     tauri::Builder::default()
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             launch_options,
+            get_config,
             repo_state,
             diff,
             describe,
-            new_change
+            new_change,
+            squash_paths,
+            viewed_files,
+            set_viewed
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
-            // Start the op-head watcher if we're in a repo; a failure here is not fatal —
-            // the UI still works, it just won't live-refresh.
+
+            let viewed_path = app
+                .path()
+                .app_data_dir()
+                .map(|dir| dir.join("viewed.json"))
+                .unwrap_or_else(|_| PathBuf::from(".jjdiff-viewed.json"));
+            *state.viewed.lock().expect("viewed lock") = ViewedStore::load(viewed_path);
+
+            // Watchers are not fatal: without them the UI still works, it just won't
+            // live-refresh.
             if let Ok(repo) = Repo::discover(&state.launch.repo_path) {
+                let mut watchers = Vec::new();
+
                 let handle = app.handle().clone();
                 match jjdiff_watch::watch_op_heads(
                     &repo.op_heads_dir(),
@@ -153,11 +213,23 @@ pub fn run() {
                         let _ = handle.emit("repo-changed", ());
                     },
                 ) {
-                    Ok(watcher) => {
-                        *state._watcher.lock().expect("watcher lock") = Some(watcher);
-                    }
-                    Err(error) => eprintln!("jjdiff: watcher disabled: {error}"),
+                    Ok(watcher) => watchers.push(watcher),
+                    Err(error) => eprintln!("jjdiff: op watcher disabled: {error}"),
                 }
+
+                let handle = app.handle().clone();
+                match jjdiff_watch::watch_working_copy(
+                    repo.root(),
+                    Duration::from_millis(400),
+                    move || {
+                        let _ = handle.emit("repo-changed", ());
+                    },
+                ) {
+                    Ok(watcher) => watchers.push(watcher),
+                    Err(error) => eprintln!("jjdiff: fs watcher disabled: {error}"),
+                }
+
+                *state._watchers.lock().expect("watcher lock") = watchers;
                 *state.repo.lock().expect("repo lock") = Some(repo);
             }
             Ok(())

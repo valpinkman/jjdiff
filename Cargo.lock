@@ -2755,6 +2755,8 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -2783,6 +2785,7 @@ dependencies = [
 name = "jjdiff-watch"
 version = "0.1.0"
 dependencies = [
+ "ignore",
  "notify",
  "tempfile",
  "thiserror 2.0.19",

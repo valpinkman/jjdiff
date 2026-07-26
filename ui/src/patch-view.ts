@@ -18,6 +18,11 @@ import { buildRows, type DiffLayout, type HlRef, type Row } from './rows.js';
 export class PatchView extends LitElement {
   @property({ attribute: false }) files: FilePatch[] = [];
   @property() layout: DiffLayout = 'split';
+  /** Paths marked viewed — their content collapses. */
+  @property({ attribute: false }) viewed: ReadonlySet<string> = new Set();
+  /** Whether per-file actions (viewed toggle, squash) apply to this diff. */
+  @property({ type: Boolean }) canSquash = false;
+  @property({ type: Boolean }) canMarkViewed = false;
 
   private highlights = new HighlightStore();
 
@@ -37,6 +42,18 @@ export class PatchView extends LitElement {
 
   private onTokens = () => this.requestUpdate();
 
+  private emit(name: 'squash-file', path: string): void;
+  private emit(name: 'toggle-viewed', path: string, viewed: boolean): void;
+  private emit(name: string, path: string, viewed?: boolean) {
+    this.dispatchEvent(
+      new CustomEvent(name, {
+        bubbles: true,
+        composed: true,
+        detail: viewed === undefined ? { path } : { path, viewed },
+      }),
+    );
+  }
+
   protected override willUpdate(changed: Map<string, unknown>) {
     if (changed.has('files')) {
       this.highlights.clear();
@@ -50,7 +67,7 @@ export class PatchView extends LitElement {
     if (this.files.length === 0) {
       return html`<p class="jj-empty">No changes.</p>`;
     }
-    const rows = buildRows(this.files, this.layout);
+    const rows = buildRows(this.files, this.layout, this.viewed);
     return html`<lit-virtualizer
       class="jj-patch ${this.layout}"
       scroller
@@ -63,7 +80,8 @@ export class PatchView extends LitElement {
     switch (row.kind) {
       case 'file': {
         const { file } = row;
-        return html`<div class="file-header" data-path=${file.path}>
+        const isViewed = this.viewed.has(file.path);
+        return html`<div class="file-header ${isViewed ? 'viewed' : ''}" data-path=${file.path}>
           <span class="file-status ${file.status}">${file.status}</span>
           <span class="file-path"
             >${file.oldPath ? html`${file.oldPath} → ` : nothing}${file.path}</span
@@ -72,6 +90,26 @@ export class PatchView extends LitElement {
             >${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
             ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}</span
           >
+          ${this.canSquash
+            ? html`<button
+                class="file-action"
+                title="Squash this file into the parent change (jj squash)"
+                @click=${() => this.emit('squash-file', file.path)}
+              >
+                ⇩ parent
+              </button>`
+            : nothing}
+          ${this.canMarkViewed
+            ? html`<label class="file-action viewed-toggle" title="Mark as viewed">
+                <input
+                  type="checkbox"
+                  .checked=${isViewed}
+                  @change=${(event: Event) =>
+                    this.emit('toggle-viewed', file.path, (event.target as HTMLInputElement).checked)}
+                />
+                viewed
+              </label>`
+            : nothing}
         </div>`;
       }
       case 'hunk':
@@ -119,6 +157,13 @@ export class PatchView extends LitElement {
 }
 
 const sign = (kind: Line['kind']) => (kind === 'added' ? '+' : kind === 'removed' ? '−' : ' ');
+
+declare global {
+  interface HTMLElementEventMap {
+    'squash-file': CustomEvent<{ path: string }>;
+    'toggle-viewed': CustomEvent<{ path: string; viewed: boolean }>;
+  }
+}
 
 declare global {
   interface HTMLElementTagNameMap {

@@ -70,10 +70,20 @@ export class FileTree extends LitElement {
     }
     .counts .plus { color: var(--jj-added-fg); }
     .counts .minus { color: var(--jj-removed-fg); }
+    .file.viewed .name {
+      color: var(--jj-fg-muted);
+      text-decoration: line-through;
+      text-decoration-color: var(--jj-border);
+    }
+    .check {
+      color: var(--jj-added-fg);
+      font-size: 10px;
+    }
   `;
 
   @property({ attribute: false }) files: FilePatch[] = [];
   @property() selected: string | null = null;
+  @property({ attribute: false }) viewed: ReadonlySet<string> = new Set();
 
   @state() private collapsed = new Set<string>();
 
@@ -98,13 +108,18 @@ export class FileTree extends LitElement {
       ${node.files.map(
         (file) => html`
           <button
-            class="file ${file.path === this.selected ? 'selected' : ''}"
+            class="file ${file.path === this.selected ? 'selected' : ''} ${this.viewed.has(
+              file.path,
+            )
+              ? 'viewed'
+              : ''}"
             style=${pad(depth)}
             title=${file.path}
             @click=${() => this.pick(file)}
           >
             <span class="dot ${file.status}"></span>
             <span class="name">${basename(file.path)}</span>
+            ${this.viewed.has(file.path) ? html`<span class="check">✓</span>` : nothing}
             <span class="counts">
               ${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
               ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}

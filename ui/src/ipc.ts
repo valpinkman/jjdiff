@@ -67,13 +67,28 @@ export interface LaunchOptions {
   revset: string | null;
 }
 
+export interface Config {
+  ui: {
+    diffStyle: string;
+    codeFontSize: number;
+    ignoreWhitespace: boolean;
+  };
+}
+
 export const getLaunchOptions = () => invoke<LaunchOptions>('launch_options');
+export const getConfig = () => invoke<Config>('get_config');
 export const getRepoState = () => invoke<RepoState>('repo_state');
 export const getDiff = (revset: string | null, ignoreWhitespace: boolean) =>
   invoke<FilePatch[]>('diff', { revset, ignoreWhitespace });
 export const describeChange = (changeId: string, message: string) =>
   invoke<void>('describe', { changeId, message });
 export const newChange = () => invoke<void>('new_change');
+/** Move working-copy paths into the parent change (jj-native partial commit). */
+export const squashPaths = (paths: string[]) => invoke<void>('squash_paths', { paths });
+export const getViewedFiles = (changeId: string) =>
+  invoke<string[]>('viewed_files', { changeId });
+export const setViewed = (changeId: string, path: string, viewed: boolean) =>
+  invoke<void>('set_viewed', { changeId, path, viewed });
 
 export const onRepoChanged = (callback: () => void): Promise<UnlistenFn> =>
   listen('repo-changed', callback);

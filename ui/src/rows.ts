@@ -35,10 +35,18 @@ export interface SideTexts {
   new: string[];
 }
 
-export function buildRows(files: FilePatch[], layout: DiffLayout): Row[] {
+export function buildRows(
+  files: FilePatch[],
+  layout: DiffLayout,
+  viewed: ReadonlySet<string> = new Set(),
+): Row[] {
   const rows: Row[] = [];
   files.forEach((file, fileIndex) => {
     rows.push({ kind: 'file', fileIndex, file });
+    if (viewed.has(file.path)) {
+      // Viewed files collapse — that is the point of the flag.
+      return;
+    }
     if (file.binary) {
       rows.push({ kind: 'notice', fileIndex, text: 'Binary file' });
       return;

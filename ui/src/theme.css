@@ -115,6 +115,36 @@ jj-patch-view {
   font-size: 11px;
 }
 
+.file-header.viewed .file-path {
+  color: var(--jj-fg-muted);
+}
+
+.file-action {
+  border: 1px solid var(--jj-border);
+  background: var(--jj-bg);
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-sans);
+  font-size: 11px;
+  font-weight: 400;
+  border-radius: 5px;
+  padding: 1px 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+
+.file-action:hover {
+  border-color: var(--jj-accent);
+  color: var(--jj-fg);
+}
+
+.viewed-toggle input {
+  accent-color: var(--jj-accent);
+  margin: 0;
+}
+
 .file-counts .plus { color: var(--jj-added-fg); }
 .file-counts .minus { color: var(--jj-removed-fg); }
 
