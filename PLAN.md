@@ -160,12 +160,12 @@ as a generated one, and `skills/jjdiff/SKILL.md` documents the loop. `check_vers
 gates on jj ≥ 0.33. Worktree rename detection (exact-content only) and nested `.gitignore`
 support in the fs watcher close the two known correctness gaps.
 
-## Phase 2 — jj as a whole tool (planned)
+## Phase 2 — jj as a whole tool ✅ SHIPPED
 
 M0–M7 made jjdiff a *reviewer*. Phase 2 makes it a *client*: acting on the repo, not just
 reading it. Ordering is deliberate — the safety net lands before the sharp tools.
 
-### B1 — Bug: description hidden on non-stack changes ✅ diagnosed
+### B1 — Bug: description hidden on non-stack changes ✅ FIXED
 
 Selecting an older change shows an empty description box. `select()` looks the change up in
 `repo.stack` only ([app.ts:404](ui/src/app.ts:404)), but the stack is `trunk()..@ | @`, so
@@ -174,7 +174,7 @@ suppresses the correcting re-seed in `refresh()`. Fix: resolve through `selected
 (which already searches the graph) and render immutable descriptions read-only rather than
 as an editable box that silently discards edits.
 
-### M8 — Change detail view
+### M8 — Change detail view ✅
 
 Clicking a change currently jumps to Files, which throws away the change's identity. Replace
 that with a **detail pane** as the default view for any non-working-copy change:
@@ -186,7 +186,7 @@ that with a **detail pane** as the default view for any non-working-copy change:
 - Actions relevant to *that* change (see M10), disabled with a reason when not applicable.
 - The working copy keeps today's edit-first layout; the detail view is for everything else.
 
-### M9 — Operation log + undo
+### M9 — Operation log + undo ✅
 
 jj's superpower is that every operation is reversible. Shipping this **before** the mutation
 surface means every new command in M10 arrives with a safety net.
@@ -199,7 +199,7 @@ surface means every new command in M10 arrives with a safety net.
   action, so experimenting is cheap. This is the feature that makes the rest safe.
 - **`jj op diff`** between two operations for "what did that actually do".
 
-### M10 — The jj command surface
+### M10 — The jj command surface ✅
 
 One `mutate()` helper in `crates/vcs`: run, capture stdout+stderr, return the resulting
 operation id for undo. Every command below routes through it, appears in the command bar with
@@ -220,7 +220,7 @@ no remote, nothing to squash).
 everything reports what it did and offers Undo. Long operations (fetch/push) run async with
 progress, since they already block on the network.
 
-### M11 — Revset filtering
+### M11 — Revset filtering ✅
 
 The graph is hardwired to `ancestors(@ | bookmarks())` capped at 60. Replace with a filter
 control:
@@ -248,6 +248,18 @@ pick one forge — and tangled would now be the natural first, not GitHub.
 
 Fetch pairs with this: `jj git fetch` plus per-bookmark ahead/behind is what tells you a PR
 is out of date before you push over it.
+
+### Still open after Phase 2
+
+- **Interactive (hunk-level) split** — file-level `jj split <paths>` shipped; hunk-level
+  still needs a scripted diff-editor shim.
+- **Ahead/behind per bookmark** — `fetch`/`push` shipped, but the remote-tracking status
+  display did not; wants `jj log -T 'remote_bookmarks'` plumbing.
+- **Rebase destination picker** — currently a prompt for a revset; a graph-target picker
+  (and eventually drag-to-rebase) is the better UI.
+- **Conflict resolution** — still terminal-only, for the reason given in M4.
+- **`jj op diff`** between two operations — the log lists operations but does not yet diff
+  a pair.
 
 ### Proactive additions not in the original ask
 
