@@ -80,7 +80,11 @@ export class PatchView extends LitElement {
 
   protected override render() {
     if (this.files.length === 0) {
-      return html`<p class="jj-empty">No changes.</p>`;
+      return html`<div class="jj-empty">
+        <div class="glyph">✓</div>
+        <div class="title">Nothing to review</div>
+        <div class="hint">Changes appear here live as files are edited or a revision is selected.</div>
+      </div>`;
     }
     const rows = buildRows(this.files, this.layout, this.viewed, this.hunkFilter);
     // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows

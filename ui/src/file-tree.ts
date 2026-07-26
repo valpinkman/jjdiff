@@ -25,6 +25,7 @@ export class FileTree extends LitElement {
       user-select: none;
     }
     .row {
+      transition: background-color 0.13s ease;
       display: flex;
       align-items: center;
       gap: 5px;
@@ -42,6 +43,13 @@ export class FileTree extends LitElement {
     }
     .row:hover {
       background: var(--jj-bg-panel);
+    }
+    .row:active {
+      background: color-mix(in srgb, var(--jj-accent) 8%, var(--jj-bg-panel));
+    }
+    .row:focus-visible {
+      outline: 2px solid var(--jj-accent);
+      outline-offset: -2px;
     }
     .row.selected {
       background: var(--jj-bg-panel);

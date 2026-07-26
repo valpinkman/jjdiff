@@ -1,5 +1,6 @@
 import { html, LitElement, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { keyed } from 'lit/directives/keyed.js';
 import { repeat } from 'lit/directives/repeat.js';
 
 import './command-bar.js';
@@ -480,7 +481,12 @@ export class App extends LitElement {
 
   protected override render() {
     if (this.error) {
-      return html`<div class="fatal">${this.error}</div>`;
+      return html`<div class="fatal">
+        <div class="card">
+          <h2>jjdiff can't open this repository</h2>
+          <pre>${this.error}</pre>
+        </div>
+      </div>`;
     }
     if (!this.repo) {
       return nothing;
@@ -497,7 +503,7 @@ export class App extends LitElement {
         <span class="version">jj ${this.repo.jjVersion}</span>
         <span class="spacer"></span>
         <button
-          class="tool ${this.walkActive ? 'on' : ''}"
+          class="tool ${this.walkActive ? 'on' : ''} ${this.generating ? 'generating' : ''}"
           ?disabled=${this.generating || this.files.length === 0}
           title=${this.walkthrough
             ? 'Guided review of this change'
@@ -676,6 +682,9 @@ export class App extends LitElement {
           : nothing}
         ${this.walkActive && this.walkthrough
           ? html`<div class="walk-banner">
+              ${keyed(
+                this.walkStep,
+                html`<div class="walk-content">
               <div class="walk-head">
                 <span class="walk-progress">
                   ${this.walkStep < 0
@@ -704,6 +713,8 @@ export class App extends LitElement {
                   ? this.walkthrough.summary
                   : this.walkthrough.steps[this.walkStep]?.narrative}
               </p>
+                </div>`,
+              )}
             </div>`
           : nothing}
         ${this.walkthrough && this.walkStale && !this.generating

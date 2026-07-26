@@ -26,9 +26,16 @@ export class CommandBar extends LitElement {
       width: min(560px, 90vw);
       background: var(--jj-bg);
       border: 1px solid var(--jj-border);
-      border-radius: 10px;
-      box-shadow: 0 12px 40px rgb(0 0 0 / 0.3);
+      border-radius: var(--jj-r-lg, 12px);
+      box-shadow: var(--jj-shadow-pop, 0 12px 40px rgb(0 0 0 / 0.3));
       overflow: hidden;
+      animation: bar-in 0.16s ease-out;
+    }
+    @keyframes bar-in {
+      from {
+        opacity: 0;
+        transform: translateY(-6px) scale(0.99);
+      }
     }
     input {
       width: 100%;
@@ -47,6 +54,7 @@ export class CommandBar extends LitElement {
       gap: 12px;
       padding: 7px 14px;
       cursor: pointer;
+      transition: background-color 0.12s ease;
     }
     .item.active {
       background: var(--jj-bg-panel);

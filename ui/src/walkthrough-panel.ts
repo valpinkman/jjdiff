@@ -15,6 +15,7 @@ export class WalkthroughPanel extends LitElement {
       font-size: 12px;
     }
     button {
+      transition: background-color 0.13s ease, border-color 0.13s ease;
       display: block;
       width: 100%;
       text-align: left;
@@ -28,6 +29,10 @@ export class WalkthroughPanel extends LitElement {
     }
     button:hover {
       background: var(--jj-bg-panel);
+    }
+    button:focus-visible {
+      outline: 2px solid var(--jj-accent);
+      outline-offset: -2px;
     }
     button.current {
       border-color: var(--jj-accent);
