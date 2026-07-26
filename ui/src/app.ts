@@ -115,6 +115,8 @@ export class App extends LitElement {
   @state() private sidebarTab: 'stack' | 'files' | 'steps' | 'ops' = 'stack';
   /** Non-working-copy selection opens the detail view instead of jumping to Files. */
   @state() private detailView = false;
+  /** Collapsed detail block: sticks across selections, so "hide it" means hide it. */
+  @state() private detailCollapsed = false;
   @state() private walkthrough: Walkthrough | null = null;
   @state() private walkStale = false;
   @state() private walkActive = false;
@@ -1259,6 +1261,13 @@ export class App extends LitElement {
         ${change && this.detailView
           ? html`<section class="detail">
               <header class="detail-head">
+                <button
+                  class="detail-toggle"
+                  title=${this.detailCollapsed ? 'Show change details' : 'Hide change details'}
+                  @click=${() => (this.detailCollapsed = !this.detailCollapsed)}
+                >
+                  ${this.detailCollapsed ? '▸' : '▾'}
+                </button>
                 <span class="detail-id">${change.changeId.slice(0, 12)}</span>
                 ${change.bookmarks.map(
                   (bookmark) => html`<span class="tag"
@@ -1275,12 +1284,20 @@ export class App extends LitElement {
                 ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
                 ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
                 ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
+                ${this.detailCollapsed
+                  ? html`<span class="detail-summary"
+                      >${change.description.split('\n')[0] || '(no description)'}</span
+                    >`
+                  : nothing}
                 <span class="spacer"></span>
                 <span class="detail-when"
                   >${change.author.name} · ${relativeTime(change.committer.timestamp)}</span
                 >
               </header>
 
+              ${this.detailCollapsed
+                ? nothing
+                : html`
               ${change.immutable
                 ? html`<pre class="detail-desc">${change.description || '(no description)'}</pre>`
                 : html`<textarea
@@ -1416,7 +1433,7 @@ export class App extends LitElement {
                     </span>
                   </button>`,
                 )}
-              </div>
+              </div>`}
             </section>`
           : change
             ? html`<div class="describe">

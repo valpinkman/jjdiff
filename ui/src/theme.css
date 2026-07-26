@@ -656,10 +656,36 @@ jj-app .revset-input:focus {
 
 /* --- Change detail view --- */
 jj-app .detail {
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--jj-border);
   overflow-y: auto;
-  max-height: 55%;
+  /* Capped so a long commit message never crowds out the diff; the block also
+     collapses entirely (detailCollapsed), which sticks across selections. */
+  max-height: 42%;
+  flex: none;
+}
+
+jj-app .detail-toggle {
+  border: 0;
+  background: none;
+  color: var(--jj-fg-muted);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+jj-app .detail-toggle:hover {
+  color: var(--jj-accent);
+}
+
+jj-app .detail-summary {
+  font-size: 12px;
+  color: var(--jj-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46ch;
 }
 
 jj-app .detail-head {
@@ -716,6 +742,8 @@ jj-app .tag-x {
 
 jj-app .detail-desc {
   margin: 0 0 10px;
+  max-height: 14em;
+  overflow-y: auto;
   padding: 8px 10px;
   background: var(--jj-bg-panel);
   border-left: 3px solid var(--jj-border);
