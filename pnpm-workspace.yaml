@@ -1,0 +1,4 @@
+# pnpm 10+ blocks dependency build scripts unless allowed here, and exits
+# non-zero when it has to ignore one. esbuild (via vite) needs its postinstall.
+allowBuilds:
+  esbuild: true

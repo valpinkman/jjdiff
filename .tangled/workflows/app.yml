@@ -1,0 +1,51 @@
+# The Tauri app and the UI bundle. This is the expensive half: src-tauri pulls
+# the GTK/WebKit stack and ~75% of the workspace's compile cost, so it gets its
+# own 5m workflow budget rather than sharing one with the pure crates.
+when:
+  - event: ["push", "manual"]
+    branch: ["main"]
+  - event: ["pull_request"]
+    branch: ["main"]
+
+engine: microvm
+image: nixos
+
+# Pinned: the default floating channel dropped nodejs_20 (upstream EOL
+# 2026-04-30) out from under us. Bump this deliberately instead.
+registry:
+  nixpkgs: github:nixos/nixpkgs/nixos-26.05
+
+environment:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: "never"
+
+dependencies:
+  # Rust
+  - gcc
+  - pkg-config
+  - cargo
+  - clippy
+  - rustc
+  # src-tauri links against the GTK/WebKit stack on Linux
+  - glib
+  - gtk3
+  - webkitgtk_4_1
+  - libsoup_3
+  # Frontend. pnpm is versioned, not bare: pnpm-lock.yaml is lockfileVersion 9,
+  # so bump this and regenerate the lockfile together.
+  - nodejs_24
+  - pnpm_11
+
+steps:
+  # Must run first: src-tauri's build.rs (tauri-build) fails when the
+  # frontendDist path `ui/dist` does not exist, and it is gitignored. Both
+  # cargo steps below trigger that build.rs, so neither can precede it.
+  - name: "Typecheck + bundle UI"
+    command: "pnpm install --frozen-lockfile && pnpm build"
+
+  - name: "Lint"
+    command: "cargo clippy -p jjdiff-app --all-targets -- -D warnings"
+
+  - name: "Test"
+    command: "cargo test -p jjdiff-app"
