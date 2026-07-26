@@ -137,6 +137,10 @@ export class App extends LitElement {
   /** Revset scoping the Log graph; null = the default. */
   @state() private graphRevset: string | null = null;
   @state() private revsetDraft = '';
+  /** "system" | "light" | "dark" — runtime override of the config value. */
+  @state() private theme: 'system' | 'light' | 'dark' = 'system';
+  /** Bumped on theme change so the diff re-tokenizes (shiki tokens carry colours). */
+  @state() private themeVersion = 0;
   /** File the diff viewport is currently inside (sticky breadcrumb). */
   @state() private visibleFile: string | null = null;
   /** Full file text for context expansion, fetched on demand. */
@@ -215,8 +219,7 @@ export class App extends LitElement {
       );
       this.wordWrap = config.ui.wordWrap;
       if (config.ui.theme === 'light' || config.ui.theme === 'dark') {
-        document.documentElement.dataset['jjTheme'] = config.ui.theme;
-        document.documentElement.style.colorScheme = config.ui.theme;
+        this.applyTheme(config.ui.theme);
       }
       this.commandBarShortcut = parseShortcut(config.keymap.commandBar);
     } catch {
@@ -848,6 +851,21 @@ export class App extends LitElement {
     this.layout = this.layout === 'split' ? 'unified' : 'split';
   }
 
+  /** Switch palette at runtime. Shiki tokens are theme-specific, so bump themeVersion
+   *  to force re-tokenization; CSS variables handle the rest. */
+  private applyTheme(theme: 'system' | 'light' | 'dark') {
+    this.theme = theme;
+    const root = document.documentElement;
+    if (theme === 'system') {
+      delete root.dataset['jjTheme'];
+      root.style.colorScheme = '';
+    } else {
+      root.dataset['jjTheme'] = theme;
+      root.style.colorScheme = theme;
+    }
+    this.themeVersion += 1;
+  }
+
   private toggleWordWrap() {
     this.wordWrap = !this.wordWrap;
   }
@@ -871,25 +889,58 @@ export class App extends LitElement {
   }
 
   private get commands(): Command[] {
-    const commands: Command[] = [
+    const change = this.selectedChange;
+    const isWc = this.isWorkingCopySelected;
+    const mutable = !!change && !change.immutable;
+    const stackSize = this.repo?.stack.filter((c) => !c.immutable && !c.empty).length ?? 0;
+    const commands: Command[] = [];
+    const add = (group: string, entries: (Command | false)[]) => {
+      for (const entry of entries) {
+        if (entry) commands.push({ ...entry, group });
+      }
+    };
+
+    add('Presentation', [
       {
         id: 'layout',
-        label: 'Toggle Diff Layout',
-        hint: this.layout === 'split' ? 'unified' : 'split',
+        label: `Diff Layout: ${this.layout === 'split' ? 'Split' : 'Unified'}`,
+        hint: 'switch',
         run: () => this.toggleLayout(),
       },
       {
-        id: 'whitespace',
-        label: this.ignoreWhitespace ? 'Show Whitespace Changes' : 'Hide Whitespace Changes',
-        run: () => this.toggleWhitespace(),
-      },
-      { id: 'refresh', label: 'Refresh', run: () => void this.refresh() },
-      { id: 'find', label: 'Find in Diffs', hint: 'Mod+F', run: () => this.openSearch() },
-      {
         id: 'wrap',
-        label: this.wordWrap ? 'Disable Word Wrap' : 'Enable Word Wrap',
+        label: this.wordWrap ? 'Word Wrap: On' : 'Word Wrap: Off',
+        hint: 'toggle',
         run: () => this.toggleWordWrap(),
       },
+      {
+        id: 'whitespace',
+        label: this.ignoreWhitespace ? 'Whitespace: Hidden' : 'Whitespace: Shown',
+        hint: 'toggle',
+        run: () => this.toggleWhitespace(),
+      },
+      {
+        id: 'theme-system',
+        label: 'Theme: System',
+        hint: this.theme === 'system' ? 'current' : undefined,
+        run: () => this.applyTheme('system'),
+      },
+      {
+        id: 'theme-light',
+        label: 'Theme: Light',
+        hint: this.theme === 'light' ? 'current' : undefined,
+        run: () => this.applyTheme('light'),
+      },
+      {
+        id: 'theme-dark',
+        label: 'Theme: Dark',
+        hint: this.theme === 'dark' ? 'current' : undefined,
+        run: () => this.applyTheme('dark'),
+      },
+    ]);
+
+    add('Review', [
+      { id: 'find', label: 'Find in Diffs', hint: 'Mod+F', run: () => this.openSearch() },
       this.walkthrough
         ? {
             id: 'walkthrough',
@@ -898,64 +949,72 @@ export class App extends LitElement {
           }
         : {
             id: 'walkthrough',
-            label: 'Generate Walkthrough (Claude)',
+            label: 'Generate Walkthrough',
             run: () => this.runGenerateWalkthrough(),
           },
-    ];
-    if (this.walkthrough) {
-      commands.push({
+      !!this.walkthrough && {
         id: 'regen-walkthrough',
-        label: 'Refresh Walkthrough (Claude)',
+        label: 'Refresh Walkthrough',
         run: () => this.runGenerateWalkthrough(),
-      });
-    }
-    if ((this.repo?.stack.filter((c) => !c.immutable && !c.empty).length ?? 0) > 1) {
-      commands.push({
+      },
+      stackSize > 1 && {
         id: 'stack-review',
         label: this.stackReview ? 'Exit Stack Review' : 'Review Stack (guided)',
         run: () => (this.stackReview ? this.exitWalkthrough() : this.reviewStack()),
-      });
-    }
-    if (this.isWorkingCopySelected) {
-      commands.push(
-        {
-          id: 'new',
-          label: 'New Change (jj new)',
-          run: () =>
-            void this.run(async () => {
-              await newChange();
-              this.selected = null;
-              this.seededFor = null;
-              await this.refresh();
-            }),
-        },
-        {
-          id: 'absorb',
-          label: 'Absorb Into Ancestors (jj absorb)',
-          run: () => this.runAbsorb(),
-        },
-      );
-    } else {
-      commands.push({
+      },
+      !isWc && {
         id: 'reviewed',
         label: 'Mark Change Reviewed',
         run: () => this.markCurrentReviewed(),
-      });
-      if (this.changedSinceReview) {
-        commands.push({
-          id: 'interdiff',
-          label: 'Show Changes Since Last Review',
-          run: () => this.showInterdiff(),
-        });
-      }
-    }
-    if (this.focusPath) {
-      commands.push({
+      },
+      this.changedSinceReview && {
+        id: 'interdiff',
+        label: 'Show Changes Since Last Review',
+        run: () => this.showInterdiff(),
+      },
+      !!this.focusPath && {
         id: 'unfocus',
-        label: 'Show All Files',
+        label: 'Clear File Focus',
         run: () => (this.focusPath = null),
-      });
-    }
+      },
+    ]);
+
+    add('Change', [
+      mutable && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
+      { id: 'jj-new', label: 'New Change on Top (jj new)', run: () => this.newOnSelected() },
+      isWc && { id: 'jj-absorb', label: 'Absorb Into Ancestors (jj absorb)', run: () => this.runAbsorb() },
+      mutable && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => this.rebaseSelected() },
+      mutable && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
+      { id: 'jj-duplicate', label: 'Duplicate Change (jj duplicate)', run: () => this.duplicateSelected() },
+      { id: 'jj-backout', label: 'Back Out Change (jj backout)', run: () => this.backoutSelected() },
+      mutable && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => this.abandonSelected() },
+      isWc && {
+        id: 'jj-restore',
+        label: 'Discard Working-Copy Changes (jj restore)',
+        run: () => this.restoreSelectedFile(),
+      },
+    ]);
+
+    add('Repository', [
+      { id: 'jj-fetch', label: 'Fetch (jj git fetch)', run: () => this.runFetch() },
+      { id: 'jj-push', label: 'Push (jj git push)', run: () => this.runPush() },
+      { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => this.createBookmark() },
+      { id: 'refresh', label: 'Reload Repository', run: () => void this.refresh() },
+      { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
+    ]);
+
+    add('History', [
+      { id: 'jj-undo', label: 'Undo Last Operation (jj undo)', run: () => this.runUndo() },
+      {
+        id: 'ops',
+        label: 'Show Operation Log',
+        run: () => {
+          this.sidebarTab = 'ops';
+          void this.loadOperations();
+        },
+      },
+    ]);
+
     return commands;
   }
 
@@ -1003,22 +1062,14 @@ export class App extends LitElement {
             : nothing}
         </span>
         <span class="spacer"></span>
-        ${this.repo.stack.filter((c) => !c.immutable && !c.empty).length > 1
-          ? html`<button
-              class="tool ${this.stackReview ? 'on' : ''} ${this.generating ? 'generating' : ''}"
-              ?disabled=${this.generating}
-              title="Guided review of every change in the stack, oldest first"
-              @click=${() => (this.stackReview ? this.exitWalkthrough() : this.reviewStack())}
-            >
-              ${this.stackReview ? 'Exit Stack Review' : 'Review Stack'}
-            </button>`
-          : nothing}
         <button
-          class="tool ${this.walkActive && !this.stackReview ? 'on' : ''} ${this.generating ? 'generating' : ''}"
+          class="tool ${this.walkActive ? 'on' : ''} ${this.generating ? 'generating' : ''}"
           ?disabled=${this.generating || this.files.length === 0}
-          title=${this.walkthrough
-            ? 'Guided review of this change'
-            : 'Generate a guided review with Claude'}
+          title=${
+            this.walkthrough
+              ? 'Guided review of this change'
+              : 'Generate a guided review with an agent CLI'
+          }
           @click=${() => (this.walkActive ? this.exitWalkthrough() : this.startWalkthrough())}
         >
           ${this.generating
@@ -1029,37 +1080,35 @@ export class App extends LitElement {
                 ? 'Walkthrough'
                 : 'Generate Walkthrough'}
         </button>
-        ${isWc
-          ? html`<button
-              class="tool"
-              title="Route working-copy hunks into the ancestors that last touched them"
-              @click=${this.runAbsorb}
-            >
-              Absorb
-            </button>`
-          : nothing}
-        <button class="tool" @click=${this.runFetch} title="jj git fetch" ?disabled=${!!this.busy}>
+        <button
+          class="tool"
+          title="jj git fetch — update remote-tracking state"
+          ?disabled=${!!this.busy}
+          @click=${this.runFetch}
+        >
           Fetch
         </button>
-        <button class="tool" @click=${this.runUndo} title="Undo the last operation">
+        <button
+          class="tool"
+          title="jj undo — reverse the last operation"
+          ?disabled=${!!this.busy}
+          @click=${this.runUndo}
+        >
           Undo
         </button>
-        <button class="tool" @click=${this.toggleLayout} title="Toggle diff layout">
+        <button
+          class="tool"
+          title="Switch between side-by-side and unified diffs"
+          @click=${this.toggleLayout}
+        >
           ${this.layout === 'split' ? 'Split' : 'Unified'}
         </button>
         <button
-          class="tool ${this.ignoreWhitespace ? 'on' : ''}"
-          @click=${this.toggleWhitespace}
-          title="Hide whitespace-only changes"
+          class="tool"
+          title="Everything else lives here (Mod+Shift+P)"
+          @click=${() => (this.barOpen = true)}
         >
-          W/S
-        </button>
-        <button
-          class="tool ${this.wordWrap ? 'on' : ''}"
-          @click=${this.toggleWordWrap}
-          title="Wrap long diff lines"
-        >
-          Wrap
+          ⌘K
         </button>
       </header>
       <aside>
@@ -1528,6 +1577,7 @@ export class App extends LitElement {
           .wordWrap=${this.wordWrap}
           .fileLines=${this.fileLines}
           .expansions=${this.expansions}
+          .themeVersion=${this.themeVersion}
         ></jj-patch-view>
       </main>
       ${this.barOpen

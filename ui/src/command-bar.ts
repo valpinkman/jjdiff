@@ -1,10 +1,12 @@
-import { css, html, LitElement } from 'lit';
+import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 
 export interface Command {
   id: string;
   label: string;
   hint?: string;
+  /** Section header this command sits under. Commands keep their given order. */
+  group?: string;
   run: () => void;
 }
 
@@ -56,6 +58,22 @@ export class CommandBar extends LitElement {
       padding: 7px 14px;
       cursor: pointer;
       transition: background-color 0.12s ease;
+    }
+    .group {
+      font-family: var(--jj-mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--jj-fg-muted);
+      padding: 8px 14px 3px;
+      border-top: 1px solid var(--jj-border);
+    }
+    .group:first-of-type {
+      border-top: 0;
+    }
+    .list {
+      max-height: 60vh;
+      overflow-y: auto;
     }
     .item.active {
       background: var(--jj-bg-panel);
@@ -131,18 +149,25 @@ export class CommandBar extends LitElement {
         />
         ${matches.length === 0
           ? html`<div class="none">No matching commands</div>`
-          : matches.map(
-              (command, index) => html`
-                <div
-                  class="item ${index === active ? 'active' : ''}"
-                  @click=${() => this.pick(command)}
-                  @mousemove=${() => (this.active = index)}
-                >
-                  <span>${command.label}</span>
-                  ${command.hint ? html`<span class="hint">${command.hint}</span>` : ''}
-                </div>
-              `,
-            )}
+          : html`<div class="list">
+              ${matches.map((command, index) => {
+                // A header appears whenever the group changes, so filtering keeps its
+                // sections without any regrouping pass.
+                const header =
+                  command.group && command.group !== matches[index - 1]?.group
+                    ? html`<div class="group">${command.group}</div>`
+                    : nothing;
+                return html`${header}
+                  <div
+                    class="item ${index === active ? 'active' : ''}"
+                    @click=${() => this.pick(command)}
+                    @mousemove=${() => (this.active = index)}
+                  >
+                    <span>${command.label}</span>
+                    ${command.hint ? html`<span class="hint">${command.hint}</span>` : ''}
+                  </div>`;
+              })}
+            </div>`}
       </div>
     `;
   }

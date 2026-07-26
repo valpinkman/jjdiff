@@ -130,7 +130,7 @@ export class HighlightStore extends EventTarget {
     return side?.[ref.index] ?? null;
   }
 
-  /** Drop everything (repo refreshed); pending worker replies are ignored via key miss. */
+  /** Drop everything (repo refreshed, or theme changed); pending replies miss the key. */
   clear(): void {
     this.cache.clear();
     this.requested.clear();

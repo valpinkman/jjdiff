@@ -40,6 +40,8 @@ export class PatchView extends LitElement {
   @property({ attribute: false }) fileLines: ReadonlyMap<string, string[]> = new Map();
   /** Extra context pulled in per hunk. */
   @property({ attribute: false }) expansions: ReadonlyMap<string, Expansion> = new Map();
+  /** Bumped when the colour theme changes: shiki tokens are theme-specific. */
+  @property({ type: Number }) themeVersion = 0;
 
   @state() private cursor: number | null = null;
   @state() private searchCurrent = -1;
@@ -86,7 +88,7 @@ export class PatchView extends LitElement {
         this.cursor = null;
       }
     }
-    if (changed.has('files')) {
+    if (changed.has('files') || changed.has('themeVersion')) {
       this.highlights.clear();
       for (const file of this.files) {
         this.highlights.request(file);
