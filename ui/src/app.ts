@@ -29,6 +29,7 @@ import {
 } from './ipc.js';
 import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import './patch-view.js';
+import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
 /** What the main pane shows for the selected change. */
@@ -547,19 +548,38 @@ export class App extends LitElement {
             `,
           )}
         </div>
-        <div class="section-title">
-          Files (${this.viewedPaths.size ? `${this.viewedPaths.size}/` : ''}${this.files.length})
-        </div>
-        <div class="files">
-          <jj-file-tree
-            .files=${this.files}
-            .selected=${this.focusPath}
-            .viewed=${this.viewedPaths}
-            @file-selected=${(event: CustomEvent<string | null>) => {
-              this.focusPath = event.detail;
-            }}
-          ></jj-file-tree>
-        </div>
+        ${this.walkActive && this.walkthrough
+          ? html`
+              <div class="section-title">
+                Steps (${this.walkthrough.steps.length})
+              </div>
+              <div class="files">
+                <jj-walkthrough-panel
+                  .walkthrough=${this.walkthrough}
+                  .files=${this.files}
+                  .viewed=${this.viewedPaths}
+                  .current=${this.walkStep}
+                  @step-selected=${(event: CustomEvent<number>) => {
+                    this.walkStep = event.detail;
+                  }}
+                ></jj-walkthrough-panel>
+              </div>
+            `
+          : html`
+              <div class="section-title">
+                Files (${this.viewedPaths.size ? `${this.viewedPaths.size}/` : ''}${this.files.length})
+              </div>
+              <div class="files">
+                <jj-file-tree
+                  .files=${this.files}
+                  .selected=${this.focusPath}
+                  .viewed=${this.viewedPaths}
+                  @file-selected=${(event: CustomEvent<string | null>) => {
+                    this.focusPath = event.detail;
+                  }}
+                ></jj-file-tree>
+              </div>
+            `}
       </aside>
       <main
         @squash-file=${this.onSquashFile}
@@ -669,7 +689,7 @@ export class App extends LitElement {
           .layout=${this.layout}
           .viewed=${this.viewedPaths}
           .canSquash=${isWc && this.viewMode === 'full' && !this.walkActive && this.squashTargets.length > 0}
-          .canMarkViewed=${this.viewMode === 'full' && !this.walkActive}
+          .canMarkViewed=${this.viewMode === 'full'}
           .squashTargets=${this.squashTargets}
           .conflicted=${this.conflictedPaths}
           .hunkFilter=${this.walkFilter}
