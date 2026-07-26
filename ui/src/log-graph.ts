@@ -25,13 +25,14 @@ export class LogGraph extends LitElement {
       padding: 4px 0;
     }
     .row {
-      transition: background-color 0.12s ease, box-shadow 0.12s ease;
+      transition: background-color 0.13s ease;
       display: flex;
       align-items: center;
       gap: 7px;
       width: 100%;
       height: ${ROW_H}px;
       border: 0;
+      border-radius: var(--jj-r-sm, 7px);
       background: none;
       color: var(--jj-fg);
       font: inherit;
@@ -41,52 +42,57 @@ export class LogGraph extends LitElement {
       box-sizing: border-box;
     }
     .row:hover {
-      background: var(--jj-bg-panel);
+      background: var(--jj-wash);
     }
     .row:focus-visible {
       outline: 2px solid var(--jj-accent);
       outline-offset: -2px;
     }
     .row.selected {
-      background: var(--jj-bg-panel);
-      box-shadow: inset 3px 0 0 var(--jj-accent);
+      background: var(--jj-accent-soft);
     }
     svg {
       flex: none;
       display: block;
     }
     .rail {
-      stroke: var(--jj-fg-muted);
-      stroke-width: 1.2;
+      stroke: var(--jj-fg-faint);
+      stroke-width: 1.4;
       fill: none;
-      opacity: 0.45;
+      stroke-linecap: round;
     }
     .dot-mutable {
-      fill: var(--jj-bg);
-      stroke: var(--jj-fg);
-      stroke-width: 1.3;
+      fill: var(--jj-bg-panel);
+      stroke: var(--jj-fg-muted);
+      stroke-width: 1.6;
     }
     .dot-immutable {
-      fill: var(--jj-fg-muted);
+      fill: var(--jj-fg-faint);
       stroke: none;
     }
     .dot-wc {
       fill: var(--jj-accent);
-      stroke: var(--jj-accent);
+      stroke: var(--jj-bg-panel);
+      stroke-width: 2.5;
+    }
+    .dot-conflict {
+      fill: var(--jj-removed-fg);
+      stroke: var(--jj-bg-panel);
+      stroke-width: 2;
     }
     .tag {
       flex: none;
-      font-family: var(--jj-mono);
-      font-size: 8.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      border: 1px solid var(--jj-accent);
-      color: var(--jj-accent);
-      padding: 0 4px;
-      line-height: 13px;
+      font-family: var(--jj-sans);
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: 999px;
+      background: var(--jj-ref-soft);
+      color: var(--jj-ref);
+      padding: 1px 7px;
+      line-height: 15px;
     }
     .tag.warn {
-      border-color: var(--jj-removed-fg);
+      background: var(--jj-removed-bg);
       color: var(--jj-removed-fg);
     }
     .desc {
@@ -102,16 +108,17 @@ export class LogGraph extends LitElement {
     .row.immutable .desc {
       color: var(--jj-fg-muted);
     }
+    .row.selected .desc {
+      color: var(--jj-fg);
+    }
     .desc.empty-desc {
       color: var(--jj-fg-muted);
       font-style: italic;
     }
     .when {
       flex: none;
-      font-family: var(--jj-mono);
-      font-size: 9.5px;
-      color: var(--jj-fg-muted);
-      opacity: 0.8;
+      font-size: 10.5px;
+      color: var(--jj-fg-faint);
     }
   `;
 
@@ -158,9 +165,11 @@ export class LogGraph extends LitElement {
 
     const dotClass = change.workingCopy
       ? 'dot-wc'
-      : change.immutable
-        ? 'dot-immutable'
-        : 'dot-mutable';
+      : change.conflict
+        ? 'dot-conflict'
+        : change.immutable
+          ? 'dot-immutable'
+          : 'dot-mutable';
     const rowClass = [
       'row',
       change.changeId === this.selected ? 'selected' : '',

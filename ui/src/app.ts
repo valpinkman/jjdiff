@@ -71,6 +71,14 @@ const REVSET_PRESETS: { label: string; revset: string }[] = [
   { label: 'Bookmarks', revset: 'ancestors(bookmarks(), 5)' },
 ];
 
+/** Split a jj description into subject + body, mail-client style. */
+function descriptionParts(description: string) {
+  const [subject = '', ...rest] = description.split('\n');
+  const body = rest.join('\n').trim();
+  return html`<span class="detail-subject">${subject || '(no description)'}</span
+    >${body ? html`<span class="detail-body">${body}</span>` : nothing}`;
+}
+
 /** Compact relative age: now, 5m, 3h, 2d. */
 function relativeTime(timestamp: string): string {
   const then = Date.parse(timestamp);
@@ -1305,7 +1313,7 @@ export class App extends LitElement {
                 ? nothing
                 : html`
               ${change.immutable
-                ? html`<pre class="detail-desc">${change.description || '(no description)'}</pre>`
+                ? html`<div class="detail-desc">${descriptionParts(change.description)}</div>`
                 : html`<textarea
                       class="detail-edit"
                       .value=${this.description}

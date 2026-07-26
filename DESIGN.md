@@ -6,15 +6,20 @@ Single source of truth for jjdiff's visual language. Any agent or human touching
 
 ## 1. Visual Theme & Atmosphere
 
-**Tempered industrial brutalism** — a precision instrument, not a consumer app. Two
-substrates, one per theme, never mixed within a theme:
+**Modern, soft, layered.** A calm workspace where the code surface floats above the page
+on rounded cards, and everything else recedes. Superseded the earlier brutalist direction
+(hard corners, mono-uppercase chrome, offset shadows) — it read as costume rather than
+craft, and the uppercase-everything hurt scanning.
 
-- **Light = Swiss Industrial Print**: unbleached paper, carbon ink, hairline rules.
-- **Dark = Tactical Telemetry**: deactivated-CRT charcoal, phosphor text.
+- **Depth by surface, not by rule.** Three levels: page (`--jj-bg`) → panel
+  (`--jj-bg-panel`) → raised card (`--jj-surface`). The code surface is the brightest
+  thing on screen, so the diff reads as the content.
+- **Alpha, not opaque.** Borders, muted text and washes are all `rgb(… / α)` so they tint
+  with whatever they sit on and stay correct in both themes.
+- **Sans for chrome, mono for code.** Uppercase is reserved for small section labels.
 
-The diff is the content, the chrome is machinery. Every visual decision defers to code
-legibility — brutalism supplies structure and typography, never noise (no scanlines,
-dithering, or grain: banned below).
+The diff is still the content and the chrome is still furniture; what changed is that the
+furniture stopped shouting.
 
 - **Density: 8/10 (cockpit dense).** Compact paddings, 13px base, 12.5px code. All
   numerals tabular (`font-variant-numeric: tabular-nums`) — columns of counts must not shimmy.
@@ -28,57 +33,63 @@ dithering, or grain: banned below).
 
 ## 2. Color Palette & Roles
 
-| Role | Light (Print) | Dark (Telemetry) | Rule |
+| Role | Light | Dark | Rule |
 |---|---|---|---|
-| Background | `#f3f2ed` paper | `#0e0f10` CRT | Never pure `#000`/`#fff` |
-| Panel | `#eae8e1` | `#17181a` | The only chrome surface |
-| Text | `#131311` ink | `#e6e6e2` phosphor | One gray family per substrate |
-| Muted | `#6d6a61` | `#8b8b84` | Labels, hints, gutters |
-| Border | `#c9c6ba` | `#2d2f30` | 1px hairlines, structural |
-| **Signal** | `#1d5a94` | `#52aec4` | Blueprint blue / cyan phosphor — see below |
-| Added | `#1a7f37` on `#e9ffef` | `#57ab5a` on `#10231a` | Semantic, untouchable |
-| Removed | `#cf222e` on `#ffedeb` | `#e5534b` on `#291416` | Semantic, untouchable |
+| Page | `#f7f7f5` | `#131316` | Never pure `#fff`/`#000` |
+| Panel | `#fbfbfa` | `#17171b` | Header, sidebar, banners |
+| Surface | `#ffffff` | `#1c1c21` | Cards: code, description, files |
+| Text | `#17171a` | `#e8e8ea` | Full-strength ink only for primary content |
+| Soft / muted / faint | α 0.72 / 0.5 / 0.32 | α 0.74 / 0.5 / 0.3 | Three levels, all alpha |
+| Border | α 0.1 (strong 0.16) | α 0.1 (strong 0.17) | 1px hairlines |
+| **Accent** | `#3d7ff5` | `#6ba5ff` | Selection, focus, links, active tab |
+| **Ref** | `#b26a10` | `#e0a13f` | Bookmarks only — the one warm colour |
+| Added | `#1a7f44` on α 0.09 | `#6fd094` on α 0.1 | Semantic, untouchable |
+| Removed | `#c0392f` on α 0.08 | `#ee7e7e` on α 0.09 | Semantic, untouchable |
 
-### Signal-color rules
-- Exactly **one** signal per substrate, same duty: *selection and live state*
-  (selection bars, active tab underline + indices, change ids, focus rings) — thin
-  bars and text, never large fills. Print mode signals in **blueprint blue** (the
-  drafting-ink of machinery blueprints); telemetry mode signals in **cyan phosphor**
-  (authentic CRT emission).
-- The brutalist canon's aviation red is **deliberately rejected**: red is reserved for
-  removed lines and conflicts in a diff tool. Blue/cyan stays clear of both semantic
-  colors.
-- **Banned:** gradients, translucency, second accents, mixing substrates within one
-  theme. Green/red are *diff semantics*, not decoration.
+### Colour rules
+- **Two hues carry meaning, and only two.** Accent (blue) = *selection and focus*: active
+  tab, selected row, focus ring, links, expanders. Ref (amber) = *bookmarks*, nothing
+  else. A row that is both selected and bookmarked shows both, and they don't collide.
+- **Diff fills are alpha-tinted, not flat.** Added/removed backgrounds sit at 8–10% over
+  the card, so a long diff doesn't read as stripes of solid colour.
+- **Banned:** a third accent, gradients, coloured shadows, using green/red for anything
+  that isn't diff semantics.
 
 ## 3. Typography Rules
 
-- **Telemetry layer (dominant):** `Geist Mono Variable` — ALL controls, labels, tags,
-  tabs, ids, counts, and code. 9–12.5px, uppercase for labels, tracking
-  `0.06–0.08em` (mechanical spacing).
-- **Prose layer:** `Geist Variable` for sentences only — descriptions, narratives,
-  hints. Readability text is never uppercase.
-- Tabs and steps carry **index numerals** (`01`, `02`, …) in signal amber — CSS
-  counters, decimal-leading-zero.
-- Narrative text (walkthrough) caps at `68ch`, line-height 1.55.
-- **Banned:** serifs anywhere, Inter, decorative display sizes. Hierarchy comes from
-  weight + color, never from size inflation.
+- **`Geist Variable` (sans) is the default** — chrome, buttons, tabs, labels, file
+  status, descriptions. Weights 500/550/600; 600 for titles and subjects.
+- **`Geist Mono Variable` for code and identity** — diff content, change ids, paths,
+  counts, revsets, operation argv. Anything the user might copy or compare character by
+  character.
+- **Uppercase only for small section labels** (`4 FILES`, `PRESENTATION`) at 10.5px /
+  650 weight / `0.04em`. Never for buttons or content.
+- A change description renders as **subject + body**: first line at 14.5px/600, the rest
+  as prose at 13px/1.55. Same idea as a mail client.
+- Narrative and prose cap at `70–78ch`. Tabular numerals everywhere.
+- **Banned:** serifs, uppercase buttons, decorative display sizes. Hierarchy comes from
+  weight, size and colour together — never from size alone.
 
 ## 4. Component Stylings
 
-- **Geometry:** every corner is 90 degrees (`--jj-r-*: 0`). No pills, no rounding.
-- **Buttons (`.tool`):** mono uppercase, 1px ink border, **inverted on hover**
-  (fg/bg swap), `translateY(1px)` mechanical press. Primary = solid ink, amber on
-  hover. Disabled = 50% opacity.
-- **Selection:** 2–3px signal bar inset on the left edge (`box-shadow: inset 3px 0`),
-  never rounded outlines.
-- **Tags** (status, badges): 1px-bordered square boxes, mono uppercase 9px
-  (`MODIFIED`, `CONFLICT`, bookmark names).
+- **Geometry:** rounded — 7px controls, 10px cards, 14px floating panels, 999px pills for
+  tags and filter chips. No hard corners.
+- **Buttons (`.tool`):** sans, sentence case, 1px hairline, soft card shadow, surface
+  lift on hover, `translateY(1px)` press. Primary = filled accent. Danger = red text and
+  border, red wash on hover.
+- **Selection:** soft accent fill (`--jj-accent-soft`), not a hard bar. The keyboard
+  cursor in the diff keeps its 3px inset bar — it is a *cursor*, not a selection.
+- **Tags:** pill-shaped, soft-filled, sentence case. Bookmarks amber, states neutral,
+  conflicts red.
+- **File cards:** each file is a rounded card — header, hunks, code, footer — on the
+  raised surface. The gap between cards lives in the header's **transparent top border**,
+  never a margin (virtualizers measure `offsetHeight`).
 - **Focus:** keyboard focus is always visible — 2px accent outline (controls) or
   3px soft accent ring (`--jj-focus-ring`) on text fields. `outline: none` without a
   replacement is a defect.
-- **Shadows:** only the command bar floats — and it gets a **hard offset shadow**
-  (`6px 6px 0`), not a soft blur. Nothing else casts shadows.
+- **Shadows:** two only. `--jj-shadow-card` (1px, barely there) on cards and buttons;
+  `--jj-shadow-pop` on things that genuinely float (command bar, repo menu). Both tinted
+  to the page, never pure black.
 - **Cards:** chrome uses flat panels + 1px borders; elevation is reserved for things
   that actually float. Diff rows are flat, full-width, separated by borders — never
   boxed cards (virtualizers measure offsetHeight; margins produce phantom gaps).
@@ -92,7 +103,8 @@ dithering, or grain: banned below).
 
 - Fixed grid: `280px` sidebar + fluid main, header spanning both. CSS Grid, no
   percentage flexbox math.
-- The sidebar is tabbed (Stack / Files / Steps) — panes swap, the frame never moves.
+- The sidebar is tabbed (Log / Files / Steps / Ops) — panes swap, the frame never moves.
+  It sits on the panel surface with pill filter chips and rounded rows.
 - Diff rows are full-bleed rows in one virtualized flat list. Spacing between file
   sections comes from in-row borders/padding, **never margins** (virtualizer
   measurement).
@@ -126,6 +138,7 @@ dithering, or grain: banned below).
 8. Proportional-figure numerals in any column of numbers.
 9. `height: 100vh` (the app shell uses its own fixed grid; panes scroll internally).
 10. Exclamation marks and "Oops!" in any user-facing string.
-11. Brutalism's noise layer: scanlines, halftone/dither filters, grain overlays,
-    phosphor glow. Structure yes, degradation no — code legibility is the product.
-12. Aviation-red accents (collides with removed-line semantics).
+11. Noise layers: scanlines, halftone/dither, grain, glow. Legibility is the product.
+12. Uppercase button labels, hard-cornered controls, offset "brutalist" shadows — the
+    superseded direction; do not reintroduce piecemeal.
+13. Flat saturated diff fills. Added/removed backgrounds stay alpha-tinted.

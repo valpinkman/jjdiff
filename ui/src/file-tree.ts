@@ -35,25 +35,22 @@ export class FileTree extends LitElement {
       color: var(--jj-fg);
       font: inherit;
       text-align: left;
-      padding: 2px 6px;
-      border-radius: 0;
+      padding: 3px 7px;
+      border-radius: var(--jj-r-sm, 7px);
       cursor: pointer;
       white-space: nowrap;
       line-height: 20px;
     }
     .row:hover {
-      background: var(--jj-bg-panel);
-    }
-    .row:active {
-      background: color-mix(in srgb, var(--jj-accent) 8%, var(--jj-bg-panel));
+      background: var(--jj-wash);
     }
     .row:focus-visible {
       outline: 2px solid var(--jj-accent);
       outline-offset: -2px;
     }
     .row.selected {
-      background: var(--jj-bg-panel);
-      box-shadow: inset 2px 0 0 var(--jj-accent);
+      background: var(--jj-accent-soft);
+      color: var(--jj-accent);
     }
     .chevron {
       flex: none;
@@ -79,7 +76,7 @@ export class FileTree extends LitElement {
     .name.added { color: var(--jj-added-fg); }
     .name.deleted { color: var(--jj-removed-fg); text-decoration: line-through; }
     .name.modified { color: var(--jj-fg); }
-    .name.renamed { color: var(--jj-accent); }
+    .name.renamed { color: var(--jj-ref); }
     .row.viewed .name {
       color: var(--jj-fg-muted);
       text-decoration: line-through;
@@ -95,7 +92,7 @@ export class FileTree extends LitElement {
     }
     .meta .plus { color: var(--jj-added-fg); }
     .meta .minus { color: var(--jj-removed-fg); }
-    .meta .check { color: var(--jj-added-fg); font-size: 10px; }
+    .meta .check { color: var(--jj-added-fg); font-size: 11px; }
     .empty {
       color: var(--jj-fg-muted);
       font-style: italic;

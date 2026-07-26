@@ -25,10 +25,11 @@ export class CommandBar extends LitElement {
       z-index: 100;
     }
     .panel {
-      width: min(560px, 90vw);
+      width: min(580px, 90vw);
+      padding-bottom: 6px;
       background: var(--jj-bg);
       border: 1px solid var(--jj-border);
-      border-radius: 0;
+      border-radius: var(--jj-r-lg, 14px);
       box-shadow: var(--jj-shadow-pop, 0 12px 40px rgb(0 0 0 / 0.3));
       overflow: hidden;
       animation: bar-in 0.16s ease-out;
@@ -46,38 +47,40 @@ export class CommandBar extends LitElement {
       border-bottom: 1px solid var(--jj-border);
       background: transparent;
       color: var(--jj-fg);
-      font-family: var(--jj-mono);
-      font-size: 12.5px;
-      padding: 10px 14px;
+      font-family: var(--jj-sans);
+      font-size: 14px;
+      padding: 13px 17px;
       outline: none;
+    }
+    input::placeholder {
+      color: var(--jj-fg-faint);
     }
     .item {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       gap: 12px;
-      padding: 7px 14px;
+      padding: 7px 12px;
+      margin: 0 5px;
+      border-radius: var(--jj-r-sm, 7px);
       cursor: pointer;
       transition: background-color 0.12s ease;
     }
     .group {
-      font-family: var(--jj-mono);
-      font-size: 9px;
+      font-size: 10.5px;
+      font-weight: 650;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
-      letter-spacing: 0.09em;
-      color: var(--jj-fg-muted);
-      padding: 8px 14px 3px;
-      border-top: 1px solid var(--jj-border);
-    }
-    .group:first-of-type {
-      border-top: 0;
+      color: var(--jj-fg-faint);
+      padding: 10px 17px 4px;
     }
     .list {
       max-height: 60vh;
       overflow-y: auto;
     }
     .item.active {
-      background: var(--jj-bg-panel);
-      box-shadow: inset 2px 0 0 var(--jj-accent);
+      background: var(--jj-accent-soft);
+      color: var(--jj-accent);
     }
     .hint {
       color: var(--jj-fg-muted);

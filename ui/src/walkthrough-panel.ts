@@ -20,8 +20,8 @@ export class WalkthroughPanel extends LitElement {
       width: 100%;
       text-align: left;
       border: 0;
-      border-bottom: 1px solid var(--jj-border);
-      border-radius: 0;
+      border-radius: var(--jj-r-md, 10px);
+      margin-bottom: 2px;
       background: none;
       color: var(--jj-fg);
       font: inherit;
@@ -29,15 +29,14 @@ export class WalkthroughPanel extends LitElement {
       cursor: pointer;
     }
     button:hover {
-      background: var(--jj-bg-panel);
+      background: var(--jj-wash);
     }
     button:focus-visible {
       outline: 2px solid var(--jj-accent);
       outline-offset: -2px;
     }
     button.current {
-      background: var(--jj-bg-panel);
-      box-shadow: inset 3px 0 0 var(--jj-accent);
+      background: var(--jj-accent-soft);
     }
     .step-head {
       display: flex;
@@ -45,22 +44,22 @@ export class WalkthroughPanel extends LitElement {
       gap: 7px;
     }
     .index {
-      font-family: var(--jj-mono);
+      font-family: var(--jj-sans);
       flex: none;
-      width: 17px;
-      height: 17px;
-      border-radius: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       font-size: 10px;
       font-weight: 700;
-      background: var(--jj-hunk-bg);
+      background: var(--jj-wash);
       color: var(--jj-fg-muted);
     }
     .current .index {
       background: var(--jj-accent);
-      color: var(--jj-bg);
+      color: #fff;
     }
     .index.done {
       background: var(--jj-added-bg);
@@ -104,7 +103,7 @@ export class WalkthroughPanel extends LitElement {
     }
     .dot.added { background: var(--jj-added-fg); }
     .dot.deleted { background: var(--jj-removed-fg); }
-    .dot.modified { background: var(--jj-accent); }
+    .dot.modified { background: var(--jj-fg-faint); }
     .dot.renamed { background: var(--jj-fg-muted); }
     .check {
       color: var(--jj-added-fg);

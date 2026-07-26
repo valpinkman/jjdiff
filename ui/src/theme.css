@@ -1,69 +1,120 @@
-/* All theming flows through custom properties so it crosses shadow and light DOM (PLAN.md). */
+/* jjdiff theme. All theming flows through custom properties so it crosses shadow and
+   light DOM (see DESIGN.md). Direction: modern, soft, layered — warm off-white paper in
+   light, deep neutral in dark, with the code surface floating above it on rounded cards. */
+
 :root {
-  --jj-bg: #f3f2ed;
-  --jj-bg-panel: #eae8e1;
-  --jj-fg: #131311;
-  --jj-fg-muted: #6d6a61;
-  --jj-border: #c9c6ba;
-  --jj-accent: #1d5a94;
-  --jj-added-bg: #e9ffef;
-  --jj-added-mark: #b3f0c0;
-  --jj-added-fg: #1a7f37;
-  --jj-removed-bg: #ffedeb;
-  --jj-removed-mark: #ffcecb;
-  --jj-removed-fg: #cf222e;
-  --jj-hunk-bg: #f1f3f5;
-  --jj-num-fg: #9aa3ad;
-  --jj-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --jj-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light;
+
+  /* Surfaces: page → panel → raised card. The code surface is the brightest thing on
+     screen, so the diff reads as the content and everything else recedes. */
+  --jj-bg: #f7f7f5;
+  --jj-bg-panel: #fbfbfa;
+  --jj-surface: #ffffff;
+  --jj-surface-2: #f3f3f1;
+
+  /* Ink. Alpha-based so text sits *on* the surface rather than fighting it. */
+  --jj-fg: #17171a;
+  --jj-fg-soft: rgb(23 23 26 / 0.72);
+  --jj-fg-muted: rgb(23 23 26 / 0.5);
+  --jj-fg-faint: rgb(23 23 26 / 0.32);
+
+  /* Hairlines, also alpha: they tint with whatever they sit on. */
+  --jj-border: rgb(23 23 26 / 0.1);
+  --jj-border-strong: rgb(23 23 26 / 0.16);
+  --jj-wash: rgb(23 23 26 / 0.045);
+
+  /* One accent for selection and focus; one warm ref colour for bookmarks. */
+  --jj-accent: #3d7ff5;
+  --jj-accent-soft: rgb(61 127 245 / 0.12);
+  --jj-accent-line: rgb(61 127 245 / 0.42);
+  --jj-ref: #b26a10;
+  --jj-ref-soft: rgb(178 106 16 / 0.12);
+
+  /* Diff semantics — untouchable, and deliberately gentler than flat fills. */
+  --jj-added-fg: #1a7f44;
+  --jj-added-bg: rgb(31 122 68 / 0.09);
+  --jj-added-mark: rgb(31 122 68 / 0.22);
+  --jj-removed-fg: #c0392f;
+  --jj-removed-bg: rgb(184 49 47 / 0.08);
+  --jj-removed-mark: rgb(184 49 47 / 0.2);
+  --jj-hunk-bg: rgb(23 23 26 / 0.035);
+  --jj-num-fg: rgb(23 23 26 / 0.3);
+
+  --jj-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --jj-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --jj-code-size: 12.5px;
-  /* Brutalist geometry: corners are 90 degrees. Variables kept so a future
-     direction change is one edit. */
-  --jj-r-sm: 0;
-  --jj-r-md: 0;
-  --jj-r-lg: 0;
-  --jj-shadow-pop: 6px 6px 0 color-mix(in srgb, var(--jj-fg) 82%, transparent);
-  --jj-focus-ring: 0 0 0 3px color-mix(in srgb, var(--jj-accent) 22%, transparent);
+
+  /* Rounded, not pill: controls 7, cards 10, floating panels 14. */
+  --jj-r-sm: 7px;
+  --jj-r-md: 10px;
+  --jj-r-lg: 14px;
+
+  /* Elevation: soft, tinted to the page rather than pure black. */
+  --jj-shadow-card: 0 1px 2px rgb(23 23 26 / 0.05), 0 1px 1px rgb(23 23 26 / 0.03);
+  --jj-shadow-pop: 0 16px 48px rgb(23 23 26 / 0.16), 0 2px 8px rgb(23 23 26 / 0.08);
+  --jj-focus-ring: 0 0 0 3px var(--jj-accent-soft);
 }
 
-/* Dark palette applies via the system scheme (unless forced light) or when forced dark.
-   The two selectors below must stay in sync — config `ui.theme` sets data-jj-theme. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-jj-theme='light']) {
-    --jj-bg: #0e0f10;
-    --jj-bg-panel: #17181a;
-    --jj-fg: #e6e6e2;
-    --jj-fg-muted: #8b8b84;
-    --jj-border: #2d2f30;
-    --jj-accent: #52aec4;
-    --jj-added-bg: #10231a;
-    --jj-added-mark: #1d4a2d;
-    --jj-added-fg: #57ab5a;
-    --jj-removed-bg: #291416;
-    --jj-removed-mark: #55272b;
-    --jj-removed-fg: #e5534b;
-    --jj-hunk-bg: #191b1d;
-    --jj-num-fg: #566069;
-    --jj-shadow-pop: 6px 6px 0 rgb(0 0 0 / 0.85);
+    color-scheme: dark;
+    --jj-bg: #131316;
+    --jj-bg-panel: #17171b;
+    --jj-surface: #1c1c21;
+    --jj-surface-2: #212127;
+    --jj-fg: #e8e8ea;
+    --jj-fg-soft: rgb(232 232 234 / 0.74);
+    --jj-fg-muted: rgb(232 232 234 / 0.5);
+    --jj-fg-faint: rgb(232 232 234 / 0.3);
+    --jj-border: rgb(232 232 234 / 0.1);
+    --jj-border-strong: rgb(232 232 234 / 0.17);
+    --jj-wash: rgb(232 232 234 / 0.05);
+    --jj-accent: #6ba5ff;
+    --jj-accent-soft: rgb(107 165 255 / 0.16);
+    --jj-accent-line: rgb(107 165 255 / 0.45);
+    --jj-ref: #e0a13f;
+    --jj-ref-soft: rgb(224 161 63 / 0.15);
+    --jj-added-fg: #6fd094;
+    --jj-added-bg: rgb(111 208 148 / 0.1);
+    --jj-added-mark: rgb(111 208 148 / 0.24);
+    --jj-removed-fg: #ee7e7e;
+    --jj-removed-bg: rgb(238 126 126 / 0.09);
+    --jj-removed-mark: rgb(238 126 126 / 0.22);
+    --jj-hunk-bg: rgb(232 232 234 / 0.04);
+    --jj-num-fg: rgb(232 232 234 / 0.28);
+    --jj-shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+    --jj-shadow-pop: 0 16px 48px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.4);
   }
 }
 
 :root[data-jj-theme='dark'] {
-  --jj-bg: #0e0f10;
-  --jj-shadow-pop: 0 12px 40px rgb(0 2 12 / 0.55), 0 2px 8px rgb(0 2 12 / 0.4);
-  --jj-bg-panel: #17181a;
-  --jj-fg: #e6e6e2;
-  --jj-fg-muted: #8b8b84;
-  --jj-border: #2d2f30;
-  --jj-accent: #52aec4;
-  --jj-added-bg: #10231a;
-  --jj-added-mark: #1d4a2d;
-  --jj-added-fg: #57ab5a;
-  --jj-removed-bg: #291416;
-  --jj-removed-mark: #55272b;
-  --jj-removed-fg: #e5534b;
-  --jj-hunk-bg: #191b1d;
-  --jj-num-fg: #566069;
+  color-scheme: dark;
+  --jj-bg: #131316;
+  --jj-bg-panel: #17171b;
+  --jj-surface: #1c1c21;
+  --jj-surface-2: #212127;
+  --jj-fg: #e8e8ea;
+  --jj-fg-soft: rgb(232 232 234 / 0.74);
+  --jj-fg-muted: rgb(232 232 234 / 0.5);
+  --jj-fg-faint: rgb(232 232 234 / 0.3);
+  --jj-border: rgb(232 232 234 / 0.1);
+  --jj-border-strong: rgb(232 232 234 / 0.17);
+  --jj-wash: rgb(232 232 234 / 0.05);
+  --jj-accent: #6ba5ff;
+  --jj-accent-soft: rgb(107 165 255 / 0.16);
+  --jj-accent-line: rgb(107 165 255 / 0.45);
+  --jj-ref: #e0a13f;
+  --jj-ref-soft: rgb(224 161 63 / 0.15);
+  --jj-added-fg: #6fd094;
+  --jj-added-bg: rgb(111 208 148 / 0.1);
+  --jj-added-mark: rgb(111 208 148 / 0.24);
+  --jj-removed-fg: #ee7e7e;
+  --jj-removed-bg: rgb(238 126 126 / 0.09);
+  --jj-removed-mark: rgb(238 126 126 / 0.22);
+  --jj-hunk-bg: rgb(232 232 234 / 0.04);
+  --jj-num-fg: rgb(232 232 234 / 0.28);
+  --jj-shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  --jj-shadow-pop: 0 16px 48px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.4);
 }
 
 html,
@@ -75,12 +126,14 @@ body {
   font-family: var(--jj-sans);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Keyboard focus is always visible; pointer focus stays quiet. */
 :where(button, select, [tabindex]):focus-visible {
   outline: 2px solid var(--jj-accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  border-radius: var(--jj-r-sm);
 }
 
 :where(input, textarea):focus-visible {
@@ -92,7 +145,7 @@ body {
 
 jj-app {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  grid-template-columns: 292px 1fr;
   grid-template-rows: auto 1fr;
   height: 100vh;
 }
@@ -101,11 +154,13 @@ jj-app > header {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 9px 14px;
   border-bottom: 1px solid var(--jj-border);
   background: var(--jj-bg-panel);
 }
+
+/* Repo switcher */
 
 jj-app .repo-menu-root {
   position: relative;
@@ -115,93 +170,90 @@ jj-app .repo-menu-root {
 jj-app .repo-button {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   border: 1px solid transparent;
+  border-radius: var(--jj-r-sm);
   background: none;
   color: var(--jj-fg);
   font: inherit;
-  padding: 3px 8px;
+  padding: 4px 9px;
   cursor: pointer;
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition: background-color 0.14s ease;
 }
 
 jj-app .repo-button:hover {
-  border-color: var(--jj-border);
-  background: var(--jj-bg);
+  background: var(--jj-wash);
 }
 
 jj-app .repo-button .root {
   font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: -0.01em;
 }
 
 jj-app .repo-button .caret {
   font-size: 8px;
-  color: var(--jj-fg-muted);
+  color: var(--jj-fg-faint);
 }
 
 jj-app .repo-icon {
   display: inline-flex;
+  color: var(--jj-fg-muted);
 }
 
 jj-app .repo-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 6px);
   left: 0;
-  min-width: 300px;
-  max-width: 420px;
-  background: var(--jj-bg);
-  border: 1px solid var(--jj-fg);
+  min-width: 320px;
+  max-width: 440px;
+  background: var(--jj-surface);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-lg);
   box-shadow: var(--jj-shadow-pop);
+  padding: 5px;
   z-index: 50;
-  animation: bar-in 0.14s ease-out;
+  animation: jj-pop 0.16s ease-out;
 }
 
-@keyframes bar-in {
+@keyframes jj-pop {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateY(-6px) scale(0.985);
   }
 }
 
 jj-app .repo-item {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 9px;
   width: 100%;
   border: 0;
-  border-bottom: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-sm);
   background: none;
   color: var(--jj-fg);
   font: inherit;
   font-size: 12.5px;
   text-align: left;
-  padding: 7px 12px;
+  padding: 7px 10px;
   cursor: pointer;
   transition: background-color 0.12s ease;
   box-sizing: border-box;
 }
 
 jj-app .repo-item:hover {
-  background: var(--jj-bg-panel);
-}
-
-jj-app .repo-item:last-child {
-  border-bottom: 0;
-}
-
-jj-app .repo-item .repo-icon {
-  align-self: center;
+  background: var(--jj-wash);
 }
 
 jj-app .repo-item .repo-name {
-  font-weight: 600;
+  font-weight: 550;
   flex: none;
 }
 
 jj-app .repo-item .repo-path {
   font-family: var(--jj-mono);
-  font-size: 10px;
-  color: var(--jj-fg-muted);
+  font-size: 10.5px;
+  color: var(--jj-fg-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -211,11 +263,12 @@ jj-app .repo-item .repo-path {
 }
 
 jj-app .repo-item.open-folder {
-  font-family: var(--jj-mono);
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
   color: var(--jj-accent);
+  font-weight: 550;
+  margin-top: 3px;
+  border-top: 1px solid var(--jj-border);
+  border-radius: 0 0 var(--jj-r-sm) var(--jj-r-sm);
+  padding-top: 9px;
   justify-content: center;
 }
 
@@ -223,26 +276,37 @@ jj-app .spacer {
   flex: 1;
 }
 
-jj-app button.tool {
-  border: 1px solid var(--jj-fg);
-  background: var(--jj-bg);
-  color: var(--jj-fg);
-  font-family: var(--jj-mono);
-  font-size: 10.5px;
+/* Controls */
+
+jj-app button.tool,
+jj-app a.tool {
+  border: 1px solid var(--jj-border-strong);
+  background: var(--jj-surface);
+  color: var(--jj-fg-soft);
+  font-family: var(--jj-sans);
+  font-size: 12px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
   border-radius: var(--jj-r-sm);
-  padding: 4px 10px;
+  padding: 5px 11px;
   cursor: pointer;
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
-    transform 0.08s ease;
+  box-shadow: var(--jj-shadow-card);
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease,
+    border-color 0.14s ease,
+    transform 0.1s ease;
 }
 
-jj-app button.tool:hover {
-  background: var(--jj-fg);
-  border-color: var(--jj-fg);
-  color: var(--jj-bg);
+jj-app a.tool {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+jj-app button.tool:hover,
+jj-app a.tool:hover {
+  background: var(--jj-surface-2);
+  color: var(--jj-fg);
 }
 
 jj-app button.tool:active:not(:disabled) {
@@ -255,35 +319,48 @@ jj-app button.tool.generating {
 
 @keyframes jj-pulse {
   50% {
-    opacity: 0.55;
+    opacity: 0.5;
   }
 }
 
 jj-app button.tool.on {
-  border-color: var(--jj-accent);
+  border-color: var(--jj-accent-line);
+  background: var(--jj-accent-soft);
   color: var(--jj-accent);
-  box-shadow: inset 0 -2px 0 var(--jj-accent);
 }
 
 jj-app button.tool.primary {
-  background: var(--jj-fg);
-  border-color: var(--jj-fg);
-  color: var(--jj-bg);
+  background: var(--jj-accent);
+  border-color: transparent;
+  color: #fff;
 }
 
 jj-app button.tool.primary:hover {
-  background: var(--jj-accent);
-  border-color: var(--jj-accent);
-  color: var(--jj-bg);
+  background: color-mix(in srgb, var(--jj-accent) 88%, #000);
+  color: #fff;
+}
+
+jj-app button.tool.danger {
+  color: var(--jj-removed-fg);
+  border-color: color-mix(in srgb, var(--jj-removed-fg) 32%, transparent);
+}
+
+jj-app button.tool.danger:hover {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
 }
 
 jj-app button.tool:disabled {
-  opacity: 0.5;
+  opacity: 0.42;
   cursor: default;
+  box-shadow: none;
 }
+
+/* ---- Sidebar ---- */
 
 jj-app > aside {
   border-right: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -292,95 +369,247 @@ jj-app > aside {
 
 jj-app .tabs {
   display: flex;
-  gap: 0;
-  padding: 0;
-  border-bottom: 1px solid var(--jj-border);
-  counter-reset: jj-tab;
+  gap: 2px;
+  padding: 8px 8px 0;
 }
 
 jj-app .tab {
-  transition: background-color 0.12s ease, color 0.12s ease;
   flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   border: 0;
-  border-right: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-sm);
   background: none;
   color: var(--jj-fg-muted);
-  font-family: var(--jj-mono);
-  font-size: 10.5px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 7px 8px;
-  border-radius: 0;
+  font-family: var(--jj-sans);
+  font-size: 12px;
+  font-weight: 550;
+  padding: 6px 8px;
   cursor: pointer;
-  counter-increment: jj-tab;
-}
-
-jj-app .tab:last-child {
-  border-right: 0;
-}
-
-jj-app .tab::before {
-  content: counter(jj-tab, decimal-leading-zero);
-  color: var(--jj-accent);
-  font-size: 9px;
+  transition:
+    background-color 0.14s ease,
+    color 0.14s ease;
 }
 
 jj-app .tab:hover {
-  background: var(--jj-bg-panel);
+  background: var(--jj-wash);
   color: var(--jj-fg);
 }
 
 jj-app .tab.active {
-  background: var(--jj-bg-panel);
-  color: var(--jj-fg);
-  box-shadow: inset 0 -2px 0 var(--jj-accent);
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+}
+
+jj-app .tab .count {
+  font-family: var(--jj-mono);
+  font-size: 10px;
+  border-radius: 999px;
+  padding: 1px 6px;
+  background: var(--jj-wash);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .tab.active .count {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
 }
 
 jj-app .tab .stale-dot {
   width: 6px;
   height: 6px;
-  background: var(--jj-accent);
+  border-radius: 999px;
+  background: var(--jj-ref);
   flex: none;
 }
 
-jj-app .tab .count {
-  font-size: 9px;
-  font-weight: 400;
-  font-family: var(--jj-mono);
-  border: 1px solid var(--jj-border);
-  border-radius: 0;
-  padding: 0 4px;
+/* Revset filter chips */
+
+jj-app .revset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
 }
 
-jj-app .context-card {
-  transition: border-color 0.15s ease;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
+jj-app .preset {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--jj-wash);
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-sans);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease;
+}
+
+jj-app .preset:hover {
+  color: var(--jj-fg);
+  background: var(--jj-border);
+}
+
+jj-app .preset.on {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+  border-color: var(--jj-accent-line);
+}
+
+jj-app .revset-input {
+  flex: 1;
+  min-width: 100px;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-sm);
+  background: var(--jj-surface);
+  color: var(--jj-fg);
+  font-family: var(--jj-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+jj-app .revset-input:focus {
+  outline: none;
+  border-color: var(--jj-accent-line);
+  box-shadow: var(--jj-focus-ring);
+}
+
+jj-app .section-title {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--jj-fg-faint);
+  padding: 10px 12px 4px;
+}
+
+jj-app .stack {
+  padding: 4px 6px 8px;
+  overflow-y: auto;
+}
+
+/* Change rows */
+
+jj-app .change {
+  display: block;
   width: 100%;
-  margin: 0;
-  padding: 7px 10px;
-  border: 0;
-  border-bottom: 1px solid var(--jj-border);
-  border-left: 3px solid var(--jj-accent);
-  border-radius: 0;
-  background: var(--jj-bg-panel);
-  box-sizing: border-box;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--jj-r-sm);
+  background: none;
   color: var(--jj-fg);
   font: inherit;
+  padding: 6px 9px;
+  cursor: pointer;
+  transition: background-color 0.13s ease;
+}
+
+jj-app .change:hover {
+  background: var(--jj-wash);
+}
+
+jj-app .change.selected {
+  background: var(--jj-accent-soft);
+  border-color: var(--jj-accent-line);
+}
+
+jj-app .change .id {
+  font-family: var(--jj-mono);
+  color: var(--jj-accent);
+  font-size: 11px;
+}
+
+jj-app .change .desc {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+
+jj-app .change .desc.empty-desc {
+  color: var(--jj-fg-muted);
+  font-style: italic;
+}
+
+/* Tags: bookmarks warm, states neutral, conflicts red. Soft-filled, not outlined. */
+
+jj-app .badge,
+jj-app .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--jj-sans);
+  font-size: 10.5px;
+  font-weight: 550;
+  border-radius: 999px;
+  padding: 1.5px 8px;
+  background: var(--jj-ref-soft);
+  color: var(--jj-ref);
+  white-space: nowrap;
+}
+
+jj-app .badge.warn,
+jj-app .tag.warn {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .tag.muted {
+  background: var(--jj-wash);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .tag-x {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
   font-size: 12px;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+jj-app .tag-x:hover {
+  opacity: 1;
+}
+
+jj-app .files {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px 12px;
+}
+
+/* Context card above Files/Steps */
+
+jj-app .context-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 12px);
+  margin: 8px 6px 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  color: var(--jj-fg);
+  font: inherit;
+  font-size: 12.5px;
   text-align: left;
   cursor: pointer;
   overflow: hidden;
+  box-sizing: border-box;
+  transition: border-color 0.14s ease;
 }
 
 jj-app .context-card:hover {
-  border-color: var(--jj-accent);
+  border-color: var(--jj-border-strong);
 }
 
 jj-app .context-card .id {
@@ -405,136 +634,281 @@ jj-app .context-card .desc.empty-desc {
 
 jj-app .context-card .progress {
   flex: none;
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--jj-fg-muted);
   font-family: var(--jj-mono);
 }
 
-jj-app .section-title {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--jj-fg-muted);
-  padding: 10px 10px 4px;
-}
-
-jj-app .stack {
-  padding: 0;
-  overflow-y: auto;
-}
-
-jj-app .change {
-  transition: background-color 0.12s ease, box-shadow 0.12s ease;
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 0;
-  border-bottom: 1px solid var(--jj-border);
-  border-radius: 0;
-  background: none;
-  color: var(--jj-fg);
-  font: inherit;
-  padding: 7px 10px;
-  cursor: pointer;
-}
-
-jj-app .change:hover {
-  background: var(--jj-bg-panel);
-}
-
-jj-app .change.selected {
-  background: var(--jj-bg-panel);
-  box-shadow: inset 3px 0 0 var(--jj-accent);
-}
-
-jj-app .change .id {
-  font-family: var(--jj-mono);
-  color: var(--jj-accent);
-  font-size: 11px;
-}
-
-jj-app .change .desc {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12px;
-}
-
-jj-app .change .desc.empty-desc {
-  color: var(--jj-fg-muted);
-  font-style: italic;
-}
-
-jj-app .badge {
-  font-family: var(--jj-mono);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  border: 1px solid var(--jj-border);
-  border-radius: 0;
-  padding: 0 4px;
-  margin-left: 6px;
-  background: none;
-  color: var(--jj-fg-muted);
-}
-
-jj-app .badge.warn {
-  background: var(--jj-removed-bg);
-  color: var(--jj-removed-fg);
-}
-
-jj-app .files {
-  flex: 1;
-  overflow-y: auto;
-  padding: 6px 6px 10px;
-}
+/* ---- Main pane ---- */
 
 jj-app > main {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  background: var(--jj-bg);
 }
+
+/* Working-copy describe row */
 
 jj-app .describe {
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  padding: 8px 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
 }
 
 jj-app .describe textarea {
   flex: 1;
   resize: vertical;
-  min-height: 34px;
-  max-height: 140px;
+  min-height: 38px;
+  max-height: 160px;
   border: 1px solid var(--jj-border);
   border-radius: var(--jj-r-md);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-  background: var(--jj-bg);
+  background: var(--jj-surface);
   color: var(--jj-fg);
-  font: inherit;
-  font-size: 12.5px;
-  padding: 6px 8px;
+  font-family: var(--jj-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 9px 11px;
   box-sizing: border-box;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
 }
 
 jj-app .describe textarea:focus {
   outline: none;
-  border-color: var(--jj-accent);
+  border-color: var(--jj-accent-line);
   box-shadow: var(--jj-focus-ring);
 }
+
+/* ---- Change detail ---- */
+
+jj-app .detail {
+  padding: 12px 16px 14px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
+  overflow-y: auto;
+  max-height: 44%;
+  flex: none;
+}
+
+jj-app .detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -4px -8px 10px;
+  padding: 5px 8px;
+  border-radius: var(--jj-r-sm);
+  cursor: pointer;
+  transition: background-color 0.13s ease;
+}
+
+jj-app .detail-head:hover {
+  background: var(--jj-wash);
+}
+
+jj-app .detail.collapsed .detail-head {
+  margin-bottom: -4px;
+}
+
+jj-app .detail-toggle {
+  color: var(--jj-fg-faint);
+  font-size: 9px;
+  line-height: 1;
+  width: 12px;
+  flex: none;
+  user-select: none;
+}
+
+jj-app .detail-head:hover .detail-toggle {
+  color: var(--jj-accent);
+}
+
+jj-app .detail-id {
+  font-family: var(--jj-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--jj-accent);
+}
+
+jj-app .detail-when {
+  font-size: 11.5px;
+  color: var(--jj-fg-muted);
+}
+
+jj-app .detail-summary {
+  font-size: 12.5px;
+  color: var(--jj-fg-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 52ch;
+}
+
+/* Description reads as prose on its own card: subject line, then body. */
+jj-app .detail-desc {
+  margin: 0 0 12px;
+  padding: 11px 14px;
+  background: var(--jj-surface);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  box-shadow: var(--jj-shadow-card);
+  font-family: var(--jj-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 78ch;
+  max-height: 15em;
+  overflow-y: auto;
+  color: var(--jj-fg-soft);
+}
+
+/* The first line is the subject — give it weight, like a mail client. */
+jj-app .detail-subject {
+  display: block;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  color: var(--jj-fg);
+  margin-bottom: 6px;
+  font-family: var(--jj-sans);
+}
+
+jj-app .detail-body {
+  display: block;
+  white-space: pre-wrap;
+}
+
+jj-app .detail-edit {
+  width: 100%;
+  max-width: 78ch;
+  min-height: 62px;
+  box-sizing: border-box;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  color: var(--jj-fg);
+  font-family: var(--jj-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  transition:
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+jj-app .detail-edit:focus {
+  outline: none;
+  border-color: var(--jj-accent-line);
+  box-shadow: var(--jj-focus-ring);
+}
+
+jj-app .detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+jj-app .action-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-right: 10px;
+  border-right: 1px solid var(--jj-border);
+}
+
+jj-app .detail-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--jj-fg-faint);
+  margin-bottom: 5px;
+}
+
+jj-app .detail-files {
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  padding: 9px 11px;
+  max-width: 78ch;
+}
+
+jj-app .detail-file {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  border: 0;
+  border-radius: var(--jj-r-sm);
+  background: none;
+  color: var(--jj-fg-soft);
+  font-family: var(--jj-mono);
+  font-size: 11.5px;
+  text-align: left;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+jj-app .detail-file:hover {
+  background: var(--jj-wash);
+  color: var(--jj-fg);
+}
+
+jj-app .detail-file-status {
+  width: 12px;
+  font-weight: 600;
+  color: var(--jj-fg-faint);
+  text-transform: uppercase;
+}
+
+jj-app .detail-file-status.added {
+  color: var(--jj-added-fg);
+}
+
+jj-app .detail-file-status.deleted {
+  color: var(--jj-removed-fg);
+}
+
+jj-app .detail-file-status.renamed {
+  color: var(--jj-accent);
+}
+
+jj-app .detail-file-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+jj-app .detail-file-counts .plus {
+  color: var(--jj-added-fg);
+}
+
+jj-app .detail-file-counts .minus {
+  color: var(--jj-removed-fg);
+}
+
+/* ---- Banners, status, outcome ---- */
 
 jj-app .banner {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 12px;
+  padding: 9px 16px;
   border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-hunk-bg);
-  font-size: 12px;
+  background: var(--jj-bg-panel);
+  font-size: 12.5px;
+  color: var(--jj-fg-soft);
 }
 
 jj-app .banner.conflict {
@@ -543,10 +917,10 @@ jj-app .banner.conflict {
 }
 
 jj-app .walk-banner {
-  padding: 8px 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--jj-border);
   border-left: 3px solid var(--jj-accent);
-  background: var(--jj-bg-panel);
+  background: var(--jj-accent-soft);
 }
 
 jj-app .walk-head {
@@ -557,19 +931,20 @@ jj-app .walk-head {
 
 jj-app .walk-progress {
   font-family: var(--jj-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--jj-accent);
   white-space: nowrap;
 }
 
 jj-app .walk-narrative {
-  margin: 6px 0 0;
-  font-size: 12.5px;
+  margin: 7px 0 0;
+  font-size: 13px;
   line-height: 1.55;
-  max-width: 68ch;
+  max-width: 70ch;
+  color: var(--jj-fg-soft);
 }
 
 jj-app .walk-content {
@@ -583,423 +958,159 @@ jj-app .walk-content {
   }
 }
 
-jj-app .crumb {
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
-  font-family: var(--jj-mono);
-  font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-jj-app .crumb-dir {
-  color: var(--jj-fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-jj-app .crumb-name {
-  font-weight: 600;
-}
-
-/* --- Revset filter (Log tab) --- */
-jj-app .revset-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--jj-border);
-}
-
-jj-app .preset {
-  border: 1px solid var(--jj-border);
-  background: none;
-  color: var(--jj-fg-muted);
-  font-family: var(--jj-mono);
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 2px 6px;
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
-}
-
-jj-app .preset:hover {
-  color: var(--jj-fg);
-  border-color: var(--jj-fg);
-}
-
-jj-app .preset.on {
-  border-color: var(--jj-accent);
-  color: var(--jj-accent);
-}
-
-jj-app .revset-input {
-  flex: 1;
-  min-width: 90px;
-  border: 1px solid var(--jj-border);
-  background: var(--jj-bg);
-  color: var(--jj-fg);
-  font-family: var(--jj-mono);
-  font-size: 10.5px;
-  padding: 2px 6px;
-}
-
-jj-app .revset-input:focus {
-  outline: none;
-  border-color: var(--jj-accent);
-}
-
-/* --- Change detail view --- */
-jj-app .detail {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--jj-border);
-  overflow-y: auto;
-  /* Capped so a long commit message never crowds out the diff; the block also
-     collapses entirely (detailCollapsed), which sticks across selections. */
-  max-height: 42%;
-  flex: none;
-}
-
-jj-app .detail-toggle {
-  color: var(--jj-fg-muted);
-  font-size: 10px;
-  line-height: 1;
-  width: 12px;
-  flex: none;
-  user-select: none;
-}
-
-jj-app .detail-head:hover .detail-toggle {
-  color: var(--jj-accent);
-}
-
-jj-app .detail.collapsed .detail-head {
-  margin-bottom: -4px;
-}
-
-jj-app .detail-summary {
-  font-size: 12px;
-  color: var(--jj-fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 46ch;
-}
-
-jj-app .detail-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: -4px -6px 8px;
-  padding: 4px 6px;
-  cursor: pointer;
-  transition: background-color 0.12s ease;
-}
-
-jj-app .detail-head:hover {
-  background: var(--jj-bg-panel);
-}
-
-jj-app .detail-id {
-  font-family: var(--jj-mono);
-  font-size: 12px;
-  color: var(--jj-accent);
-}
-
-jj-app .detail-when {
-  font-size: 10.5px;
-  color: var(--jj-fg-muted);
-}
-
-jj-app .tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-family: var(--jj-mono);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  border: 1px solid var(--jj-accent);
-  color: var(--jj-accent);
-  padding: 0 4px;
-}
-
-jj-app .tag.muted {
-  border-color: var(--jj-border);
-  color: var(--jj-fg-muted);
-}
-
-jj-app .tag.warn {
-  border-color: var(--jj-removed-fg);
-  color: var(--jj-removed-fg);
-}
-
-jj-app .tag-x {
-  border: 0;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-  font-size: 11px;
-  line-height: 1;
-}
-
-jj-app .detail-desc {
-  margin: 0 0 10px;
-  max-height: 14em;
-  overflow-y: auto;
-  padding: 8px 10px;
-  background: var(--jj-bg-panel);
-  border-left: 3px solid var(--jj-border);
-  font-family: var(--jj-sans);
-  font-size: 12.5px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  max-width: 78ch;
-}
-
-jj-app .detail-edit {
-  width: 100%;
-  max-width: 78ch;
-  min-height: 54px;
-  box-sizing: border-box;
-  border: 1px solid var(--jj-border);
-  background: var(--jj-bg);
-  color: var(--jj-fg);
-  font: inherit;
-  font-size: 12.5px;
-  padding: 6px 8px;
-  margin-bottom: 8px;
-}
-
-jj-app .detail-edit:focus {
-  outline: none;
-  border-color: var(--jj-accent);
-  box-shadow: var(--jj-focus-ring);
-}
-
-jj-app .detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-/* Groups separate what the actions do to history: work here · reshape · share ·
-   destructive. The rule is the boundary, so Abandon never sits flush against Push. */
-jj-app .action-group {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding-right: 10px;
-  border-right: 1px solid var(--jj-border);
-}
-
-jj-app button.tool.danger {
-  border-color: var(--jj-removed-fg);
-  color: var(--jj-removed-fg);
-}
-
-jj-app button.tool.danger:hover {
-  background: var(--jj-removed-fg);
-  color: var(--jj-bg);
-}
-
-jj-app .detail-label {
-  display: block;
-  font-family: var(--jj-mono);
-  font-size: 9.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--jj-fg-muted);
-  margin-bottom: 3px;
-}
-
-jj-app .detail-file {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  border: 0;
-  background: none;
-  color: var(--jj-fg);
-  font-family: var(--jj-mono);
-  font-size: 11.5px;
-  text-align: left;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-
-jj-app .detail-file:hover {
-  background: var(--jj-bg-panel);
-}
-
-jj-app .detail-file-status {
-  text-transform: uppercase;
-  color: var(--jj-fg-muted);
-  width: 10px;
-}
-
-jj-app .detail-file-status.added { color: var(--jj-added-fg); }
-jj-app .detail-file-status.deleted { color: var(--jj-removed-fg); }
-
-jj-app .detail-file-path {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-jj-app .detail-file-counts .plus { color: var(--jj-added-fg); }
-jj-app .detail-file-counts .minus { color: var(--jj-removed-fg); }
-
-/* --- Operation log --- */
-jj-app .op {
-  border-bottom: 1px solid var(--jj-border);
-  padding: 7px 4px;
-}
-
-jj-app .op-head {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
-jj-app .op-when {
-  font-family: var(--jj-mono);
-  font-size: 9.5px;
-  color: var(--jj-fg-muted);
-}
-
-jj-app .op-current {
-  font-family: var(--jj-mono);
-  font-size: 8.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  border: 1px solid var(--jj-accent);
-  color: var(--jj-accent);
-  padding: 0 4px;
-}
-
-jj-app .op-desc {
-  font-size: 12px;
-  margin: 2px 0;
-}
-
-jj-app .op-args {
-  display: block;
-  font-family: var(--jj-mono);
-  font-size: 10px;
-  color: var(--jj-fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-jj-app .op-actions {
-  margin-top: 5px;
-}
-
-jj-app .ops-empty {
-  color: var(--jj-fg-muted);
-  font-style: italic;
-  padding: 8px;
-}
-
-/* --- Mutation outcome + undo --- */
-jj-app .outcome {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--jj-border);
-  background: color-mix(in srgb, var(--jj-accent) 8%, var(--jj-bg));
-  font-size: 12px;
-}
-
-jj-app .outcome-text {
-  flex: 1;
-  font-family: var(--jj-mono);
-  font-size: 11px;
-  white-space: pre-wrap;
-  max-height: 4em;
-  overflow-y: auto;
-}
-
-jj-app a.tool {
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-}
-
-jj-app .search-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
-}
-
-jj-app .search-bar input {
-  flex: 1;
-  max-width: 340px;
-  border: 1px solid var(--jj-border);
-  background: var(--jj-bg);
-  color: var(--jj-fg);
-  font-family: var(--jj-mono);
-  font-size: 12px;
-  padding: 4px 8px;
-}
-
-jj-app .search-bar input:focus {
-  outline: none;
-  border-color: var(--jj-accent);
-  box-shadow: var(--jj-focus-ring);
-}
-
-jj-app .search-bar .matches {
-  font-family: var(--jj-mono);
-  font-size: 10.5px;
-  color: var(--jj-fg-muted);
-  min-width: 70px;
-}
-
-/* Keyboard cursor + search hits in the diff (light DOM rows). */
-.kbd-cursor {
-  box-shadow: inset 3px 0 0 var(--jj-accent) !important;
-}
-
-.search-match {
-  box-shadow: inset -3px 0 0 color-mix(in srgb, var(--jj-accent) 45%, transparent);
-}
-
-.search-current {
-  box-shadow: inset -3px 0 0 var(--jj-accent);
-  background: color-mix(in srgb, var(--jj-accent) 9%, var(--jj-bg)) !important;
-}
-
 jj-app .status {
-  padding: 4px 12px;
-  font-size: 11px;
+  padding: 7px 16px;
+  font-size: 12px;
   white-space: pre-wrap;
   border-bottom: 1px solid var(--jj-border);
 }
 
 jj-app .status.error {
   color: var(--jj-removed-fg);
+  background: var(--jj-removed-bg);
 }
 
 jj-app .status.info {
   color: var(--jj-added-fg);
+  background: var(--jj-added-bg);
 }
+
+jj-app .outcome {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-accent-soft);
+  font-size: 12.5px;
+}
+
+jj-app .outcome-text {
+  flex: 1;
+  font-family: var(--jj-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  max-height: 4em;
+  overflow-y: auto;
+  color: var(--jj-fg-soft);
+}
+
+jj-app .search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
+}
+
+jj-app .search-bar input {
+  flex: 1;
+  max-width: 360px;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-sm);
+  background: var(--jj-surface);
+  color: var(--jj-fg);
+  font-family: var(--jj-mono);
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+jj-app .search-bar input:focus {
+  outline: none;
+  border-color: var(--jj-accent-line);
+  box-shadow: var(--jj-focus-ring);
+}
+
+jj-app .search-bar .matches {
+  font-family: var(--jj-mono);
+  font-size: 11px;
+  color: var(--jj-fg-muted);
+  min-width: 74px;
+}
+
+/* Sticky breadcrumb above the diff */
+
+jj-app .crumb {
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--jj-border);
+  background: var(--jj-bg-panel);
+  font-family: var(--jj-mono);
+  font-size: 11.5px;
+  color: var(--jj-fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+jj-app .crumb-dir {
+  color: var(--jj-fg-faint);
+}
+
+jj-app .crumb-name {
+  color: var(--jj-fg);
+  font-weight: 500;
+}
+
+/* Operation log */
+
+jj-app .op {
+  border-radius: var(--jj-r-md);
+  padding: 9px 10px;
+  margin-bottom: 3px;
+  transition: background-color 0.12s ease;
+}
+
+jj-app .op:hover {
+  background: var(--jj-wash);
+}
+
+jj-app .op-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+jj-app .op-when {
+  font-size: 10.5px;
+  color: var(--jj-fg-faint);
+}
+
+jj-app .op-current {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 999px;
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+  padding: 1px 7px;
+}
+
+jj-app .op-desc {
+  font-size: 12.5px;
+  margin: 3px 0;
+  color: var(--jj-fg);
+}
+
+jj-app .op-args {
+  display: block;
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  color: var(--jj-fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+jj-app .op-actions {
+  margin-top: 6px;
+}
+
+jj-app .ops-empty {
+  color: var(--jj-fg-muted);
+  padding: 10px;
+}
+
+/* Fatal error */
 
 jj-app .fatal {
   grid-column: 1 / -1;
@@ -1010,16 +1121,18 @@ jj-app .fatal {
 }
 
 jj-app .fatal .card {
-  max-width: 560px;
+  max-width: 580px;
   border: 1px solid var(--jj-border);
   border-radius: var(--jj-r-lg);
-  background: var(--jj-bg-panel);
-  padding: 20px 24px;
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  padding: 22px 26px;
 }
 
 jj-app .fatal .card h2 {
-  margin: 0 0 8px;
-  font-size: 14px;
+  margin: 0 0 9px;
+  font-size: 15px;
+  font-weight: 600;
   color: var(--jj-removed-fg);
 }
 
@@ -1027,6 +1140,7 @@ jj-app .fatal .card pre {
   margin: 0;
   font-family: var(--jj-mono);
   font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   color: var(--jj-fg-muted);
 }
@@ -1045,8 +1159,9 @@ jj-patch-view {
   overflow-y: auto;
   font-family: var(--jj-mono);
   font-size: var(--jj-code-size);
-  line-height: 1.5;
+  line-height: 1.55;
   box-sizing: border-box;
+  padding: 12px 16px 40px;
 }
 
 .jj-patch > * {
@@ -1059,7 +1174,7 @@ jj-patch-view {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 7px;
   color: var(--jj-fg-muted);
   font-family: var(--jj-sans);
   text-align: center;
@@ -1068,95 +1183,125 @@ jj-patch-view {
 }
 
 .jj-empty .glyph {
-  font-family: var(--jj-mono);
-  font-size: 20px;
+  font-size: 24px;
   color: var(--jj-added-fg);
-  opacity: 0.85;
   margin-bottom: 2px;
 }
 
-.jj-empty .glyph::before {
-  content: '[ ';
-  color: var(--jj-fg-muted);
-}
-
-.jj-empty .glyph::after {
-  content: ' ]';
-  color: var(--jj-fg-muted);
-}
-
 .jj-empty .title {
-  font-family: var(--jj-mono);
-  font-size: 12.5px;
+  font-size: 15px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
   color: var(--jj-fg);
+  letter-spacing: -0.01em;
 }
 
 .jj-empty .hint {
-  font-size: 12px;
-  max-width: 42ch;
-  line-height: 1.5;
+  font-size: 12.5px;
+  max-width: 44ch;
+  line-height: 1.55;
 }
+
+/* File cards: the code surface floats above the page. Rows stay flat and full-width
+   inside the card — virtualizers measure offsetHeight, so the gap between files lives
+   in the header's transparent top border, never a margin. */
 
 .file-header {
   display: flex;
-  gap: 8px;
+  gap: 9px;
   align-items: center;
-  padding: 7px 12px;
-  background: var(--jj-bg-panel);
-  /* Flat full-width rows: virtualizers measure offsetHeight (margins excluded), so
-     inter-file spacing must not come from margins, and side borders would need a
-     card-end cap per file. Borders top+bottom only. */
-  border-top: 1px solid var(--jj-border);
-  border-bottom: 1px solid var(--jj-border);
-  font-weight: 600;
+  padding: 9px 14px;
+  background: var(--jj-surface);
+  border: 1px solid var(--jj-border);
+  border-top: 14px solid transparent;
+  border-radius: var(--jj-r-md) var(--jj-r-md) 0 0;
+  background-clip: padding-box;
+  font-family: var(--jj-sans);
+  font-weight: 550;
+  font-size: 12.5px;
   box-sizing: border-box;
 }
 
 .file-status {
-  font-family: var(--jj-mono);
-  font-size: 9px;
+  font-family: var(--jj-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 1.5px 8px;
+  background: var(--jj-wash);
   color: var(--jj-fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  border: 1px solid currentColor;
-  padding: 0 4px;
+  text-transform: capitalize;
 }
 
-.file-status.added { color: var(--jj-added-fg); }
-.file-status.deleted { color: var(--jj-removed-fg); }
+.file-status.added {
+  background: var(--jj-added-bg);
+  color: var(--jj-added-fg);
+}
+
+.file-status.deleted {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+.file-status.renamed {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+}
+
+.file-path {
+  font-family: var(--jj-mono);
+  font-size: 12px;
+  color: var(--jj-fg);
+}
 
 .file-counts {
   margin-left: auto;
+  font-family: var(--jj-mono);
   font-weight: 400;
   font-size: 11px;
 }
 
+.file-counts .plus {
+  color: var(--jj-added-fg);
+}
+
+.file-counts .minus {
+  color: var(--jj-removed-fg);
+}
+
 .file-header.viewed .file-path {
-  color: var(--jj-fg-muted);
+  color: var(--jj-fg-faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--jj-border-strong);
 }
 
 .file-action {
   border: 1px solid var(--jj-border);
-  background: var(--jj-bg);
+  background: var(--jj-surface);
   color: var(--jj-fg-muted);
   font-family: var(--jj-sans);
   font-size: 11px;
-  font-weight: 400;
-  border-radius: 5px;
-  padding: 1px 8px;
+  font-weight: 500;
+  border-radius: var(--jj-r-sm);
+  padding: 2.5px 9px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   user-select: none;
+  transition:
+    border-color 0.12s ease,
+    color 0.12s ease;
 }
 
 .file-action:hover {
-  border-color: var(--jj-accent);
+  border-color: var(--jj-border-strong);
   color: var(--jj-fg);
+}
+
+select.file-action {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 118px;
 }
 
 .viewed-toggle input {
@@ -1164,102 +1309,97 @@ jj-patch-view {
   margin: 0;
 }
 
-select.file-action {
-  appearance: none;
-  -webkit-appearance: none;
-  max-width: 110px;
-}
-
 .conflict-badge {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
-  border-radius: 4px;
-  padding: 1px 6px;
+  border-radius: 999px;
+  padding: 1.5px 8px;
   background: var(--jj-removed-bg);
   color: var(--jj-removed-fg);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
-/* jj materialized-conflict marker lines: make the structure jump out of the diff. */
-.line.conflict-marker,
-.cell.conflict-marker {
-  background: color-mix(in srgb, var(--jj-accent) 12%, var(--jj-bg));
-}
-
-.line.conflict-marker .content,
-.cell.conflict-marker .content {
-  color: var(--jj-accent);
-  font-weight: 700;
-}
-
-.file-counts .plus { color: var(--jj-added-fg); }
-.file-counts .minus { color: var(--jj-removed-fg); }
+/* Hunk headers, expanders and notices sit inside the card. */
 
 .hunk-header {
-  padding: 3px 12px;
+  padding: 4px 14px;
   background: var(--jj-hunk-bg);
-  color: var(--jj-fg-muted);
+  color: var(--jj-fg-faint);
+  font-size: 11px;
   box-sizing: border-box;
-  font-size: 10.5px;
-  letter-spacing: 0.05em;
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
   border-top: 1px solid var(--jj-border);
 }
 
 .expander {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  display: block;
   width: 100%;
-  border: 0;
-  border-top: 1px solid var(--jj-border);
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-hunk-bg);
-  color: var(--jj-fg-muted);
-  font-family: var(--jj-mono);
-  font-size: 10.5px;
-  padding: 3px 12px;
+  text-align: left;
+  padding: 4px 14px;
+  color: var(--jj-accent);
+  font-family: var(--jj-sans);
+  font-size: 11.5px;
   cursor: pointer;
+  background: var(--jj-surface);
   box-sizing: border-box;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  border: 0;
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
+  transition: background-color 0.12s ease;
 }
 
 .expander:hover {
-  background: color-mix(in srgb, var(--jj-accent) 10%, var(--jj-bg));
-  color: var(--jj-fg);
+  background: var(--jj-accent-soft);
 }
 
 .expander .chev {
-  color: var(--jj-accent);
+  color: var(--jj-fg-faint);
+  margin-right: 5px;
 }
 
 .notice {
-  padding: 10px 12px;
+  padding: 12px 14px;
   color: var(--jj-fg-muted);
-  font-style: italic;
+  font-family: var(--jj-sans);
+  background: var(--jj-surface);
   box-sizing: border-box;
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
+  border-bottom: 1px solid var(--jj-border);
+  border-radius: 0 0 var(--jj-r-md) var(--jj-r-md);
 }
 
-/* Unified rows: [old#][new#][sign][content] */
+/* Code rows */
+
 .line.unified {
   display: grid;
-  grid-template-columns: 3.2em 3.2em 1.2em 1fr;
+  grid-template-columns: 3.4em 3.4em 1.2em 1fr;
   box-sizing: border-box;
+  background: var(--jj-surface);
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
 }
 
-.line.unified.added { background: var(--jj-added-bg); }
-.line.unified.removed { background: var(--jj-removed-bg); }
+.line.unified.added {
+  background: var(--jj-added-bg);
+}
 
-/* Split rows: two [num][content] cells */
+.line.unified.removed {
+  background: var(--jj-removed-bg);
+}
+
 .split-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   box-sizing: border-box;
+  background: var(--jj-surface);
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
 }
 
 .cell {
   display: grid;
-  grid-template-columns: 3.2em 1fr;
+  grid-template-columns: 3.4em 1fr;
   min-width: 0;
 }
 
@@ -1267,20 +1407,22 @@ select.file-action {
   border-right: 1px solid var(--jj-border);
 }
 
-.cell.added { background: var(--jj-added-bg); }
-.cell.removed { background: var(--jj-removed-bg); }
+.cell.added {
+  background: var(--jj-added-bg);
+}
+
+.cell.removed {
+  background: var(--jj-removed-bg);
+}
+
 .cell.filler {
-  background: repeating-linear-gradient(
-    -45deg,
-    transparent 0 6px,
-    var(--jj-hunk-bg) 6px 7px
-  );
+  background: var(--jj-hunk-bg);
 }
 
 .num {
   color: var(--jj-num-fg);
   text-align: right;
-  padding-right: 8px;
+  padding-right: 10px;
   user-select: none;
   font-size: 11px;
   line-height: inherit;
@@ -1288,20 +1430,14 @@ select.file-action {
 
 .sign {
   user-select: none;
-  color: var(--jj-fg-muted);
+  color: var(--jj-fg-faint);
   text-align: center;
 }
 
 .content {
   min-width: 0;
-  padding-right: 8px;
-}
-
-/* Wrapping is a per-view choice: wrap keeps every column visible, nowrap keeps
-   alignment honest for long lines and scrolls instead. */
-.jj-patch.wrap .content {
-  white-space: pre-wrap;
-  word-break: break-all;
+  padding-right: 10px;
+  color: var(--jj-fg-soft);
 }
 
 .jj-patch.nowrap .content {
@@ -1309,9 +1445,53 @@ select.file-action {
   overflow-x: auto;
 }
 
-.line.added .content, .cell.added .content { color: var(--jj-added-fg); }
-.line.removed .content, .cell.removed .content { color: var(--jj-removed-fg); }
+.jj-patch.wrap .content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
-/* Word-diff emphasis; keeps working when shiki colors the same span. */
-.line.added .mark, .cell.added .mark { background: var(--jj-added-mark); border-radius: 2px; }
-.line.removed .mark, .cell.removed .mark { background: var(--jj-removed-mark); border-radius: 2px; }
+.line.added .content,
+.cell.added .content,
+.line.removed .content,
+.cell.removed .content {
+  color: var(--jj-fg);
+}
+
+/* Word-diff emphasis; survives shiki colouring the same span. */
+.line.added .mark,
+.cell.added .mark {
+  background: var(--jj-added-mark);
+  border-radius: 3px;
+}
+
+.line.removed .mark,
+.cell.removed .mark {
+  background: var(--jj-removed-mark);
+  border-radius: 3px;
+}
+
+/* jj materialized-conflict marker lines. */
+.line.conflict-marker,
+.cell.conflict-marker {
+  background: var(--jj-accent-soft);
+}
+
+.line.conflict-marker .content,
+.cell.conflict-marker .content {
+  color: var(--jj-accent);
+  font-weight: 600;
+}
+
+/* Keyboard cursor + search hits. */
+.kbd-cursor {
+  box-shadow: inset 3px 0 0 var(--jj-accent) !important;
+}
+
+.search-match {
+  box-shadow: inset -3px 0 0 var(--jj-accent-line);
+}
+
+.search-current {
+  box-shadow: inset -3px 0 0 var(--jj-accent);
+  background: var(--jj-accent-soft) !important;
+}
