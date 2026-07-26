@@ -1243,6 +1243,7 @@ export class App extends LitElement {
                     <div class="detail-actions">
                       <button
                         class="tool"
+                        title="jj describe — save this message onto the change."
                         ?disabled=${this.description === change.description}
                         @click=${this.saveDescription}
                       >
@@ -1251,30 +1252,97 @@ export class App extends LitElement {
                     </div>`}
 
               <div class="detail-actions">
-                <button class="tool primary" @click=${this.editSelected}>Work on this</button>
-                <button class="tool" @click=${this.newOnSelected}>New on top</button>
-                <button
-                  class="tool"
-                  ?disabled=${change.immutable}
-                  title="Rebase this change and its descendants onto another revision"
-                  @click=${this.rebaseSelected}
-                >
-                  Rebase…
-                </button>
-                <button
-                  class="tool"
-                  ?disabled=${change.immutable || this.files.length < 2}
-                  title="Move the focused file out into its own change"
-                  @click=${this.splitSelectedFiles}
-                >
-                  Split file
-                </button>
-                <button class="tool" @click=${this.duplicateSelected}>Duplicate</button>
-                <button class="tool" @click=${this.backoutSelected}>Back out</button>
-                <button class="tool" @click=${this.createBookmark}>Bookmark…</button>
-                <button class="tool" @click=${this.runPush}>Push</button>
+                <span class="action-group">
+                  <button
+                    class="tool primary"
+                    title=${`jj edit — move the working copy onto this change so your edits land in it.${
+                      change.immutable ? ' Blocked: this change is immutable.' : ''
+                    }`}
+                    ?disabled=${change.immutable}
+                    @click=${this.editSelected}
+                  >
+                    Work on this
+                  </button>
+                  <button
+                    class="tool"
+                    title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
+                    @click=${this.newOnSelected}
+                  >
+                    New on top
+                  </button>
+                </span>
+
+                <span class="action-group">
+                  <button
+                    class="tool"
+                    title=${
+                      change.immutable
+                        ? 'jj rebase — blocked: this change is immutable (at or below trunk).'
+                        : 'jj rebase -s — move this change and everything built on top of it onto a different parent. Conflicts are recorded, not fatal.'
+                    }
+                    ?disabled=${change.immutable}
+                    @click=${this.rebaseSelected}
+                  >
+                    Rebase…
+                  </button>
+                  <button
+                    class="tool"
+                    title=${
+                      change.immutable
+                        ? 'jj split — blocked: this change is immutable.'
+                        : this.files.length < 2
+                          ? 'jj split — needs at least two files; there is nothing to separate.'
+                          : 'jj split — pull the focused file out into its own change, leaving the rest here. File-level, no hunk picking.'
+                    }
+                    ?disabled=${change.immutable || this.files.length < 2}
+                    @click=${this.splitSelectedFiles}
+                  >
+                    Split file
+                  </button>
+                  <button
+                    class="tool"
+                    title="jj duplicate — copy this change to a second, independent change with the same content. The original stays put."
+                    @click=${this.duplicateSelected}
+                  >
+                    Duplicate
+                  </button>
+                  <button
+                    class="tool"
+                    title="jj backout — add a NEW change that undoes this one, keeping this one in history. Use for already-pushed work; use Abandon for work only you have."
+                    @click=${this.backoutSelected}
+                  >
+                    Back out
+                  </button>
+                </span>
+
+                <span class="action-group">
+                  <button
+                    class="tool"
+                    title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
+                    @click=${this.createBookmark}
+                  >
+                    Bookmark…
+                  </button>
+                  <button
+                    class="tool"
+                    title=${
+                      change.bookmarks.length
+                        ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
+                        : 'jj git push --change — push this change, auto-naming a bookmark from its change id.'
+                    }
+                    @click=${this.runPush}
+                  >
+                    Push
+                  </button>
+                </span>
+
                 <button
                   class="tool danger"
+                  title=${
+                    change.immutable
+                      ? 'jj abandon — blocked: this change is immutable.'
+                      : 'jj abandon — remove this change from history entirely, as if it never existed. Undoable from the Ops tab. To reverse already-pushed work instead, use Back out.'
+                  }
                   ?disabled=${change.immutable}
                   @click=${this.abandonSelected}
                 >

@@ -749,8 +749,19 @@ jj-app .detail-edit:focus {
 jj-app .detail-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 10px;
+}
+
+/* Groups separate what the actions do to history: work here · reshape · share ·
+   destructive. The rule is the boundary, so Abandon never sits flush against Push. */
+jj-app .action-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-right: 10px;
+  border-right: 1px solid var(--jj-border);
 }
 
 jj-app button.tool.danger {
