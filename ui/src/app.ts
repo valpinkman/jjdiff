@@ -23,6 +23,7 @@ import {
   type FilePatch,
   type RepoState,
 } from './ipc.js';
+import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import './patch-view.js';
 import type { DiffLayout } from './rows.js';
 
@@ -240,6 +241,7 @@ export class App extends LitElement {
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
   private seededFor: string | null = null;
+  private commandBarShortcut: Shortcut = parseShortcut('Mod+Shift+p');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -262,6 +264,11 @@ export class App extends LitElement {
         '--jj-code-size',
         `${config.ui.codeFontSize}px`,
       );
+      if (config.ui.theme === 'light' || config.ui.theme === 'dark') {
+        document.documentElement.dataset['jjTheme'] = config.ui.theme;
+        document.documentElement.style.colorScheme = config.ui.theme;
+      }
+      this.commandBarShortcut = parseShortcut(config.keymap.commandBar);
     } catch {
       // Config is best-effort; defaults are fine.
     }
@@ -272,7 +279,7 @@ export class App extends LitElement {
   }
 
   private onGlobalKey = (event: KeyboardEvent) => {
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'p') {
+    if (matchesShortcut(event, this.commandBarShortcut)) {
       event.preventDefault();
       this.barOpen = !this.barOpen;
     }

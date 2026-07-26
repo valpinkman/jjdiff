@@ -320,6 +320,14 @@ pub fn run() {
             // Watchers are not fatal: without them the UI still works, it just won't
             // live-refresh.
             if let Ok(repo) = Repo::discover(&state.launch.repo_path) {
+                if let Some(window) = app.get_webview_window("main") {
+                    let name = repo
+                        .root()
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let _ = window.set_title(&format!("jjdiff — {name}"));
+                }
                 let mut watchers = Vec::new();
 
                 let handle = app.handle().clone();

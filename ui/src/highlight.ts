@@ -65,6 +65,10 @@ export class HighlightStore extends EventTarget {
   private requested = new Set<string>();
 
   private get theme(): HighlightRequest['theme'] {
+    // Config-forced theme (data attribute) wins over the system scheme.
+    const forced = document.documentElement.dataset['jjTheme'];
+    if (forced === 'dark') return 'github-dark';
+    if (forced === 'light') return 'github-light';
     return matchMedia('(prefers-color-scheme: dark)').matches
       ? 'github-dark'
       : 'github-light';

@@ -8,6 +8,21 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub ui: UiConfig,
+    pub keymap: Keymap,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Keymap {
+    /// `Mod` = Cmd on macOS, Ctrl elsewhere. E.g. "Mod+Shift+p".
+    #[serde(alias = "command-bar")]
+    pub command_bar: String,
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Keymap { command_bar: "Mod+Shift+p".into() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,11 +36,18 @@ pub struct UiConfig {
     pub code_font_size: f32,
     #[serde(alias = "ignore-whitespace")]
     pub ignore_whitespace: bool,
+    /// "system" (default), "light", or "dark".
+    pub theme: String,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
-        UiConfig { diff_style: "split".into(), code_font_size: 12.5, ignore_whitespace: false }
+        UiConfig {
+            diff_style: "split".into(),
+            code_font_size: 12.5,
+            ignore_whitespace: false,
+            theme: "system".into(),
+        }
     }
 }
 
@@ -60,8 +82,12 @@ mod tests {
 
     #[test]
     fn parses_partial_config() {
-        let config: Config = toml::from_str("[ui]\ndiff-style = \"unified\"\n").unwrap();
+        let config: Config =
+            toml::from_str("[ui]\ndiff-style = \"unified\"\ntheme = \"dark\"\n[keymap]\ncommand-bar = \"Mod+k\"\n")
+                .unwrap();
         assert_eq!(config.ui.diff_style, "unified");
+        assert_eq!(config.ui.theme, "dark");
+        assert_eq!(config.keymap.command_bar, "Mod+k");
         // Unspecified fields keep defaults.
         assert_eq!(config.ui.code_font_size, 12.5);
     }

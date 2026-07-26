@@ -72,6 +72,12 @@ export interface Config {
     diffStyle: string;
     codeFontSize: number;
     ignoreWhitespace: boolean;
+    /** "system", "light", or "dark". */
+    theme: string;
+  };
+  keymap: {
+    /** E.g. "Mod+Shift+p" — Mod is Cmd on macOS, Ctrl elsewhere. */
+    commandBar: string;
   };
 }
 

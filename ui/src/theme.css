@@ -19,8 +19,10 @@
   --jj-code-size: 12.5px;
 }
 
+/* Dark palette applies via the system scheme (unless forced light) or when forced dark.
+   The two selectors below must stay in sync — config `ui.theme` sets data-jj-theme. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-jj-theme='light']) {
     --jj-bg: #14161a;
     --jj-bg-panel: #1c1f24;
     --jj-fg: #dde1e6;
@@ -36,6 +38,23 @@
     --jj-hunk-bg: #1f242b;
     --jj-num-fg: #566069;
   }
+}
+
+:root[data-jj-theme='dark'] {
+  --jj-bg: #14161a;
+  --jj-bg-panel: #1c1f24;
+  --jj-fg: #dde1e6;
+  --jj-fg-muted: #8b939e;
+  --jj-border: #2c313a;
+  --jj-accent: #9d86ff;
+  --jj-added-bg: #10231a;
+  --jj-added-mark: #1d4a2d;
+  --jj-added-fg: #57ab5a;
+  --jj-removed-bg: #291416;
+  --jj-removed-mark: #55272b;
+  --jj-removed-fg: #e5534b;
+  --jj-hunk-bg: #1f242b;
+  --jj-num-fg: #566069;
 }
 
 html,

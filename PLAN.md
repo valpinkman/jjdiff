@@ -108,25 +108,37 @@ jj-lib tree edits.
 
 ## Milestones
 
-**M0 — skeleton (wk 1).** Tauri scaffold, Rust workspace, `jj` CLI wrapper with
-`--ignore-working-copy` discipline, op-head watcher, `jjdiff [revset] [path]` CLI entry.
+**M0 — skeleton. ✅ DONE.** Tauri scaffold, Rust workspace, `jj` CLI wrapper with
+`--ignore-working-copy` discipline, op-head watcher, `jjdiff [revset]` CLI entry.
 
-**M1 — read-only reviewer (wks 2–3).** Working-copy + arbitrary-revset diffs; virtualized
-split/unified views, word-level intra-line diffs, whitespace toggle; file tree; Shiki
-highlighting; large-file/binary/image guards. *Usable as a `jj diff` replacement.*
+**M1 — read-only reviewer. ✅ DONE.** Working-copy (fs-vs-`@-` via gix, zero snapshots —
+verified by op-log test) + arbitrary-revset diffs; virtualized split/unified views, word-level
+intra-line spans (UTF-16 offsets), whitespace toggle; file tree; shiki/core highlighting in a
+worker (JS regex engine, only mapped grammars bundled); binary/too-large guards.
 
-**M2 — jj-native actions (wk 4).** Describe editor (commit message UX), `new`, file-level
-`squash --into`, viewed flags keyed by change id, command bar, config file. *Daily driver.*
+**M2 — jj-native actions. ✅ DONE.** Describe editor + Commit & New (`describe` + `new`),
+file-level `squash` to parent, viewed flags keyed by change id (collapse + tree dimming),
+Cmd/Ctrl+Shift+P command bar, `~/.config/jjdiff/config.toml`, working-copy fs watcher
+(gitignore-aware) so edits appear without a manual refresh.
 
-**M3 — stack review (wks 5–6).** Stack sidebar over `trunk()..@`, per-change review pages,
-interdiff between evolog entries ("what changed since I last reviewed"), absorb button,
-move-file-to-change. *The jj-shaped feature no git tool has.*
+**M3 — stack review. ✅ DONE.** Stack sidebar over `trunk()..@`, per-change review with
+Mark Reviewed (stores the reviewed commit id per change id), "what changed since I last
+reviewed" interdiff via `jj interdiff` between evolog commits, Absorb button (summary
+surfaced), per-file move-to-change over mutable stack changes.
+Note: evolog's template context differs from log's (`json(commit)`, not `json(self)`).
 
-**M4 — conflicts + polish (wks 7–8).** Structured conflict rendering, `resolve` integration,
-themes, keymap, packaging (dmg/deb/rpm + Homebrew tap), signed macOS build.
+**M4 — conflicts + polish. ✅ DONE.** Conflict surfacing (banner, per-file badges,
+highlighted jj conflict-marker lines in diffs, `resolve --list` parsing), forced
+light/dark/system theme, configurable command-bar keymap, repo name in the window title,
+packaging config (app/dmg/deb/rpm targets, generated icon set).
+Deliberate cut: no in-app `jj resolve` launcher — interactive merge editors spawned from a
+GUI without a TTY hang more often than they work; the conflict banner points at the
+terminal instead.
 
-**Later.** GitHub PR review via `gh` on colocated bookmarks; LLM walkthroughs (port codiff's
-agent-CLI pattern — it's VCS-agnostic); shared-review web service; hunk-level squash/split.
+**Later.** Signed macOS build + Homebrew tap (needs Apple identity / CI); GitHub PR review
+via `gh` on colocated bookmarks; LLM walkthroughs (port codiff's agent-CLI pattern — it's
+VCS-agnostic); shared-review web service; hunk-level squash/split; rename detection in the
+live working-copy view; nested .gitignore support in the fs watcher.
 
 ## Risks
 
