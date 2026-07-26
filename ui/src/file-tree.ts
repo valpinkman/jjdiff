@@ -36,7 +36,7 @@ export class FileTree extends LitElement {
       font: inherit;
       text-align: left;
       padding: 2px 6px;
-      border-radius: 5px;
+      border-radius: 0;
       cursor: pointer;
       white-space: nowrap;
       line-height: 20px;
@@ -53,7 +53,7 @@ export class FileTree extends LitElement {
     }
     .row.selected {
       background: var(--jj-bg-panel);
-      outline: 1px solid var(--jj-accent);
+      box-shadow: inset 2px 0 0 var(--jj-accent);
     }
     .chevron {
       flex: none;

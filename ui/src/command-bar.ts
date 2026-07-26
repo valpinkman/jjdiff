@@ -26,7 +26,7 @@ export class CommandBar extends LitElement {
       width: min(560px, 90vw);
       background: var(--jj-bg);
       border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-lg, 12px);
+      border-radius: 0;
       box-shadow: var(--jj-shadow-pop, 0 12px 40px rgb(0 0 0 / 0.3));
       overflow: hidden;
       animation: bar-in 0.16s ease-out;
@@ -44,7 +44,8 @@ export class CommandBar extends LitElement {
       border-bottom: 1px solid var(--jj-border);
       background: transparent;
       color: var(--jj-fg);
-      font: inherit;
+      font-family: var(--jj-mono);
+      font-size: 12.5px;
       padding: 10px 14px;
       outline: none;
     }

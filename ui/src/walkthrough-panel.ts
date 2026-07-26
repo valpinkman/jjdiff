@@ -15,16 +15,17 @@ export class WalkthroughPanel extends LitElement {
       font-size: 12px;
     }
     button {
-      transition: background-color 0.13s ease, border-color 0.13s ease;
+      transition: background-color 0.13s ease, box-shadow 0.13s ease;
       display: block;
       width: 100%;
       text-align: left;
-      border: 1px solid transparent;
-      border-radius: 6px;
+      border: 0;
+      border-bottom: 1px solid var(--jj-border);
+      border-radius: 0;
       background: none;
       color: var(--jj-fg);
       font: inherit;
-      padding: 6px 8px;
+      padding: 7px 8px;
       cursor: pointer;
     }
     button:hover {
@@ -35,8 +36,8 @@ export class WalkthroughPanel extends LitElement {
       outline-offset: -2px;
     }
     button.current {
-      border-color: var(--jj-accent);
       background: var(--jj-bg-panel);
+      box-shadow: inset 3px 0 0 var(--jj-accent);
     }
     .step-head {
       display: flex;
@@ -44,10 +45,11 @@ export class WalkthroughPanel extends LitElement {
       gap: 7px;
     }
     .index {
+      font-family: var(--jj-mono);
       flex: none;
       width: 17px;
       height: 17px;
-      border-radius: 50%;
+      border-radius: 0;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -58,7 +60,7 @@ export class WalkthroughPanel extends LitElement {
     }
     .current .index {
       background: var(--jj-accent);
-      color: #fff;
+      color: var(--jj-bg);
     }
     .index.done {
       background: var(--jj-added-bg);

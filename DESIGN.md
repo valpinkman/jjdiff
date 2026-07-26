@@ -6,8 +6,15 @@ Single source of truth for jjdiff's visual language. Any agent or human touching
 
 ## 1. Visual Theme & Atmosphere
 
-A **quiet instrument**. jjdiff is a code-review cockpit: the diff is the content, the
-chrome is furniture. Every visual decision defers to code legibility.
+**Tempered industrial brutalism** — a precision instrument, not a consumer app. Two
+substrates, one per theme, never mixed within a theme:
+
+- **Light = Swiss Industrial Print**: unbleached paper, carbon ink, hairline rules.
+- **Dark = Tactical Telemetry**: deactivated-CRT charcoal, phosphor text.
+
+The diff is the content, the chrome is machinery. Every visual decision defers to code
+legibility — brutalism supplies structure and typography, never noise (no scanlines,
+dithering, or grain: banned below).
 
 - **Density: 8/10 (cockpit dense).** Compact paddings, 13px base, 12.5px code. All
   numerals tabular (`font-variant-numeric: tabular-nums`) — columns of counts must not shimmy.
@@ -21,51 +28,57 @@ chrome is furniture. Every visual decision defers to code legibility.
 
 ## 2. Color Palette & Roles
 
-| Role | Light | Dark | Rule |
+| Role | Light (Print) | Dark (Telemetry) | Rule |
 |---|---|---|---|
-| Background | `#ffffff` | `#14161a` | Never pure `#000` |
-| Panel | `#f6f7f9` | `#1c1f24` | The only chrome surface |
-| Text | `#1c2128` | `#dde1e6` | Cool gray family only |
-| Muted | `#6a737d` | `#8b939e` | Labels, hints, gutters |
-| Border | `#d7dbe0` | `#2c313a` | 1px, always |
-| **Accent** | `#5e6ad2` | `#7b87e0` | THE one accent — see below |
+| Background | `#f3f2ed` paper | `#0e0f10` CRT | Never pure `#000`/`#fff` |
+| Panel | `#eae8e1` | `#17181a` | The only chrome surface |
+| Text | `#131311` ink | `#e6e6e2` phosphor | One gray family per substrate |
+| Muted | `#6d6a61` | `#8b8b84` | Labels, hints, gutters |
+| Border | `#c9c6ba` | `#2d2f30` | 1px hairlines, structural |
+| **Signal** | `#1d5a94` | `#52aec4` | Blueprint blue / cyan phosphor — see below |
 | Added | `#1a7f37` on `#e9ffef` | `#57ab5a` on `#10231a` | Semantic, untouchable |
 | Removed | `#cf222e` on `#ffedeb` | `#e5534b` on `#291416` | Semantic, untouchable |
 
-### Accent rules
-- Exactly **one** accent: desaturated indigo (S≈55%). It marks *selection and
-  identity* (selected change, active tab, focus rings, change ids) — never large fills.
-- Subtle accent surfaces are derived, not new colors:
-  `color-mix(in srgb, var(--jj-accent) 6–12%, var(--jj-bg))`.
-- **Banned:** neon/saturated "AI purple" (the old `#7c5cff`), gradients of any kind,
-  second accents, warm grays mixed into the cool family. Green/red are *diff
-  semantics*, not decoration — never reuse them for chrome.
+### Signal-color rules
+- Exactly **one** signal per substrate, same duty: *selection and live state*
+  (selection bars, active tab underline + indices, change ids, focus rings) — thin
+  bars and text, never large fills. Print mode signals in **blueprint blue** (the
+  drafting-ink of machinery blueprints); telemetry mode signals in **cyan phosphor**
+  (authentic CRT emission).
+- The brutalist canon's aviation red is **deliberately rejected**: red is reserved for
+  removed lines and conflicts in a diff tool. Blue/cyan stays clear of both semantic
+  colors.
+- **Banned:** gradients, translucency, second accents, mixing substrates within one
+  theme. Green/red are *diff semantics*, not decoration.
 
 ## 3. Typography Rules
 
-- **UI chrome:** `Geist Variable` (bundled via Fontsource — CSP forbids remote fonts).
-  Weights: 400 body, 500 controls, 600 emphasis, 700 reserved for tiny labels.
-- **Code & all numerals:** `Geist Mono Variable`, falling back to `ui-monospace`.
-  Line-height 1.5 in diffs. Change ids, counts, and line numbers are always mono.
-- Micro-labels (section titles, step progress) are 10px, 700, uppercase,
-  `letter-spacing: 0.06–0.08em` — used sparingly, one per panel.
+- **Telemetry layer (dominant):** `Geist Mono Variable` — ALL controls, labels, tags,
+  tabs, ids, counts, and code. 9–12.5px, uppercase for labels, tracking
+  `0.06–0.08em` (mechanical spacing).
+- **Prose layer:** `Geist Variable` for sentences only — descriptions, narratives,
+  hints. Readability text is never uppercase.
+- Tabs and steps carry **index numerals** (`01`, `02`, …) in signal amber — CSS
+  counters, decimal-leading-zero.
 - Narrative text (walkthrough) caps at `68ch`, line-height 1.55.
 - **Banned:** serifs anywhere, Inter, decorative display sizes. Hierarchy comes from
   weight + color, never from size inflation.
 
 ## 4. Component Stylings
 
-- **Radius scale:** `--jj-r-sm: 5px` (buttons, badges, rows) · `--jj-r-md: 8px`
-  (inputs, cards) · `--jj-r-lg: 12px` (floating panels). Never one radius everywhere;
-  never pill buttons.
-- **Buttons (`.tool`):** 1px border, transparent-to-tinted hover
-  (`accent 6%` mix), `scale(0.97)` on press, 150ms transitions. Primary = solid accent,
-  darkened 12% on hover. Disabled = 50% opacity, no cursor.
+- **Geometry:** every corner is 90 degrees (`--jj-r-*: 0`). No pills, no rounding.
+- **Buttons (`.tool`):** mono uppercase, 1px ink border, **inverted on hover**
+  (fg/bg swap), `translateY(1px)` mechanical press. Primary = solid ink, amber on
+  hover. Disabled = 50% opacity.
+- **Selection:** 2–3px signal bar inset on the left edge (`box-shadow: inset 3px 0`),
+  never rounded outlines.
+- **Tags** (status, badges): 1px-bordered square boxes, mono uppercase 9px
+  (`MODIFIED`, `CONFLICT`, bookmark names).
 - **Focus:** keyboard focus is always visible — 2px accent outline (controls) or
   3px soft accent ring (`--jj-focus-ring`) on text fields. `outline: none` without a
   replacement is a defect.
-- **Shadows:** only on floating elements (command bar), tinted to the background hue
-  (`--jj-shadow-pop`), never pure black.
+- **Shadows:** only the command bar floats — and it gets a **hard offset shadow**
+  (`6px 6px 0`), not a soft blur. Nothing else casts shadows.
 - **Cards:** chrome uses flat panels + 1px borders; elevation is reserved for things
   that actually float. Diff rows are flat, full-width, separated by borders — never
   boxed cards (virtualizers measure offsetHeight; margins produce phantom gaps).
@@ -113,3 +126,6 @@ chrome is furniture. Every visual decision defers to code legibility.
 8. Proportional-figure numerals in any column of numbers.
 9. `height: 100vh` (the app shell uses its own fixed grid; panes scroll internally).
 10. Exclamation marks and "Oops!" in any user-facing string.
+11. Brutalism's noise layer: scanlines, halftone/dither filters, grain overlays,
+    phosphor glow. Structure yes, degradation no — code legibility is the product.
+12. Aviation-red accents (collides with removed-line semantics).

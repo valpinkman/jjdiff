@@ -1,11 +1,11 @@
 /* All theming flows through custom properties so it crosses shadow and light DOM (PLAN.md). */
 :root {
-  --jj-bg: #ffffff;
-  --jj-bg-panel: #f6f7f9;
-  --jj-fg: #1c2128;
-  --jj-fg-muted: #6a737d;
-  --jj-border: #d7dbe0;
-  --jj-accent: #5e6ad2;
+  --jj-bg: #f3f2ed;
+  --jj-bg-panel: #eae8e1;
+  --jj-fg: #131311;
+  --jj-fg-muted: #6d6a61;
+  --jj-border: #c9c6ba;
+  --jj-accent: #1d5a94;
   --jj-added-bg: #e9ffef;
   --jj-added-mark: #b3f0c0;
   --jj-added-fg: #1a7f37;
@@ -17,10 +17,12 @@
   --jj-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --jj-sans: "Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --jj-code-size: 12.5px;
-  --jj-r-sm: 5px;
-  --jj-r-md: 8px;
-  --jj-r-lg: 12px;
-  --jj-shadow-pop: 0 12px 40px rgb(28 33 64 / 0.16), 0 2px 8px rgb(28 33 64 / 0.08);
+  /* Brutalist geometry: corners are 90 degrees. Variables kept so a future
+     direction change is one edit. */
+  --jj-r-sm: 0;
+  --jj-r-md: 0;
+  --jj-r-lg: 0;
+  --jj-shadow-pop: 6px 6px 0 color-mix(in srgb, var(--jj-fg) 82%, transparent);
   --jj-focus-ring: 0 0 0 3px color-mix(in srgb, var(--jj-accent) 22%, transparent);
 }
 
@@ -28,39 +30,39 @@
    The two selectors below must stay in sync — config `ui.theme` sets data-jj-theme. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-jj-theme='light']) {
-    --jj-bg: #14161a;
-    --jj-bg-panel: #1c1f24;
-    --jj-fg: #dde1e6;
-    --jj-fg-muted: #8b939e;
-    --jj-border: #2c313a;
-    --jj-accent: #7b87e0;
+    --jj-bg: #0e0f10;
+    --jj-bg-panel: #17181a;
+    --jj-fg: #e6e6e2;
+    --jj-fg-muted: #8b8b84;
+    --jj-border: #2d2f30;
+    --jj-accent: #52aec4;
     --jj-added-bg: #10231a;
     --jj-added-mark: #1d4a2d;
     --jj-added-fg: #57ab5a;
     --jj-removed-bg: #291416;
     --jj-removed-mark: #55272b;
     --jj-removed-fg: #e5534b;
-    --jj-hunk-bg: #1f242b;
+    --jj-hunk-bg: #191b1d;
     --jj-num-fg: #566069;
-    --jj-shadow-pop: 0 12px 40px rgb(0 2 12 / 0.55), 0 2px 8px rgb(0 2 12 / 0.4);
+    --jj-shadow-pop: 6px 6px 0 rgb(0 0 0 / 0.85);
   }
 }
 
 :root[data-jj-theme='dark'] {
-  --jj-bg: #14161a;
+  --jj-bg: #0e0f10;
   --jj-shadow-pop: 0 12px 40px rgb(0 2 12 / 0.55), 0 2px 8px rgb(0 2 12 / 0.4);
-  --jj-bg-panel: #1c1f24;
-  --jj-fg: #dde1e6;
-  --jj-fg-muted: #8b939e;
-  --jj-border: #2c313a;
-  --jj-accent: #7b87e0;
+  --jj-bg-panel: #17181a;
+  --jj-fg: #e6e6e2;
+  --jj-fg-muted: #8b8b84;
+  --jj-border: #2d2f30;
+  --jj-accent: #52aec4;
   --jj-added-bg: #10231a;
   --jj-added-mark: #1d4a2d;
   --jj-added-fg: #57ab5a;
   --jj-removed-bg: #291416;
   --jj-removed-mark: #55272b;
   --jj-removed-fg: #e5534b;
-  --jj-hunk-bg: #1f242b;
+  --jj-hunk-bg: #191b1d;
   --jj-num-fg: #566069;
 }
 
@@ -119,26 +121,29 @@ jj-app .spacer {
 }
 
 jj-app button.tool {
-  border: 1px solid var(--jj-border);
+  border: 1px solid var(--jj-fg);
   background: var(--jj-bg);
   color: var(--jj-fg);
-  font: inherit;
-  font-size: 12px;
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
   font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
   border-radius: var(--jj-r-sm);
-  padding: 3px 10px;
+  padding: 4px 10px;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease,
-    transform 0.1s ease;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
+    transform 0.08s ease;
 }
 
 jj-app button.tool:hover {
-  border-color: var(--jj-accent);
-  background: color-mix(in srgb, var(--jj-accent) 6%, var(--jj-bg));
+  background: var(--jj-fg);
+  border-color: var(--jj-fg);
+  color: var(--jj-bg);
 }
 
 jj-app button.tool:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: translateY(1px);
 }
 
 jj-app button.tool.generating {
@@ -154,17 +159,19 @@ jj-app button.tool.generating {
 jj-app button.tool.on {
   border-color: var(--jj-accent);
   color: var(--jj-accent);
+  box-shadow: inset 0 -2px 0 var(--jj-accent);
 }
 
 jj-app button.tool.primary {
-  background: var(--jj-accent);
-  border-color: var(--jj-accent);
-  color: #fff;
+  background: var(--jj-fg);
+  border-color: var(--jj-fg);
+  color: var(--jj-bg);
 }
 
 jj-app button.tool.primary:hover {
-  background: color-mix(in srgb, var(--jj-accent) 88%, #000);
-  border-color: color-mix(in srgb, var(--jj-accent) 88%, #000);
+  background: var(--jj-accent);
+  border-color: var(--jj-accent);
+  color: var(--jj-bg);
 }
 
 jj-app button.tool:disabled {
@@ -182,27 +189,42 @@ jj-app > aside {
 
 jj-app .tabs {
   display: flex;
-  gap: 2px;
-  padding: 8px 8px 6px;
+  gap: 0;
+  padding: 0;
   border-bottom: 1px solid var(--jj-border);
+  counter-reset: jj-tab;
 }
 
 jj-app .tab {
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.12s ease, color 0.12s ease;
   flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 6px;
   border: 0;
+  border-right: 1px solid var(--jj-border);
   background: none;
   color: var(--jj-fg-muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 4px 8px;
-  border-radius: 6px;
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 7px 8px;
+  border-radius: 0;
   cursor: pointer;
+  counter-increment: jj-tab;
+}
+
+jj-app .tab:last-child {
+  border-right: 0;
+}
+
+jj-app .tab::before {
+  content: counter(jj-tab, decimal-leading-zero);
+  color: var(--jj-accent);
+  font-size: 9px;
 }
 
 jj-app .tab:hover {
@@ -212,17 +234,17 @@ jj-app .tab:hover {
 
 jj-app .tab.active {
   background: var(--jj-bg-panel);
-  color: var(--jj-accent);
+  color: var(--jj-fg);
   box-shadow: inset 0 -2px 0 var(--jj-accent);
 }
 
 jj-app .tab .count {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 400;
   font-family: var(--jj-mono);
-  background: var(--jj-hunk-bg);
-  border-radius: 8px;
-  padding: 0 6px;
+  border: 1px solid var(--jj-border);
+  border-radius: 0;
+  padding: 0 4px;
 }
 
 jj-app .context-card {
@@ -230,12 +252,15 @@ jj-app .context-card {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  width: calc(100% - 12px);
-  margin: 8px 6px 0;
-  padding: 6px 8px;
-  border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-md);
+  width: 100%;
+  margin: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--jj-border);
+  border-left: 3px solid var(--jj-accent);
+  border-radius: 0;
   background: var(--jj-bg-panel);
+  box-sizing: border-box;
   color: var(--jj-fg);
   font: inherit;
   font-size: 12px;
@@ -285,21 +310,22 @@ jj-app .section-title {
 }
 
 jj-app .stack {
-  padding: 6px;
+  padding: 0;
   overflow-y: auto;
 }
 
 jj-app .change {
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  transition: background-color 0.12s ease, box-shadow 0.12s ease;
   display: block;
   width: 100%;
   text-align: left;
-  border: 1px solid transparent;
-  border-radius: 6px;
+  border: 0;
+  border-bottom: 1px solid var(--jj-border);
+  border-radius: 0;
   background: none;
   color: var(--jj-fg);
   font: inherit;
-  padding: 5px 8px;
+  padding: 7px 10px;
   cursor: pointer;
 }
 
@@ -308,8 +334,8 @@ jj-app .change:hover {
 }
 
 jj-app .change.selected {
-  border-color: var(--jj-accent);
   background: var(--jj-bg-panel);
+  box-shadow: inset 3px 0 0 var(--jj-accent);
 }
 
 jj-app .change .id {
@@ -332,11 +358,15 @@ jj-app .change .desc.empty-desc {
 }
 
 jj-app .badge {
-  font-size: 10px;
-  border-radius: 4px;
-  padding: 1px 5px;
+  font-family: var(--jj-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--jj-border);
+  border-radius: 0;
+  padding: 0 4px;
   margin-left: 6px;
-  background: var(--jj-hunk-bg);
+  background: none;
   color: var(--jj-fg-muted);
 }
 
@@ -405,7 +435,8 @@ jj-app .banner.conflict {
 jj-app .walk-banner {
   padding: 8px 12px;
   border-bottom: 1px solid var(--jj-border);
-  background: color-mix(in srgb, var(--jj-accent) 7%, var(--jj-bg));
+  border-left: 3px solid var(--jj-accent);
+  background: var(--jj-bg-panel);
 }
 
 jj-app .walk-head {
@@ -415,9 +446,10 @@ jj-app .walk-head {
 }
 
 jj-app .walk-progress {
+  font-family: var(--jj-mono);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--jj-accent);
   white-space: nowrap;
@@ -523,15 +555,29 @@ jj-patch-view {
 }
 
 .jj-empty .glyph {
-  font-size: 26px;
+  font-family: var(--jj-mono);
+  font-size: 20px;
   color: var(--jj-added-fg);
   opacity: 0.85;
   margin-bottom: 2px;
 }
 
+.jj-empty .glyph::before {
+  content: '[ ';
+  color: var(--jj-fg-muted);
+}
+
+.jj-empty .glyph::after {
+  content: ' ]';
+  color: var(--jj-fg-muted);
+}
+
 .jj-empty .title {
-  font-size: 14px;
+  font-family: var(--jj-mono);
+  font-size: 12.5px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--jj-fg);
 }
 
@@ -557,10 +603,13 @@ jj-patch-view {
 }
 
 .file-status {
-  font-size: 10px;
+  font-family: var(--jj-mono);
+  font-size: 9px;
   color: var(--jj-fg-muted);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.07em;
+  border: 1px solid currentColor;
+  padding: 0 4px;
 }
 
 .file-status.added { color: var(--jj-added-fg); }
@@ -639,7 +688,9 @@ select.file-action {
   background: var(--jj-hunk-bg);
   color: var(--jj-fg-muted);
   box-sizing: border-box;
-  font-size: 11px;
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  border-top: 1px solid var(--jj-border);
 }
 
 .notice {
