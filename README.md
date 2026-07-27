@@ -22,6 +22,25 @@ cargo clippy --workspace
 pnpm build                # typecheck + bundle the UI
 ```
 
+## Configuration
+
+`~/.config/jjdiff/config.toml`, same convention as jj itself:
+
+```toml
+[ui]
+diff-style = "split"    # or "unified"
+theme = "system"        # or "light" / "dark"
+
+[keymap]
+command-bar = "Mod+k"   # Mod is Cmd on macOS, Ctrl elsewhere
+
+[editor]
+# Placeholders: {file} (absolute), {line}, {repo}. No shell — split on spaces.
+command = "zed {file}:{line}"
+```
+
+Press `?` in the app for the shortcut list.
+
 ## Layout
 
 - `crates/vcs` — jj CLI facade (read/mutate discipline, JSONL templates)

@@ -40,7 +40,12 @@ import {
   installTerminalHelper,
   markReviewed,
   newChange,
+  onMenuCommand,
   onRepoChanged,
+  openInEditor,
+  openRepoWindow,
+  setMenu,
+  type MenuGroup,
   onSecondInstance,
   openRepository,
   pickRepository,
@@ -63,10 +68,13 @@ import {
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
+import type { FileMenuRequest } from './file-tree.js';
 import { iconAbsorb, iconFetch, iconSplit, iconUndo, iconUnified } from './icons.js';
-import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
+import { formatShortcut, matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
+import { askConfirm, askText } from './prompt.js';
 import './patch-view.js';
 import type { PatchView } from './patch-view.js';
+import './shortcuts-help.js';
 import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
@@ -176,32 +184,91 @@ export class App extends LitElement {
   @state() private markdownPreviews: ReadonlyMap<string, string> = new Map();
   /** Sidebar width in px (resizable via drag handle). */
   @state() private sidebarWidth = 292;
+  /** Open file-tree context menu, anchored at viewport coordinates. */
+  @state() private fileMenu: FileMenuRequest | null = null;
+  /** The `?` shortcut sheet. */
+  @state() private shortcutsOpen = false;
 
   private unlisten: (() => void) | null = null;
+  private unlistenMenu: (() => void) | null = null;
+  /** Serialized shape of the last menu pushed, so identical renders are free. */
+  private menuSignature = '';
   /** The change id the description editor was last seeded from. */
   private seededFor: string | null = null;
   private commandBarShortcut: Shortcut = parseShortcut('Mod+k');
+  /** The raw binding string, for display in the shortcut sheet and palette hints. */
+  @state() private commandBarBinding = 'Mod+k';
 
   override connectedCallback() {
     super.connectedCallback();
     void this.start();
     window.addEventListener('keydown', this.onGlobalKey);
     window.addEventListener('click', this.onWindowClick);
+    window.addEventListener('focus', this.onWindowFocus);
+    void onMenuCommand(this.onMenuCommand).then((stop) => (this.unlistenMenu = stop));
   }
 
   override disconnectedCallback() {
     this.unlisten?.();
+    this.unlistenMenu?.();
     window.removeEventListener('keydown', this.onGlobalKey);
     window.removeEventListener('click', this.onWindowClick);
+    window.removeEventListener('focus', this.onWindowFocus);
     super.disconnectedCallback();
   }
 
-  /** Close the repo menu on any click outside it. */
+  /**
+   * The menu bar is app-global on macOS, so it must follow focus: whichever
+   * window the user is in re-pushes its own commands on the way in.
+   */
+  private onWindowFocus = () => {
+    this.menuSignature = '';
+    this.syncMenu();
+  };
+
+  /** Run a command the native menu dispatched — unless another window owns focus. */
+  private onMenuCommand = (id: string) => {
+    if (!document.hasFocus()) return;
+    this.commands.find((command) => command.id === id)?.run();
+  };
+
+  /**
+   * Push the command list to the native menu whenever it changes shape. The
+   * palette is the single source of truth; this only reshapes it into groups.
+   * Diffed by signature because `updated()` runs on every render and rebuilding
+   * a native menu per keystroke would be absurd.
+   */
+  private syncMenu() {
+    const groups: MenuGroup[] = [];
+    for (const command of this.commands) {
+      const title = command.group ?? 'Commands';
+      const last = groups[groups.length - 1];
+      const group = last?.title === title ? last : (groups.push({ title, items: [] }), groups[groups.length - 1]!);
+      group.items.push({ id: command.id, label: command.label });
+    }
+    const signature = JSON.stringify(groups);
+    if (signature === this.menuSignature) return;
+    this.menuSignature = signature;
+    void setMenu(groups).catch(() => {
+      // A menu that fails to build must not take the window down with it.
+      this.menuSignature = '';
+    });
+  }
+
+  protected override updated() {
+    if (document.hasFocus()) this.syncMenu();
+  }
+
+  /** Close the repo menu and the file context menu on any click outside them. */
   private onWindowClick = (event: MouseEvent) => {
-    if (!this.repoMenuOpen) return;
     const path = event.composedPath();
-    if (!path.some((node) => node instanceof HTMLElement && node.classList?.contains('repo-menu-root'))) {
+    const inside = (className: string) =>
+      path.some((node) => node instanceof HTMLElement && node.classList?.contains(className));
+    if (this.repoMenuOpen && !inside('repo-menu-root')) {
       this.repoMenuOpen = false;
+    }
+    if (this.fileMenu && !inside('file-menu')) {
+      this.fileMenu = null;
     }
   };
 
@@ -238,20 +305,23 @@ export class App extends LitElement {
     }
   }
 
+  /** Same picker, but the repo lands in its own window (or focuses its existing one). */
+  private async openFolderInNewWindow() {
+    this.repoMenuOpen = false;
+    const picked = await pickRepository();
+    if (!picked) return;
+    await this.run(() => openRepoWindow(picked));
+  }
+
   /**
-   * `jjdiff` launched again while the app is running: open the repo in the
-   * existing window. If the second invocation pointed at the same repo, a
-   * plain refresh keeps it simple; otherwise we switch as `openFolder` does.
-   * Revset/walkthrough flags reapply through the same launch-options path.
+   * `jjdiff` launched again while the app is running. The backend routes this:
+   * a repo with no window gets a fresh one, and only the window already bound
+   * to that repo receives the event — so by the time we see it, this window is
+   * the right one and all that is left is to reload and apply the flags.
    */
   private async handleSecondInstance(args: SecondInstanceArgs) {
     if (args.repoPath) {
-      const current = this.repo?.root;
-      if (current && current !== args.repoPath) {
-        await this.switchRepo(args.repoPath);
-      } else {
-        await this.refresh();
-      }
+      await this.refresh();
     }
     if (args.revset) {
       const target = this.repo?.graph.find(
@@ -281,6 +351,63 @@ export class App extends LitElement {
       this.lastOutcome = null;
     } finally {
       this.busy = null;
+    }
+  }
+
+  /**
+   * Open a file in the configured editor. With no explicit path, uses the diff
+   * cursor (so `o` works mid-review), falling back to the focused file.
+   */
+  private async openFileInEditor(path?: string, line?: number) {
+    const target =
+      path !== undefined
+        ? { path, line }
+        : this.patchView?.cursorLocation() ??
+          (this.focusPath ? { path: this.focusPath, line: undefined } : null);
+    if (!target) {
+      this.actionError = 'No file selected — move the cursor to a file first (j/k).';
+      return;
+    }
+    this.fileMenu = null;
+    try {
+      await openInEditor(target.path, target.line);
+      this.actionError = null;
+    } catch (error) {
+      // An unconfigured editor is a setup step, not a failure — offer the
+      // setting rather than printing the config key and leaving them to it.
+      if (String(error).includes('no editor configured')) {
+        await this.configureEditor();
+        return;
+      }
+      this.actionError = String(error);
+    }
+  }
+
+  /** Set `[editor] command`, seeded with whatever is configured now. */
+  private async configureEditor() {
+    const current = await getConfig()
+      .then((config) => config.editor.command)
+      .catch(() => '');
+    const command = await askText({
+      heading: 'Editor command',
+      detail:
+        'Placeholders: {file} (absolute path), {line}, {repo}.\n' +
+        'Split on spaces and run directly — no shell.\n\n' +
+        'Examples:  zed {file}:{line}   ·   code -g {file}:{line}   ·   idea --line {line} {file}',
+      value: current,
+      placeholder: 'zed {file}:{line}',
+      confirmLabel: 'Save',
+    });
+    if (command === null) return;
+    try {
+      const path = await setEditorCommand(command);
+      this.lastOutcome = {
+        message: command.trim() ? `Editor saved to ${path}.` : `Editor cleared in ${path}.`,
+        operation: '',
+      };
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
     }
   }
 
@@ -357,6 +484,7 @@ export class App extends LitElement {
         this.applyTheme(config.ui.theme);
       }
       this.commandBarShortcut = parseShortcut(config.keymap.commandBar);
+      this.commandBarBinding = config.keymap.commandBar;
     } catch {
       // Config is best-effort; defaults are fine.
     }
@@ -491,6 +619,14 @@ export class App extends LitElement {
       }
     }
     if (event.key === 'Escape' && !typing) {
+      if (this.shortcutsOpen) {
+        this.shortcutsOpen = false;
+        return;
+      }
+      if (this.fileMenu) {
+        this.fileMenu = null;
+        return;
+      }
       if (this.searchOpen) {
         this.closeSearch();
         return;
@@ -522,6 +658,14 @@ export class App extends LitElement {
       case 'v':
         event.preventDefault();
         this.patchView?.toggleViewedAtCursor();
+        break;
+      case 'o':
+        event.preventDefault();
+        void this.openFileInEditor();
+        break;
+      case '?':
+        event.preventDefault();
+        this.shortcutsOpen = !this.shortcutsOpen;
         break;
     }
   };
@@ -1205,7 +1349,30 @@ export class App extends LitElement {
     ]);
 
     add('Review', [
-      { id: 'find', label: 'Find in Diffs', hint: 'Mod+F', run: () => this.openSearch() },
+      {
+        id: 'find',
+        label: 'Find in Diffs',
+        hint: formatShortcut('Mod+f'),
+        run: () => this.openSearch(),
+      },
+      {
+        id: 'open-in-editor',
+        label: 'Open File in Editor',
+        hint: 'o',
+        run: () => void this.openFileInEditor(),
+      },
+      {
+        id: 'shortcuts',
+        label: 'Keyboard Shortcuts',
+        hint: '?',
+        run: () => (this.shortcutsOpen = true),
+      },
+      {
+        id: 'set-editor',
+        label: 'Set Editor Command…',
+        hint: 'for o',
+        run: () => void this.configureEditor(),
+      },
       this.walkthrough
         ? {
             id: 'walkthrough',
@@ -1277,6 +1444,11 @@ export class App extends LitElement {
       { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => this.createBookmark() },
       { id: 'refresh', label: 'Reload Repository', run: () => void this.refresh() },
       { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
+      {
+        id: 'open-repo-window',
+        label: 'Open Repository in New Window…',
+        run: () => void this.openFolderInNewWindow(),
+      },
       {
         id: 'install-terminal-helper',
         label: 'Install Terminal Helper…',
@@ -1492,6 +1664,9 @@ export class App extends LitElement {
                       .viewed=${this.viewedPaths}
                       @file-selected=${(event: CustomEvent<string | null>) => {
                         this.focusPath = event.detail;
+                      }}
+                      @file-menu=${(event: CustomEvent<FileMenuRequest>) => {
+                        this.fileMenu = event.detail;
                       }}
                     ></jj-file-tree>`}
               </div>
@@ -1909,6 +2084,58 @@ export class App extends LitElement {
             @close=${() => (this.barOpen = false)}
           ></jj-command-bar>`
         : nothing}
+      ${this.shortcutsOpen
+        ? html`<jj-shortcuts-help
+            .commandBar=${this.commandBarBinding}
+            @close=${() => (this.shortcutsOpen = false)}
+          ></jj-shortcuts-help>`
+        : nothing}
+      ${this.renderFileMenu()}
+    `;
+  }
+
+  /**
+   * File-tree context menu. Rendered at the app root rather than inside the
+   * tree so the sidebar's `overflow` cannot clip it; positioned from the click
+   * and nudged back inside the viewport when it would overhang.
+   */
+  private renderFileMenu() {
+    const menu = this.fileMenu;
+    if (!menu) return nothing;
+    const WIDTH = 210;
+    const HEIGHT = 116;
+    const left = Math.min(menu.x, window.innerWidth - WIDTH - 8);
+    const top = Math.min(menu.y, window.innerHeight - HEIGHT - 8);
+    const isViewed = this.viewedPaths.has(menu.path);
+    const close = () => (this.fileMenu = null);
+    return html`
+      <div class="file-menu" style="left:${left}px; top:${top}px; width:${WIDTH}px">
+        <button @click=${() => void this.openFileInEditor(menu.path)}>Open in Editor</button>
+        <button
+          @click=${() => {
+            this.focusPath = this.focusPath === menu.path ? null : menu.path;
+            close();
+          }}
+        >
+          ${this.focusPath === menu.path ? 'Clear File Focus' : 'Focus on This File'}
+        </button>
+        <button
+          @click=${() => {
+            this.setPathViewed(menu.path, !isViewed);
+            close();
+          }}
+        >
+          ${isViewed ? 'Mark as Not Viewed' : 'Mark as Viewed'}
+        </button>
+        <button
+          @click=${() => {
+            void navigator.clipboard.writeText(menu.path);
+            close();
+          }}
+        >
+          Copy Path
+        </button>
+      </div>
     `;
   }
 
@@ -1970,16 +2197,19 @@ export class App extends LitElement {
   };
 
   private onToggleViewed = (event: CustomEvent<{ path: string; viewed: boolean }>) => {
+    this.setPathViewed(event.detail.path, event.detail.viewed);
+  };
+
+  /** Optimistic update; persistence follows, and a failure reloads the truth. */
+  private setPathViewed(path: string, viewed: boolean) {
     const change = this.selectedChange;
     if (!change) return;
-    const { path, viewed } = event.detail;
-    // Optimistic update; persistence follows.
     const next = new Set(this.viewedPaths);
     if (viewed) next.add(path);
     else next.delete(path);
     this.viewedPaths = next;
     void setViewed(change.changeId, path, viewed).catch(() => void this.loadReview());
-  };
+  }
 }
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;

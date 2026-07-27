@@ -164,6 +164,7 @@ export const mockFiles: FilePatch[] = [
 export const mockConfig: Config = {
   ui: { diffStyle: 'split', codeFontSize: 12.5, ignoreWhitespace: false, theme: 'system', wordWrap: false },
   keymap: { commandBar: 'Mod+k' },
+  editor: { command: 'zed {file}:{line}' },
 };
 
 export const mockReviewStatus = (changeId: string): ReviewStatus =>

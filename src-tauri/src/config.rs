@@ -10,6 +10,21 @@ pub struct Config {
     pub ui: UiConfig,
     pub keymap: Keymap,
     pub walkthrough: WalkthroughConfig,
+    pub editor: EditorConfig,
+}
+
+/// `[editor]` — how "Open in Editor" launches an external editor.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EditorConfig {
+    /// Command template, e.g. `zed {file}:{line}` or `code -g {file}:{line}`.
+    /// Placeholders: `{file}` (absolute path), `{line}`, `{repo}` (repo root).
+    /// Empty = unset; the UI reports the config key instead of guessing an editor.
+    ///
+    /// Split on whitespace and executed directly — there is no shell, so pipes,
+    /// globs and `&&` do not work (and command injection through a filename
+    /// cannot either).
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

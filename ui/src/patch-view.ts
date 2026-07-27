@@ -236,6 +236,28 @@ export class PatchView extends LitElement {
     }
   }
 
+  /**
+   * Where the cursor is, for "open in editor": the file owning the cursor row,
+   * plus a line number when the cursor sits on a code row. Prefers the new-side
+   * number — that is what exists on disk; a removed line has only an old one,
+   * and pointing an editor at it would land on the wrong place.
+   */
+  cursorLocation(): { path: string; line?: number } | null {
+    if (this.cursor === null) return null;
+    const row = this.rows[this.cursor];
+    let line: number | undefined;
+    if (row?.kind === 'unified') {
+      line = row.line.newLine ?? undefined;
+    } else if (row?.kind === 'split') {
+      line = row.right?.newLine ?? undefined;
+    }
+    for (let index = this.cursor; index >= 0; index--) {
+      const owner = this.rows[index];
+      if (owner?.kind === 'file') return { path: owner.file.path, line };
+    }
+    return null;
+  }
+
   /** Scroll a file's header to the top of the viewport. */
   scrollToPath(path: string): void {
     const index = this.rows.findIndex((row) => row.kind === 'file' && row.file.path === path);

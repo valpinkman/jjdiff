@@ -371,18 +371,35 @@ rather than REST APIs, so auth is someone else's problem:
 
 Depends on C2 for the comment model and C1 for the `pr`/`mr` subcommands.
 
-### C5 — Native app polish
+### C5 — Native app polish ✅ DONE
 
 Individually small, collectively the difference between "a window" and "a Mac app":
 
-- **Menu bar** (Tauri menu API): File / View / Change / Repository, mirroring the palette
-  groups so the two never drift.
-- **Keyboard shortcuts help** — a discoverable cheatsheet. We have `j/k/n/p/v`, Mod+F and
-  the palette, and no way to learn them without reading the source.
-- **Multi-window**, one per repo, which C1's single-instance work makes cheap.
-- **Open in editor** — `editorCommand` config with `{file}`, `{line}`, `{repo}`
-  placeholders, wired to a keybinding and the file tree's context menu.
-- **App icon** — still the placeholder purple square generated in M0.
+- **Menu bar** ✅ (`src-tauri/src/menu.rs`). Built *from* the palette rather than alongside
+  it: `app.ts` pushes its live command list through `set_menu`, each item carries a command
+  id, and a click emits `menu-command` for the frontend to run. There is no second
+  definition to drift. The app/File/Edit/Window menus come from Tauri's predefined items —
+  Edit is load-bearing, since a custom menu without it costs the WebView Cmd+C/Cmd+V.
+  Mirrored items deliberately carry no accelerators: the frontend already dispatches every
+  shortcut, and a menu accelerator would shadow or double-fire it.
+- **Keyboard shortcuts help** ✅ — `?` opens `ui/src/shortcuts-help.ts`, driven by
+  `shortcutReference()` in `keys.ts`. `formatShortcut` renders bindings per platform
+  (⌘K / Ctrl+K) and the palette hints use it too, so the two agree.
+- **Multi-window** ✅ — one window per repo. This was the real work: `AppState` used to hold
+  a single `Repo`, so repo state is now per-window (`WindowState`, keyed by window label)
+  and all 37 repo-touching commands resolve through `repo_handle(state, window)`.
+  `repo-changed` is emitted per repo root, not app-wide. A second `jjdiff` invocation
+  focuses the window already showing that repo, or opens a new one. Capabilities had to
+  widen to `repo-*` or new windows would have had no IPC at all.
+- **Open in editor** ✅ — `[editor] command` with `{file}`, `{line}`, `{repo}`. Bound to `o`
+  (uses the diff cursor, so it opens at the line under review) and the file-tree context
+  menu. Templates split before substitution, so a path with spaces stays one argument and
+  a filename cannot inject a flag; no shell is involved.
+- **App icon** ✅ — `src-tauri/icons/icon.svg` is the source; regenerate with `rsvg-convert`
+  + `pnpm tauri icon`. Split-diff mark in the DESIGN.md dark-theme diff colours.
+
+Still open from the original list: **drag-to-rebase** was never part of C5, and per-window
+menu accelerators were skipped on purpose (see above).
 
 ### C6 — Shared review links (deliberately last)
 
@@ -395,7 +412,7 @@ Revisit only if people other than the author start reviewing with it.
 1. **C1** ✅ — nothing else is reachable from a terminal without it, and it is a day or two.
 2. **C2** ✅ — the biggest capability gap; ~1.5–2 weeks.
 3. **C3** ✅ — a few days, removes two dead ends.
-4. **C5** — polish, can be interleaved whenever.
+4. **C5** ✅ — polish, can be interleaved whenever.
 5. **C4** — only when reviewing others' PRs actually matters to you.
 6. **C6** — probably never, and that is fine.
 

@@ -7,10 +7,13 @@
 pub mod cli;
 mod comments;
 mod config;
+mod editor;
+mod menu;
 mod viewed;
 pub mod walkthrough;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -56,15 +59,35 @@ impl LaunchOptions {
     }
 }
 
-struct AppState {
+/// Everything one window owns. A window is bound to exactly one repository;
+/// opening a different repo either reuses the window showing it or creates a
+/// new one, so `Repo` and its watchers cannot be app-global.
+struct WindowState {
     launch: LaunchOptions,
-    repo: Mutex<Option<Repo>>,
+    repo: Option<Repo>,
+    watchers: Vec<RepoWatcher>,
+}
+
+struct AppState {
+    /// Launch options for the first window; later windows derive their own.
+    launch: LaunchOptions,
+    /// Per-window repo + watchers, keyed by Tauri window label.
+    windows: Mutex<HashMap<String, WindowState>>,
+    /// Source of the next window label. Labels must be unique for the lifetime
+    /// of the process, so this only ever counts up.
+    next_window: Mutex<u32>,
+    // The review and comment stores stay app-global on purpose: both are keyed
+    // by repo root, so two windows on the same repo must see the same comments
+    // and the same viewed flags.
     review: Mutex<ReviewStore>,
     comments: Mutex<CommentStore>,
     recents: Mutex<Vec<String>>,
     recents_path: Mutex<Option<PathBuf>>,
-    _watchers: Mutex<Vec<RepoWatcher>>,
 }
+
+/// The label of the window created at startup. Fixed so `tauri.conf.json` can
+/// declare it and `setup` can find it.
+const MAIN_WINDOW: &str = "main";
 
 const MAX_RECENTS: usize = 8;
 
@@ -90,32 +113,65 @@ fn remember_repo(state: &tauri::State<'_, AppState>, root: &str) {
     }
 }
 
-/// (Re)start both watchers for `repo` and point the window title at it.
-fn attach_repo(app: &AppHandle, repo: &Repo) -> Vec<RepoWatcher> {
-    if let Some(window) = app.get_webview_window("main") {
-        let name = repo
-            .root()
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let _ = window.set_title(&format!("jjdiff — {name}"));
+/// (Re)start both watchers for `repo` and title the window after it.
+///
+/// Events go to `label` alone (`emit_to`, not `emit`): a mutation in one repo's
+/// window must not make every other window reload.
+fn attach_repo(app: &AppHandle, label: &str, repo: &Repo) -> Vec<RepoWatcher> {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.set_title(&window_title(repo.root()));
     }
     let mut watchers = Vec::new();
-    let handle = app.clone();
-    match jjdiff_watch::watch_op_heads(&repo.op_heads_dir(), Duration::from_millis(250), move || {
-        let _ = handle.emit("repo-changed", ());
-    }) {
+    let notify = |app: &AppHandle, label: &str| {
+        let handle = app.clone();
+        let label = label.to_string();
+        move || {
+            let _ = handle.emit_to(&label, "repo-changed", ());
+        }
+    };
+    match jjdiff_watch::watch_op_heads(
+        &repo.op_heads_dir(),
+        Duration::from_millis(250),
+        notify(app, label),
+    ) {
         Ok(watcher) => watchers.push(watcher),
         Err(error) => eprintln!("jjdiff: op watcher disabled: {error}"),
     }
-    let handle = app.clone();
-    match jjdiff_watch::watch_working_copy(repo.root(), Duration::from_millis(400), move || {
-        let _ = handle.emit("repo-changed", ());
-    }) {
+    match jjdiff_watch::watch_working_copy(
+        repo.root(),
+        Duration::from_millis(400),
+        notify(app, label),
+    ) {
         Ok(watcher) => watchers.push(watcher),
         Err(error) => eprintln!("jjdiff: fs watcher disabled: {error}"),
     }
     watchers
+}
+
+fn window_title(root: &Path) -> String {
+    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    format!("jjdiff — {name}")
+}
+
+/// Bind `repo` to `label`, replacing whatever that window held before (the old
+/// watchers drop with the old state, which is what stops them firing).
+fn bind_window(app: &AppHandle, state: &AppState, label: &str, repo: Repo, launch: LaunchOptions) {
+    let watchers = attach_repo(app, label, &repo);
+    state.windows.lock().expect("windows lock").insert(
+        label.to_string(),
+        WindowState { launch, repo: Some(repo), watchers },
+    );
+}
+
+/// The label of the window already showing `root`, if any.
+fn window_for_repo(state: &AppState, root: &Path) -> Option<String> {
+    state
+        .windows
+        .lock()
+        .expect("windows lock")
+        .iter()
+        .find(|(_, window)| window.repo.as_ref().is_some_and(|repo| repo.root() == root))
+        .map(|(label, _)| label.clone())
 }
 
 /// Serializable snapshot for the UI.
@@ -146,16 +202,26 @@ struct Interdiff {
     to_commit: String,
 }
 
-/// Clone the (cheap) repo handle out of state, discovering it on first use.
-fn repo_handle(state: &tauri::State<'_, AppState>) -> Result<Repo, String> {
-    let mut guard = state.repo.lock().expect("repo lock");
-    if guard.is_none() {
-        let repo = Repo::discover(&state.launch.repo_path).map_err(|e| e.to_string())?;
+/// Clone the (cheap) repo handle for the calling window, discovering it on
+/// first use. Every repo-touching command resolves through here, which is what
+/// keeps two windows on two repositories from reading each other's state.
+fn repo_handle(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Result<Repo, String> {
+    let label = window.label();
+    let mut windows = state.windows.lock().expect("windows lock");
+    let entry = windows
+        .entry(label.to_string())
+        .or_insert_with(|| WindowState {
+            launch: state.launch.clone(),
+            repo: None,
+            watchers: Vec::new(),
+        });
+    if entry.repo.is_none() {
+        let repo = Repo::discover(&entry.launch.repo_path).map_err(|e| e.to_string())?;
         // Fail loudly here rather than with a confusing template parse error later.
         repo.check_version().map_err(|e| e.to_string())?;
-        *guard = Some(repo);
+        entry.repo = Some(repo);
     }
-    Ok(guard.as_ref().expect("repo present").clone())
+    Ok(entry.repo.as_ref().expect("repo present").clone())
 }
 
 /// Run blocking jj/fs work off the main thread.
@@ -171,9 +237,17 @@ fn vcs<T>(result: jjdiff_vcs::Result<T>) -> Result<T, String> {
     result.map_err(|e| e.to_string())
 }
 
+/// Launch options for the calling window. Windows opened later carry their own
+/// repo path (and no `-w`/`--walkthrough-file`, which apply once at startup).
 #[tauri::command]
-fn launch_options(state: tauri::State<'_, AppState>) -> LaunchOptions {
-    state.launch.clone()
+fn launch_options(window: tauri::Window, state: tauri::State<'_, AppState>) -> LaunchOptions {
+    state
+        .windows
+        .lock()
+        .expect("windows lock")
+        .get(window.label())
+        .map(|entry| entry.launch.clone())
+        .unwrap_or_else(|| state.launch.clone())
 }
 
 #[tauri::command]
@@ -181,12 +255,43 @@ fn get_config() -> config::Config {
     config::load()
 }
 
+/// Persist `[editor] command` so "Open in Editor" is configurable from inside
+/// the app rather than only by hand-editing the config file. Returns the path
+/// written, so the UI can say where the setting went.
+#[tauri::command]
+async fn set_editor_command(command: String) -> Result<String, String> {
+    blocking(move || {
+        config::set_editor_command(command.trim()).map(|path| path.display().to_string())
+    })
+    .await
+}
+
+/// Rebuild the native menu from the frontend's command list.
+///
+/// Only the focused window may set it: on macOS the menu bar is app-global, so
+/// an unfocused window pushing its own commands would leave the menu describing
+/// a repository the user is not looking at.
+#[tauri::command]
+fn set_menu(
+    app: AppHandle,
+    window: tauri::Window,
+    groups: Vec<menu::MenuGroup>,
+) -> Result<(), String> {
+    if !window.is_focused().unwrap_or(true) {
+        return Ok(());
+    }
+    let built = menu::build(&app, &groups).map_err(|error| error.to_string())?;
+    app.set_menu(built).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn repo_state(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: Option<String>,
 ) -> Result<RepoState, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let graph_revset = revset.unwrap_or_else(|| "ancestors(@ | bookmarks())".to_string());
     blocking(move || {
         Ok(RepoState {
@@ -228,22 +333,24 @@ fn compute_diff(
 /// Structured diff for one revision — or the live working copy when `revset` is `None`.
 #[tauri::command]
 async fn diff(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: Option<String>,
     ignore_whitespace: bool,
 ) -> Result<Vec<FilePatch>, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     blocking(move || compute_diff(&repo, revset.as_deref(), ignore_whitespace)).await
 }
 
 /// Interdiff from the last-reviewed commit of `change_id` to its current commit.
 #[tauri::command]
 async fn interdiff_since_reviewed(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     ignore_whitespace: bool,
 ) -> Result<Interdiff, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     let from = state
         .review
@@ -266,61 +373,88 @@ async fn interdiff_since_reviewed(
     .await
 }
 
+/// Tell every window bound to `root` that the repo moved. Scoped by repo rather
+/// than by window: a mutation is visible to all windows showing that repo, and
+/// to none of the others.
+fn emit_repo_changed(app: &AppHandle, state: &AppState, root: &Path) {
+    let labels: Vec<String> = state
+        .windows
+        .lock()
+        .expect("windows lock")
+        .iter()
+        .filter(|(_, window)| window.repo.as_ref().is_some_and(|repo| repo.root() == root))
+        .map(|(label, _)| label.clone())
+        .collect();
+    for label in labels {
+        let _ = app.emit_to(&label, "repo-changed", ());
+    }
+}
+
 /// Every mutation follows the same shape: run it off the main thread, then emit
 /// `repo-changed` so the UI reloads. The returned [`Outcome`] carries jj's own narration
 /// plus the operation id, which is what makes a one-click undo possible.
-async fn run_mutation<F>(app: &AppHandle, repo: Repo, task: F) -> Result<Outcome, String>
+async fn run_mutation<F>(
+    app: &AppHandle,
+    state: &tauri::State<'_, AppState>,
+    repo: Repo,
+    task: F,
+) -> Result<Outcome, String>
 where
     F: FnOnce(&Repo) -> jjdiff_vcs::Result<Outcome> + Send + 'static,
 {
+    let root = repo.root().to_path_buf();
     let outcome = blocking(move || vcs(task(&repo))).await?;
-    let _ = app.emit("repo-changed", ());
+    emit_repo_changed(app, state, &root);
     Ok(outcome)
 }
 
 #[tauri::command]
 async fn describe(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     message: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.describe(&change_id, &message)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.describe(&change_id, &message)).await
 }
 
 #[tauri::command]
 async fn new_change(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     parents: Vec<String>,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.new_change(&parents)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.new_change(&parents)).await
 }
 
 /// `jj edit` — move the working copy onto an existing change.
 #[tauri::command]
 async fn edit_change(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.edit(&revset)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.edit(&revset)).await
 }
 
 /// Move working-copy `paths` into `into` (defaults to the parent): jj-native partial commit.
 #[tauri::command]
 async fn squash_paths(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
     into: Option<String>,
     from: Option<String>,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| {
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| {
         repo.squash_paths(
             from.as_deref().unwrap_or("@"),
             into.as_deref().unwrap_or("@-"),
@@ -331,15 +465,20 @@ async fn squash_paths(
 }
 
 #[tauri::command]
-async fn absorb(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, |repo| repo.absorb()).await
+async fn absorb(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, |repo| repo.absorb()).await
 }
 
 /// File-level split: `paths` stay in the change, the rest move to a new child.
 #[tauri::command]
 async fn split_paths(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
     paths: Vec<String>,
@@ -347,93 +486,101 @@ async fn split_paths(
     if paths.is_empty() {
         return Err("select at least one file to split out".into());
     }
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.split_paths(&revset, &paths)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.split_paths(&revset, &paths)).await
 }
 
 #[tauri::command]
 async fn abandon_change(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.abandon(&revset)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.abandon(&revset)).await
 }
 
 #[tauri::command]
 async fn duplicate_change(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.duplicate(&revset)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.duplicate(&revset)).await
 }
 
 #[tauri::command]
 async fn backout_change(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.backout(&revset)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.backout(&revset)).await
 }
 
 /// `mode` is "revision" (just it), "source" (it and descendants) or "branch".
 #[tauri::command]
 async fn rebase_change(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     mode: String,
     revset: String,
     destination: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.rebase(&mode, &revset, &destination)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.rebase(&mode, &revset, &destination)).await
 }
 
 /// Discard working-copy changes to `paths` (all when empty). Undoable via the op log.
 #[tauri::command]
 async fn restore_paths(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.restore_paths(&paths)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.restore_paths(&paths)).await
 }
 
 #[tauri::command]
 async fn set_bookmark(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     name: String,
     revset: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.bookmark_set(&name, &revset)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.bookmark_set(&name, &revset)).await
 }
 
 #[tauri::command]
 async fn delete_bookmark(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     name: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.bookmark_delete(&name)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.bookmark_delete(&name)).await
 }
 
 #[tauri::command]
 async fn git_fetch(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     remote: Option<String>,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.git_fetch(remote.as_deref())).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.git_fetch(remote.as_deref())).await
 }
 
 /// Push a bookmark, or `change` to auto-name one from the change id. The forge prints a
@@ -441,13 +588,14 @@ async fn git_fetch(
 #[tauri::command]
 async fn git_push(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     remote: Option<String>,
     bookmark: Option<String>,
     change: Option<String>,
 ) -> Result<PushResult, String> {
-    let repo = repo_handle(&state)?;
-    let outcome = run_mutation(&app, repo, move |repo| {
+    let repo = repo_handle(&state, &window)?;
+    let outcome = run_mutation(&app, &state, repo, move |repo| {
         repo.git_push(remote.as_deref(), bookmark.as_deref(), change.as_deref())
     })
     .await?;
@@ -484,8 +632,11 @@ fn pull_request_url(output: &str) -> Option<String> {
 }
 
 #[tauri::command]
-async fn remotes(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
-    let repo = repo_handle(&state)?;
+async fn remotes(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let repo = repo_handle(&state, &window)?;
     blocking(move || vcs(repo.remotes())).await
 }
 
@@ -493,54 +644,63 @@ async fn remotes(state: tauri::State<'_, AppState>) -> Result<Vec<String>, Strin
 
 #[tauri::command]
 async fn operation_log(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     limit: usize,
 ) -> Result<Vec<Operation>, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     blocking(move || vcs(repo.operations(limit))).await
 }
 
 #[tauri::command]
-async fn undo(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, |repo| repo.undo()).await
+async fn undo(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, |repo| repo.undo()).await
 }
 
 #[tauri::command]
 async fn restore_operation(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     operation: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.op_restore(&operation)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.op_restore(&operation)).await
 }
 
 #[tauri::command]
 async fn revert_operation(
     app: AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     operation: String,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state)?;
-    run_mutation(&app, repo, move |repo| repo.op_revert(&operation)).await
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, move |repo| repo.op_revert(&operation)).await
 }
 
 #[tauri::command]
 async fn conflicts(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
 ) -> Result<Vec<String>, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     blocking(move || vcs(repo.conflicted_paths(&revset))).await
 }
 
 #[tauri::command]
 fn review_status(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
 ) -> Result<ReviewStatus, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     let review = state.review.lock().expect("review lock");
     Ok(ReviewStatus {
@@ -551,12 +711,13 @@ fn review_status(
 
 #[tauri::command]
 fn set_viewed(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     path: String,
     viewed: bool,
 ) -> Result<(), String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     state
         .review
@@ -571,13 +732,14 @@ fn set_viewed(
 /// behaves identically — staleness, stack review, everything.
 #[tauri::command]
 async fn import_walkthrough(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     revset: Option<String>,
     ignore_whitespace: bool,
     path: String,
 ) -> Result<walkthrough::Walkthrough, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     let imported = blocking(move || {
         let raw = std::fs::read_to_string(&path)
@@ -598,11 +760,12 @@ async fn import_walkthrough(
 /// working-copy version, matching what the live worktree diff shows.
 #[tauri::command]
 async fn file_content(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: Option<String>,
     path: String,
 ) -> Result<String, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     blocking(move || match revset {
         Some(revset) => vcs(repo.file_content(&revset, &path)),
         None => {
@@ -627,11 +790,12 @@ struct FileBytes {
 
 #[tauri::command]
 async fn file_bytes(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: Option<String>,
     path: String,
 ) -> Result<FileBytes, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     blocking(move || {
         let bytes = match revset {
             Some(revset) => vcs(repo.file_bytes(&revset, &path))?,
@@ -685,12 +849,13 @@ struct WalkthroughStatus {
 
 #[tauri::command]
 async fn get_walkthrough(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     revset: Option<String>,
     ignore_whitespace: bool,
 ) -> Result<WalkthroughStatus, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     let stored = state.review.lock().expect("review lock").walkthrough(&repo_key, &change_id);
     let Some(stored) = stored else {
@@ -707,13 +872,14 @@ async fn get_walkthrough(
 /// Generate (or regenerate) a walkthrough for `change_id` via the Claude CLI and store it.
 #[tauri::command]
 async fn generate_walkthrough(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     revset: Option<String>,
     ignore_whitespace: bool,
     context: String,
 ) -> Result<walkthrough::Walkthrough, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     let cfg = config::load().walkthrough;
     let generated = blocking(move || {
@@ -735,26 +901,99 @@ async fn generate_walkthrough(
     Ok(generated)
 }
 
-/// Switch the app to another repository (must be a colocated jj repo).
-#[tauri::command]
-async fn open_repository(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<(), String> {
-    let repo = tauri::async_runtime::spawn_blocking(move || {
-        let repo = Repo::discover(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+/// Discover and version-check a repo off the main thread.
+async fn discover(path: String) -> Result<Repo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = Repo::discover(Path::new(&path)).map_err(|e| e.to_string())?;
         repo.check_version().map_err(|e| e.to_string())?;
         Ok::<_, String>(repo)
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())?
+}
 
-    let watchers = attach_repo(&app, &repo);
+/// Point the calling window at another repository (must be a colocated jj repo).
+#[tauri::command]
+async fn open_repository(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let repo = discover(path).await?;
     remember_repo(&state, &repo.root().to_string_lossy());
-    *state._watchers.lock().expect("watcher lock") = watchers;
-    *state.repo.lock().expect("repo lock") = Some(repo);
-    let _ = app.emit("repo-changed", ());
+    let launch = LaunchOptions {
+        repo_path: repo.root().to_path_buf(),
+        revset: None,
+        walkthrough: false,
+        walkthrough_file: None,
+    };
+    let root = repo.root().to_path_buf();
+    bind_window(&app, &state, window.label(), repo, launch);
+    emit_repo_changed(&app, &state, &root);
+    Ok(())
+}
+
+/// Open `path` in its own window — or focus the window already showing it,
+/// since two windows on one repo would just be two views of the same state.
+#[tauri::command]
+async fn open_repo_window(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let repo = discover(path).await?;
+    if let Some(existing) = window_for_repo(&state, repo.root()) {
+        if let Some(window) = app.get_webview_window(&existing) {
+            let _ = window.set_focus();
+            return Ok(());
+        }
+    }
+    remember_repo(&state, &repo.root().to_string_lossy());
+    let launch = LaunchOptions {
+        repo_path: repo.root().to_path_buf(),
+        revset: None,
+        walkthrough: false,
+        walkthrough_file: None,
+    };
+    spawn_window(&app, &state, repo, launch)
+}
+
+/// Create a window and bind `repo` to it. The state entry is written *before*
+/// the window is built, so the first `launch_options` call from the new
+/// webview already finds its repo rather than falling back to the app default.
+fn spawn_window(
+    app: &AppHandle,
+    state: &tauri::State<'_, AppState>,
+    repo: Repo,
+    launch: LaunchOptions,
+) -> Result<(), String> {
+    let label = {
+        let mut next = state.next_window.lock().expect("window counter");
+        *next += 1;
+        format!("repo-{next}")
+    };
+    let title = window_title(repo.root());
+    state.windows.lock().expect("windows lock").insert(
+        label.clone(),
+        WindowState { launch, repo: Some(repo.clone()), watchers: Vec::new() },
+    );
+
+    tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
+        .title(title)
+        .inner_size(1280.0, 840.0)
+        .min_inner_size(720.0, 480.0)
+        .build()
+        .map_err(|error| {
+            state.windows.lock().expect("windows lock").remove(&label);
+            format!("cannot open a window: {error}")
+        })?;
+
+    // Watchers need the window to exist (they emit to its label).
+    let watchers = attach_repo(app, &label, &repo);
+    if let Some(entry) = state.windows.lock().expect("windows lock").get_mut(&label) {
+        entry.watchers = watchers;
+    }
     Ok(())
 }
 
@@ -777,6 +1016,26 @@ fn recent_repos(state: tauri::State<'_, AppState>) -> Vec<String> {
     state.recents.lock().expect("recents lock").clone()
 }
 
+/// Open `path` (repo-relative) in the configured editor, optionally at `line`.
+/// Runs off the main thread: spawning is fast, but a cold editor binary on a
+/// slow disk should not be able to stall the window.
+#[tauri::command]
+async fn open_in_editor(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    path: String,
+    line: Option<u32>,
+) -> Result<(), String> {
+    let repo = repo_handle(&state, &window)?;
+    let template = config::load().editor.command;
+    blocking(move || {
+        let root = repo.root();
+        let argv = editor::build_argv(&template, &root.join(&path), line, root)?;
+        editor::spawn(&argv)
+    })
+    .await
+}
+
 /// Write the `jjdiff` shim on PATH so the bundle is reachable from a shell.
 /// Same logic as the headless `--install-terminal-helper` command; exposed
 /// here so the in-app command bar can offer it too. Returns a human-readable
@@ -789,11 +1048,12 @@ fn install_terminal_helper() -> Result<String, String> {
 /// Record `commit_id` as the reviewed baseline for `change_id`.
 #[tauri::command]
 fn mark_reviewed(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     commit_id: String,
 ) -> Result<(), String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     state
         .review
@@ -810,6 +1070,7 @@ fn mark_reviewed(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 fn add_comment(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     path: String,
@@ -822,7 +1083,7 @@ fn add_comment(
     body: String,
     parent_id: Option<i64>,
 ) -> Result<Comment, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     state.comments.lock().expect("comments lock").add(NewComment {
         repo: repo_key,
@@ -842,10 +1103,11 @@ fn add_comment(
 /// All comments for a change, ordered by path then line then time.
 #[tauri::command]
 fn list_comments(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
 ) -> Result<Vec<Comment>, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     state.comments.lock().expect("comments lock").list(&repo_key, &change_id)
 }
@@ -889,13 +1151,14 @@ fn update_comment(
 /// against). Returns the number of comments whose anchor changed.
 #[tauri::command]
 async fn refresh_comment_anchors(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
     current_commit_id: String,
     revset: Option<String>,
     ignore_whitespace: bool,
 ) -> Result<usize, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     // Compute the diff off the main thread, then run the re-anchoring (an
     // in-memory SQLite query) back on the caller. The comment store is not
@@ -911,10 +1174,11 @@ async fn refresh_comment_anchors(
 /// Render pending (unresolved) comments as a paste-ready Markdown review.
 #[tauri::command]
 fn export_review_markdown(
+    window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
 ) -> Result<String, String> {
-    let repo = repo_handle(&state)?;
+    let repo = repo_handle(&state, &window)?;
     let repo_key = repo.root().to_string_lossy().into_owned();
     state
         .comments
@@ -930,31 +1194,58 @@ pub fn run(args: Args) {
     // available.
     let state = AppState {
         launch,
-        repo: Mutex::new(None),
+        windows: Mutex::new(HashMap::new()),
+        next_window: Mutex::new(0),
         review: Mutex::new(ReviewStore::default()),
         comments: Mutex::new(CommentStore::in_memory().expect("comment db bootstrap")),
         recents: Mutex::new(Vec::new()),
         recents_path: Mutex::new(None),
-        _watchers: Mutex::new(Vec::new()),
     };
 
     let mut builder = tauri::Builder::default();
 
-    // Single instance: launching `jjdiff` from a second repo opens a new
-    // window in the existing process rather than a rival process fighting
-    // over the same review store. We parse the second instance's argv with
-    // the same [`Args`] parser and forward a `second-instance` event.
+    // Single instance: launching `jjdiff` from a second repo opens a window in
+    // the existing process rather than a rival process fighting over the same
+    // review store. We parse the second instance's argv with the same [`Args`]
+    // parser, then route it: a repo that already has a window gets that window
+    // focused, anything else gets a new one.
     builder = builder.plugin(
-        tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        tauri_plugin_single_instance::init(|app, argv, cwd| {
             // argv[0] is the binary; the rest mirrors `jjdiff [flags] [revset]`.
             let rest: Vec<String> = argv.iter().skip(1).cloned().collect();
-            match Args::parse(&rest) {
-                Ok(parsed) => {
-                    let _ = app.emit("second-instance", parsed);
-                }
+            let parsed = match Args::parse(&rest) {
+                Ok(parsed) => parsed,
                 Err(error) => {
                     eprintln!("jjdiff: ignoring second instance with bad args: {error}");
+                    return;
                 }
+            };
+            // The second invocation's cwd, not ours: `-R` is optional and the
+            // bare `jjdiff` form means "the repo I am standing in".
+            let target = parsed.repo_path.clone().unwrap_or_else(|| PathBuf::from(&cwd));
+            let state = app.state::<AppState>();
+            match Repo::discover(&target) {
+                Ok(repo) => {
+                    if let Some(label) = window_for_repo(&state, repo.root()) {
+                        if let Some(window) = app.get_webview_window(&label) {
+                            let _ = window.set_focus();
+                            // Revset/walkthrough flags still apply to that window.
+                            let _ = app.emit_to(&label, "second-instance", parsed);
+                            return;
+                        }
+                    }
+                    let launch = LaunchOptions {
+                        repo_path: repo.root().to_path_buf(),
+                        revset: parsed.revset.clone(),
+                        walkthrough: parsed.walkthrough,
+                        walkthrough_file: parsed.walkthrough_file.clone(),
+                    };
+                    remember_repo(&state, &repo.root().to_string_lossy());
+                    if let Err(error) = spawn_window(app, &state, repo, launch) {
+                        eprintln!("jjdiff: {error}");
+                    }
+                }
+                Err(error) => eprintln!("jjdiff: second instance: {error}"),
             }
         }),
     );
@@ -962,9 +1253,19 @@ pub fn run(args: Args) {
     builder
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        // A menu click carries only the command id; the frontend owns what it
+        // does. Emitted app-wide and filtered there by document focus — with a
+        // single app-global menu bar, exactly one window is ever the target.
+        .on_menu_event(|app, event| {
+            if let Some(id) = event.id().0.strip_prefix(menu::PREFIX) {
+                let _ = app.emit("menu-command", id.to_string());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             launch_options,
             get_config,
+            set_editor_command,
+            set_menu,
             repo_state,
             diff,
             interdiff_since_reviewed,
@@ -979,9 +1280,11 @@ pub fn run(args: Args) {
             get_walkthrough,
             generate_walkthrough,
             open_repository,
+            open_repo_window,
             pick_repository,
             recent_repos,
             install_terminal_helper,
+            open_in_editor,
             file_content,
             file_bytes,
             import_walkthrough,
@@ -1033,15 +1336,26 @@ pub fn run(args: Args) {
                 }
             }
 
-            // Watchers are not fatal: without them the UI still works, it just won't
-            // live-refresh.
-            if let Ok(repo) = Repo::discover(&state.launch.repo_path) {
-                let watchers = attach_repo(app.handle(), &repo);
+            // Bind the startup window. Watchers are not fatal: without them the
+            // UI still works, it just won't live-refresh.
+            let launch = state.launch.clone();
+            if let Ok(repo) = Repo::discover(&launch.repo_path) {
                 remember_repo(&state, &repo.root().to_string_lossy());
-                *state._watchers.lock().expect("watcher lock") = watchers;
-                *state.repo.lock().expect("repo lock") = Some(repo);
+                bind_window(app.handle(), &state, MAIN_WINDOW, repo, launch);
             }
             Ok(())
+        })
+        // Drop a window's repo and watchers when it closes, so a long session
+        // that opens and closes repos does not keep every one of them watched.
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window
+                    .state::<AppState>()
+                    .windows
+                    .lock()
+                    .expect("windows lock")
+                    .remove(window.label());
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running jjdiff");

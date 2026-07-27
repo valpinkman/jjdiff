@@ -146,6 +146,7 @@ export class FileTree extends LitElement {
             style=${pad(depth)}
             title=${file.path}
             @click=${() => this.pick(file)}
+            @contextmenu=${(event: MouseEvent) => this.openMenu(event, file)}
           >
             <span class="chevron"></span>
             <span class="icon">${fileIcon(file.path)}</span>
@@ -176,6 +177,29 @@ export class FileTree extends LitElement {
       }),
     );
   }
+
+  /**
+   * Right-click a file row. The menu itself is the app shell's job — it needs
+   * the editor config and the viewed set, and it must escape this shadow root
+   * to avoid being clipped by the sidebar's scroll container.
+   */
+  private openMenu(event: MouseEvent, file: FilePatch) {
+    event.preventDefault();
+    this.dispatchEvent(
+      new CustomEvent<FileMenuRequest>('file-menu', {
+        detail: { path: file.path, x: event.clientX, y: event.clientY },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+}
+
+export interface FileMenuRequest {
+  path: string;
+  /** Viewport coordinates to anchor the menu at. */
+  x: number;
+  y: number;
 }
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1);

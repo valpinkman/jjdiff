@@ -135,6 +135,10 @@ export interface Config {
     /** E.g. "Mod+Shift+p" — Mod is Cmd on macOS, Ctrl elsewhere. */
     commandBar: string;
   };
+  editor: {
+    /** Template with {file}, {line}, {repo}; empty = no editor configured. */
+    command: string;
+  };
 }
 
 /** What a mutation did, plus the operation to undo it. */
@@ -413,6 +417,48 @@ export const getRecentRepos = (): Promise<string[]> =>
  */
 export const installTerminalHelper = (): Promise<string> =>
   IN_TAURI ? invoke<string>('install_terminal_helper') : Promise.resolve('(mock) would install jjdiff on PATH');
+
+/** One native submenu, mirroring a command-palette group. */
+export interface MenuGroup {
+  title: string;
+  items: { id: string; label: string; enabled?: boolean }[];
+}
+
+/**
+ * Rebuild the native menu bar. The backend ignores pushes from unfocused
+ * windows — on macOS the menu bar is app-global.
+ */
+export const setMenu = (groups: MenuGroup[]): Promise<void> =>
+  IN_TAURI ? invoke<void>('set_menu', { groups }) : Promise.resolve();
+
+/** A native menu item was clicked; the payload is the palette command id. */
+export const onMenuCommand = (callback: (id: string) => void): Promise<UnlistenFn> =>
+  IN_TAURI ? listen<string>('menu-command', (event) => callback(event.payload)) : Promise.resolve(() => {});
+
+/**
+ * Open a repository in its own window, or focus the window already showing it.
+ * Windows own their repo, so this is how you get two repos side by side.
+ */
+export const openRepoWindow = (path: string): Promise<void> =>
+  IN_TAURI ? invoke<void>('open_repo_window', { path }) : Promise.resolve();
+
+/**
+ * Persist `[editor] command`, resolving to the config path written. Only that
+ * one value is touched — comments and other settings survive.
+ */
+export const setEditorCommand = (command: string): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('set_editor_command', { command })
+    : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
+
+/**
+ * Open a repo-relative path in the configured editor. Rejects with a message
+ * naming the config key when `[editor] command` is unset.
+ */
+export const openInEditor = (path: string, line?: number): Promise<void> =>
+  IN_TAURI
+    ? invoke<void>('open_in_editor', { path, line: line ?? null })
+    : Promise.reject(new Error('(mock) no editor in the browser'));
 
 /**
  * Second-instance event: emitted by `tauri-plugin-single-instance` when
