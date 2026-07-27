@@ -37,9 +37,11 @@ import {
   getReviewStatus,
   getWalkthrough,
   importWalkthrough,
+  installTerminalHelper,
   markReviewed,
   newChange,
   onRepoChanged,
+  onSecondInstance,
   openRepository,
   pickRepository,
   setViewed,
@@ -49,6 +51,7 @@ import {
   type RepoState,
   type Operation,
   type Outcome,
+  type SecondInstanceArgs,
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
@@ -218,6 +221,52 @@ export class App extends LitElement {
     }
   }
 
+  /**
+   * `jjdiff` launched again while the app is running: open the repo in the
+   * existing window. If the second invocation pointed at the same repo, a
+   * plain refresh keeps it simple; otherwise we switch as `openFolder` does.
+   * Revset/walkthrough flags reapply through the same launch-options path.
+   */
+  private async handleSecondInstance(args: SecondInstanceArgs) {
+    if (args.repoPath) {
+      const current = this.repo?.root;
+      if (current && current !== args.repoPath) {
+        await this.switchRepo(args.repoPath);
+      } else {
+        await this.refresh();
+      }
+    }
+    if (args.revset) {
+      const target = this.repo?.graph.find(
+        (change) =>
+          change.changeId.startsWith(args.revset!) ||
+          change.commitId.startsWith(args.revset!) ||
+          change.bookmarks.includes(args.revset!),
+      );
+      if (target) this.select(target);
+    }
+    if (args.walkthrough) {
+      this.runGenerateWalkthrough();
+    }
+  }
+
+  /** Write the `jjdiff` shim on PATH; surface the report in the status bar. */
+  private async runInstallTerminalHelper() {
+    this.busy = 'install-terminal-helper';
+    try {
+      const report = await installTerminalHelper();
+      // `lastOutcome` is the success toast; reuse it even though this isn't a
+      // jj mutation — the report reads like one ("Installed `jjdiff` on PATH").
+      this.lastOutcome = { message: report, operation: '' };
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
+      this.lastOutcome = null;
+    } finally {
+      this.busy = null;
+    }
+  }
+
   private async start() {
     try {
       const config = await getConfig();
@@ -239,6 +288,10 @@ export class App extends LitElement {
     void onRepoChanged(() => void this.refresh()).then((unlisten) => {
       this.unlisten = unlisten;
     });
+    // Single instance: launching `jjdiff` from a second repo while the app is
+    // running forwards its parsed argv here. Open the repo in the existing
+    // window rather than starting a rival process.
+    void onSecondInstance((args) => void this.handleSecondInstance(args));
     try {
       const launch = await getLaunchOptions();
       if (launch.revset) {
@@ -1011,6 +1064,12 @@ export class App extends LitElement {
       { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => this.createBookmark() },
       { id: 'refresh', label: 'Reload Repository', run: () => void this.refresh() },
       { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
+      {
+        id: 'install-terminal-helper',
+        label: 'Install Terminal Helper…',
+        hint: 'add `jjdiff` to PATH',
+        run: () => void this.runInstallTerminalHelper(),
+      },
     ]);
 
     add('History', [

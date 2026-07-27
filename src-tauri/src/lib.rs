@@ -4,6 +4,7 @@
 //! the runtime's blocking pool — sync Tauri commands execute on the main thread, and a slow
 //! `jj` invocation there would freeze the window.
 
+pub mod cli;
 mod config;
 mod viewed;
 pub mod walkthrough;
@@ -20,7 +21,14 @@ use jjdiff_vcs::{Change, Operation, Outcome, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
+use cli::Args;
+
 /// `jjdiff [revset] [-R|--repo <path>] [-w|--walkthrough] [--walkthrough-file <path>]`
+///
+/// Built from the shared [`Args`] parser so the GUI and the headless CLI agree
+/// on what a valid invocation looks like. Headless flags (`--help`, `--diff`,
+/// …) are already dispatched in `main.rs` before `run` is reached; here we
+/// only carry the GUI-relevant fields.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchOptions {
@@ -33,27 +41,16 @@ pub struct LaunchOptions {
 }
 
 impl LaunchOptions {
-    fn from_env() -> LaunchOptions {
-        let mut repo_path: Option<PathBuf> = None;
-        let mut revset: Option<String> = None;
-        let mut walkthrough = false;
-        let mut walkthrough_file: Option<PathBuf> = None;
-        let mut args = std::env::args().skip(1);
-        while let Some(arg) = args.next() {
-            match arg.as_str() {
-                "-R" | "--repo" => repo_path = args.next().map(PathBuf::from),
-                "-w" | "--walkthrough" => walkthrough = true,
-                "--walkthrough-file" => walkthrough_file = args.next().map(PathBuf::from),
-                // Ignore unknown flags (tauri dev passes its own).
-                flag if flag.starts_with('-') => {}
-                positional if revset.is_none() => revset = Some(positional.to_string()),
-                _ => {}
-            }
+    /// Construct from an already-parsed [`Args`]. `main.rs` parses argv once
+    /// and passes it here; headless commands have already been dispatched.
+    pub fn from_args(args: &Args) -> LaunchOptions {
+        let repo_path = args.repo_or_cwd();
+        LaunchOptions {
+            repo_path,
+            revset: args.revset.clone(),
+            walkthrough: args.walkthrough,
+            walkthrough_file: args.walkthrough_file.clone(),
         }
-        let repo_path = repo_path
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-        LaunchOptions { repo_path, revset, walkthrough, walkthrough_file }
     }
 }
 
@@ -716,6 +713,15 @@ fn recent_repos(state: tauri::State<'_, AppState>) -> Vec<String> {
     state.recents.lock().expect("recents lock").clone()
 }
 
+/// Write the `jjdiff` shim on PATH so the bundle is reachable from a shell.
+/// Same logic as the headless `--install-terminal-helper` command; exposed
+/// here so the in-app command bar can offer it too. Returns a human-readable
+/// report (the path installed, or the command the user should run manually).
+#[tauri::command]
+fn install_terminal_helper() -> Result<String, String> {
+    cli::install_terminal_helper()
+}
+
 /// Record `commit_id` as the reviewed baseline for `change_id`.
 #[tauri::command]
 fn mark_reviewed(
@@ -733,8 +739,8 @@ fn mark_reviewed(
     Ok(())
 }
 
-pub fn run() {
-    let launch = LaunchOptions::from_env();
+pub fn run(args: Args) {
+    let launch = LaunchOptions::from_args(&args);
     let state = AppState {
         launch,
         repo: Mutex::new(None),
@@ -744,7 +750,28 @@ pub fn run() {
         _watchers: Mutex::new(Vec::new()),
     };
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Single instance: launching `jjdiff` from a second repo opens a new
+    // window in the existing process rather than a rival process fighting
+    // over the same review store. We parse the second instance's argv with
+    // the same [`Args`] parser and forward a `second-instance` event.
+    builder = builder.plugin(
+        tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // argv[0] is the binary; the rest mirrors `jjdiff [flags] [revset]`.
+            let rest: Vec<String> = argv.iter().skip(1).cloned().collect();
+            match Args::parse(&rest) {
+                Ok(parsed) => {
+                    let _ = app.emit("second-instance", parsed);
+                }
+                Err(error) => {
+                    eprintln!("jjdiff: ignoring second instance with bad args: {error}");
+                }
+            }
+        }),
+    );
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
@@ -766,6 +793,7 @@ pub fn run() {
             open_repository,
             pick_repository,
             recent_repos,
+            install_terminal_helper,
             file_content,
             import_walkthrough,
             edit_change,

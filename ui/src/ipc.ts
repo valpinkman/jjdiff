@@ -317,5 +317,28 @@ export const getRecentRepos = (): Promise<string[]> =>
     ? invoke<string[]>('recent_repos')
     : Promise.resolve(['/Users/dev/projects/example', '/Users/dev/projects/other-app', '/Users/dev/oss/jj']);
 
+/**
+ * Write the `jjdiff` shim on PATH so the bundle is reachable from a shell.
+ * Returns a human-readable report (the installed path, or the command to run
+ * manually if no writable dir was found).
+ */
+export const installTerminalHelper = (): Promise<string> =>
+  IN_TAURI ? invoke<string>('install_terminal_helper') : Promise.resolve('(mock) would install jjdiff on PATH');
+
+/**
+ * Second-instance event: emitted by `tauri-plugin-single-instance` when
+ * `jjdiff` is launched again while the app is running. The payload is the
+ * parsed argv (`{ repoPath?, revset?, walkthrough, walkthroughFile? }`),
+ * so the existing window can open the newly requested repo.
+ */
+export interface SecondInstanceArgs {
+  repoPath: string | null;
+  revset: string | null;
+  walkthrough: boolean;
+  walkthroughFile: string | null;
+}
+export const onSecondInstance = (callback: (args: SecondInstanceArgs) => void): Promise<UnlistenFn> =>
+  IN_TAURI ? listen<SecondInstanceArgs>('second-instance', (event) => callback(event.payload)) : Promise.resolve(() => {});
+
 export const onRepoChanged = (callback: () => void): Promise<UnlistenFn> =>
   IN_TAURI ? listen('repo-changed', callback) : Promise.resolve(() => {});

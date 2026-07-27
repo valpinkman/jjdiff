@@ -282,7 +282,13 @@ Phase 1 made jjdiff a reviewer; Phase 2 made it a jj client. What remains is eve
 that involves *other people* — comments, forges, sharing — plus the terminal entry point
 that makes it reachable at all. Ordered by value per unit of work.
 
-### C1 — CLI and terminal helper
+### C1 — CLI and terminal helper ✅ DONE
+
+**We have a CLI.** `Args::parse` (in `src-tauri/src/cli.rs`) runs at the very top of
+`main()`, before `tauri::Builder`; `--help`, `--version`, `--walkthrough-guide`,
+`--diff`, `--print-hunks` and `--install-terminal-helper` write to stdout and `exit(0)`
+without ever creating a window. A bundled macOS binary still has a usable stdout when
+invoked from a terminal, so this works without a Node shim.
 
 **We have no CLI.** `LaunchOptions::from_env` parses `-R`, `-w`, `--walkthrough-file` and a
 positional revset, but only inside the app binary: there is no `jjdiff` on `PATH`, no
@@ -386,7 +392,7 @@ Revisit only if people other than the author start reviewing with it.
 
 ### Suggested order
 
-1. **C1** — nothing else is reachable from a terminal without it, and it is a day or two.
+1. **C1** ✅ — nothing else is reachable from a terminal without it, and it is a day or two.
 2. **C2** — the biggest capability gap; ~1.5–2 weeks.
 3. **C3** — a few days, removes two dead ends.
 4. **C5** — polish, can be interleaved whenever.
