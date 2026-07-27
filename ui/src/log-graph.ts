@@ -55,11 +55,20 @@ export class LogGraph extends LitElement {
       flex: none;
       display: block;
     }
+    /* Rails and mutable dots take their lane's hue (set per element); everything else
+       keeps its meaning — immutable recedes, the working copy is the accent, conflicts
+       are red. Slightly transparent so a busy graph tints rather than shouts. */
     .rail {
       stroke: var(--jj-fg-faint);
       stroke-width: 1.4;
+      stroke-opacity: 0.85;
       fill: none;
       stroke-linecap: round;
+    }
+    /* Immutable history keeps its lane's hue but steps back, so colour never undoes the
+       point of dimming it. */
+    .row.immutable .rail {
+      stroke-opacity: 0.4;
     }
     .dot-mutable {
       fill: var(--jj-bg-panel);
@@ -74,6 +83,11 @@ export class LogGraph extends LitElement {
       fill: var(--jj-accent);
       stroke: var(--jj-bg-panel);
       stroke-width: 2.5;
+    }
+    /* Halo under the working-copy dot: "you are here", visible without a label. */
+    .dot-halo {
+      fill: var(--jj-accent);
+      opacity: 0.18;
     }
     .dot-conflict {
       fill: var(--jj-removed-fg);
@@ -144,22 +158,29 @@ export class LogGraph extends LitElement {
     const mid = ROW_H / 2;
     const cx = x(row.lane);
 
+    // A rail wears the colour of the lane it belongs to — a merge curve is painted by
+    // the lane merging in, a fork by the lane branching out, so a branch keeps one
+    // colour from the row it leaves to the row it rejoins.
     const rails = [];
     for (const lane of row.through) {
-      rails.push(svg`<line class="rail" x1=${x(lane)} y1="0" x2=${x(lane)} y2=${ROW_H} />`);
+      rails.push(
+        svg`<line class="rail" style=${laneStroke(lane)} x1=${x(lane)} y1="0" x2=${x(lane)} y2=${ROW_H} />`,
+      );
     }
-    rails.push(svg`<line class="rail" x1=${cx} y1="0" x2=${cx} y2=${mid} />`);
+    rails.push(svg`<line class="rail" style=${laneStroke(row.lane)} x1=${cx} y1="0" x2=${cx} y2=${mid} />`);
     if (row.continues) {
-      rails.push(svg`<line class="rail" x1=${cx} y1=${mid} x2=${cx} y2=${ROW_H} />`);
+      rails.push(
+        svg`<line class="rail" style=${laneStroke(row.lane)} x1=${cx} y1=${mid} x2=${cx} y2=${ROW_H} />`,
+      );
     }
     for (const lane of row.joins) {
       rails.push(
-        svg`<path class="rail" d="M ${x(lane)} 0 C ${x(lane)} ${mid * 0.7}, ${cx} ${mid * 0.4}, ${cx} ${mid}" />`,
+        svg`<path class="rail" style=${laneStroke(lane)} d="M ${x(lane)} 0 C ${x(lane)} ${mid * 0.7}, ${cx} ${mid * 0.4}, ${cx} ${mid}" />`,
       );
     }
     for (const lane of row.forks) {
       rails.push(
-        svg`<path class="rail" d="M ${cx} ${mid} C ${cx} ${mid + mid * 0.6}, ${x(lane)} ${mid + mid * 0.3}, ${x(lane)} ${ROW_H}" />`,
+        svg`<path class="rail" style=${laneStroke(lane)} d="M ${cx} ${mid} C ${cx} ${mid + mid * 0.6}, ${x(lane)} ${mid + mid * 0.3}, ${x(lane)} ${ROW_H}" />`,
       );
     }
 
@@ -186,7 +207,16 @@ export class LogGraph extends LitElement {
       >
         <svg width=${gutter} height=${ROW_H}>
           ${rails}
-          <circle class=${dotClass} cx=${cx} cy=${mid} r=${DOT_R} />
+          ${change.workingCopy
+            ? svg`<circle class="dot-halo" cx=${cx} cy=${mid} r=${DOT_R * 2.4} />`
+            : nothing}
+          <circle
+            class=${dotClass}
+            style=${dotClass === 'dot-mutable' ? laneStroke(row.lane) : nothing}
+            cx=${cx}
+            cy=${mid}
+            r=${DOT_R}
+          />
         </svg>
         ${change.bookmarks.map((bookmark) => html`<span class="tag">${bookmark}</span>`)}
         ${change.conflict ? html`<span class="tag warn">×</span>` : nothing}
@@ -198,6 +228,11 @@ export class LogGraph extends LitElement {
     `;
   }
 }
+
+/** How many lane hues theme.css defines; lanes past it wrap around. */
+const LANE_COLOURS = 6;
+
+const laneStroke = (lane: number) => `stroke: var(--jj-lane-${lane % LANE_COLOURS})`;
 
 /** Compact relative age: now, 5m, 3h, 2d, 4w, 7mo. */
 function relativeTime(timestamp: string): string {

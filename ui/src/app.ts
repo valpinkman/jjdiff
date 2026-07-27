@@ -63,6 +63,7 @@ import {
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
+import { iconAbsorb, iconFetch, iconSplit, iconUndo, iconUnified } from './icons.js';
 import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import './patch-view.js';
 import type { PatchView } from './patch-view.js';
@@ -1346,36 +1347,36 @@ export class App extends LitElement {
         <span class="spacer"></span>
         ${isWc
           ? html`<button
-              class="tool"
+              class="tool icon"
               title="jj absorb — auto-distribute working-copy changes into the relevant ancestors"
               ?disabled=${!!this.busy || this.files.length === 0}
               @click=${this.runAbsorb}
             >
-              ⤓
+              ${iconAbsorb}
             </button>`
           : nothing}
         <button
-          class="tool"
+          class="tool icon"
           title="jj git fetch — update remote-tracking state"
           ?disabled=${!!this.busy}
           @click=${this.runFetch}
         >
-          ↓
+          ${iconFetch}
         </button>
         <button
-          class="tool"
+          class="tool icon"
           title="jj undo — reverse the last operation"
           ?disabled=${!!this.busy}
           @click=${this.runUndo}
         >
-          ↩
+          ${iconUndo}
         </button>
         <button
-          class="tool"
+          class="tool icon"
           title="Switch between side-by-side and unified diffs"
           @click=${this.toggleLayout}
         >
-          ${this.layout === 'split' ? '◫' : '▤'}
+          ${this.layout === 'split' ? iconSplit : iconUnified}
         </button>
         <button
           class="tool"
@@ -1422,23 +1423,20 @@ export class App extends LitElement {
         </nav>
         ${this.sidebarTab === 'stack'
           ? html`<div class="revset-bar">
-                <select
-                  class="revset-select"
-                  title="Filter the log graph"
-                  @change=${(event: Event) => {
-                    const select = event.target as HTMLSelectElement;
-                    this.applyRevset(select.value);
-                  }}
-                >
-                  ${REVSET_PRESETS.map(
-                    (preset) => html`<option
-                      value=${preset.revset}
-                      ?selected=${(this.graphRevset ?? '') === preset.revset}
+                <!-- Only the active filter is spelled out; the rest tuck into a deck
+                     beside it, and a tag names itself when you point at it. -->
+                <div class="revset-tags">
+                  ${REVSET_PRESETS.map((preset) => {
+                    const on = (this.graphRevset ?? '') === preset.revset;
+                    return html`<button
+                      class="preset ${on ? 'on' : ''}"
+                      title=${preset.revset || 'Every commit'}
+                      @click=${() => this.applyRevset(preset.revset)}
                     >
-                      ${preset.label}
-                    </option>`,
-                  )}
-                </select>
+                      <span class="preset-label">${preset.label}</span>
+                    </button>`;
+                  })}
+                </div>
                 <input
                   class="revset-input"
                   placeholder="Search commits…"

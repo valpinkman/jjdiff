@@ -57,6 +57,10 @@ export class PatchView extends LitElement {
   @state() private composer: { path: string; side: CommentSide; line: number; lineText: string } | null = null;
 
   private rows: Row[] = [];
+  /** Widest rendered line in monospace columns — see `codeColumns`. */
+  private codeCols = 0;
+  /** How far each side's code is panned, in px. The pane itself never scrolls sideways. */
+  private codeScroll = { old: 0, new: 0 };
   private visibleFile: string | null = null;
   private searchMatches: number[] = [];
   private highlights = new HighlightStore();
@@ -68,10 +72,15 @@ export class PatchView extends LitElement {
   override connectedCallback() {
     super.connectedCallback();
     this.highlights.addEventListener('tokens', this.onTokens);
+    // Not passive: a horizontal gesture over the code is ours to consume.
+    this.addEventListener('wheel', this.onWheel, { passive: false });
+    this.resizeObserver.observe(this);
   }
 
   override disconnectedCallback() {
     this.highlights.removeEventListener('tokens', this.onTokens);
+    this.removeEventListener('wheel', this.onWheel);
+    this.resizeObserver.disconnect();
     super.disconnectedCallback();
   }
 
@@ -98,9 +107,13 @@ export class PatchView extends LitElement {
         this.comments,
         this.markdownPreviews,
       );
+      this.codeCols = widestLine(this.rows);
       if (this.cursor !== null && this.cursor >= this.rows.length) {
         this.cursor = null;
       }
+    }
+    if (changed.has('files') || changed.has('layout') || changed.has('wordWrap')) {
+      this.codeScroll = { old: 0, new: 0 };
     }
     if (changed.has('files') || changed.has('themeVersion')) {
       this.highlights.clear();
@@ -112,6 +125,81 @@ export class PatchView extends LitElement {
       this.computeSearch(changed.has('searchQuery'));
     }
   }
+
+  protected override updated() {
+    this.applyPaneVars();
+  }
+
+  // ---- Horizontal panning ----
+  //
+  // Long lines scroll within their own column rather than scrolling the pane, so the
+  // file card keeps its gutters and never drifts sideways. Every row is a separate
+  // virtualizer child, so the offset lives in two CSS custom properties on the pane and
+  // the rows translate off it — rows recycled into view mid-pan come in already in step.
+
+  private get pane(): HTMLElement | null {
+    return this.querySelector('.jj-patch');
+  }
+
+  private applyPaneVars() {
+    const pane = this.pane;
+    if (!pane) return;
+    pane.style.setProperty('--jj-code-cols', String(this.codeCols));
+    pane.style.setProperty('--jj-scroll-old', `${this.codeScroll.old}px`);
+    pane.style.setProperty('--jj-scroll-new', `${this.codeScroll.new}px`);
+  }
+
+  /** How far a column can pan: what the widest line needs, minus what a row shows. */
+  private maxCodeScroll(pane: HTMLElement): number {
+    const styles = getComputedStyle(pane);
+    const natural = parseFloat(styles.getPropertyValue('--jj-row-width'));
+    const gutter = parseFloat(styles.getPropertyValue('--jj-diff-gutter'));
+    if (!Number.isFinite(natural) || !Number.isFinite(gutter)) return 0;
+    const shown = pane.clientWidth - gutter * 2;
+    const overflow = Math.max(0, natural - shown);
+    // Split cells are equal halves, so the overflow is shared evenly between them.
+    return this.layout === 'split' ? overflow / 2 : overflow;
+  }
+
+  private onWheel = (event: WheelEvent) => {
+    if (this.wordWrap) return;
+    const pane = this.pane;
+    if (!pane) return;
+    // Trackpads report sideways gestures as deltaX; shift+wheel is the mouse equivalent.
+    const delta =
+      Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        ? event.deltaX
+        : event.shiftKey
+          ? event.deltaY
+          : 0;
+    if (delta === 0) return;
+    const side = this.sideAt(event.clientX, pane);
+    const next = clamp(this.codeScroll[side] + delta, 0, this.maxCodeScroll(pane));
+    // At either end the gesture belongs to whatever is behind us (or nothing).
+    if (next === this.codeScroll[side]) return;
+    event.preventDefault();
+    this.codeScroll = { ...this.codeScroll, [side]: next };
+    this.applyPaneVars();
+  };
+
+  /** Which side the pointer is over. The gutters are symmetric, so the pane's midpoint
+      is exactly the split divider; unified has one column and always pans the new side. */
+  private sideAt(clientX: number, pane: HTMLElement): 'old' | 'new' {
+    if (this.layout !== 'split') return 'new';
+    const box = pane.getBoundingClientRect();
+    return clientX < box.left + box.width / 2 ? 'old' : 'new';
+  }
+
+  private resizeObserver = new ResizeObserver(() => {
+    const pane = this.pane;
+    if (!pane) return;
+    const max = this.maxCodeScroll(pane);
+    const old = Math.min(this.codeScroll.old, max);
+    const fresh = Math.min(this.codeScroll.new, max);
+    if (old === this.codeScroll.old && fresh === this.codeScroll.new) return;
+    this.codeScroll = { old, new: fresh };
+    this.applyPaneVars();
+  });
 
   // ---- Keyboard review surface (called by the app shell) ----
 
@@ -428,7 +516,9 @@ export class PatchView extends LitElement {
       <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('old', line.oldLine)}>${line.oldLine ?? ''}</span>
       <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('new', line.newLine)}>${line.newLine ?? ''}</span>
       <span class="sign">${sign(line.kind)}</span>
-      <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
+      <span class="content"
+        ><span class="pan">${renderLineContent(line.text, tokens, line.spans)}</span></span
+      >
     </div>${this.renderComposerForLine(file.path, 'old', line.oldLine) ?? this.renderComposerForLine(file.path, 'new', line.newLine) ?? nothing}`;
   }
 
@@ -454,7 +544,9 @@ export class PatchView extends LitElement {
     };
     return html`<div class="cell ${side} ${kind} ${markerClass(line.text)}">
       <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick}>${number ?? ''}</span>
-      <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
+      <span class="content"
+        ><span class="pan">${renderLineContent(line.text, tokens, line.spans)}</span></span
+      >
     </div>${this.renderComposerForLine(file.path, commentSide, number) ?? nothing}`;
   }
 
@@ -590,6 +682,42 @@ export class PatchView extends LitElement {
 }
 
 const sign = (kind: Line['kind']) => (kind === 'added' ? '+' : kind === 'removed' ? '−' : ' ');
+
+const clamp = (value: number, low: number, high: number) =>
+  Math.min(high, Math.max(low, value));
+
+/** Must match `tab-size` on .jj-patch, or wide lines mismeasure. */
+const TAB_COLUMNS = 8;
+
+/**
+ * Width of one line in monospace columns, tabs expanded to the next tab stop.
+ *
+ * Rows are sized off the widest line so every row in the diff is the same width:
+ * they are separate virtualizer children, so left to `max-content` each row would
+ * end wherever its own text does and a horizontally scrolled file card would fray
+ * into a ragged right edge. Columns (not pixels) because the code font is
+ * monospace — `ch` in CSS finishes the conversion, no DOM measurement needed.
+ */
+function codeColumns(text: string): number {
+  let columns = 0;
+  for (const char of text) {
+    columns += char === '\t' ? TAB_COLUMNS - (columns % TAB_COLUMNS) : 1;
+  }
+  return columns;
+}
+
+function widestLine(rows: Row[]): number {
+  let widest = 0;
+  for (const row of rows) {
+    if (row.kind === 'unified') {
+      widest = Math.max(widest, codeColumns(row.line.text));
+    } else if (row.kind === 'split') {
+      if (row.left) widest = Math.max(widest, codeColumns(row.left.text));
+      if (row.right) widest = Math.max(widest, codeColumns(row.right.text));
+    }
+  }
+  return widest;
+}
 
 /** Compact relative age: now, 5m, 3h, 2d. */
 function relativeAge(iso: string): string {

@@ -30,6 +30,16 @@
   --jj-ref: #b26a10;
   --jj-ref-soft: rgb(178 106 16 / 0.12);
 
+  /* Log graph lanes: one hue per column so branches are followable at a glance. Lane 0
+     is the accent — the mainline reads as "the app's colour" and the rest fan around it
+     at similar weight, so no lane shouts louder than another. */
+  --jj-lane-0: #3d7ff5;
+  --jj-lane-1: #7d5cd6;
+  --jj-lane-2: #10877a;
+  --jj-lane-3: #b26a10;
+  --jj-lane-4: #c04870;
+  --jj-lane-5: #2f88b8;
+
   /* Diff semantics — untouchable, and deliberately gentler than flat fills. */
   --jj-added-fg: #1a7f44;
   --jj-added-bg: rgb(31 122 68 / 0.09);
@@ -74,6 +84,12 @@
     --jj-accent-line: rgb(107 165 255 / 0.45);
     --jj-ref: #e0a13f;
     --jj-ref-soft: rgb(224 161 63 / 0.15);
+    --jj-lane-0: #6ba5ff;
+    --jj-lane-1: #a98cf5;
+    --jj-lane-2: #3fbda4;
+    --jj-lane-3: #e0a13f;
+    --jj-lane-4: #f0809f;
+    --jj-lane-5: #5eb6e3;
     --jj-added-fg: #6fd094;
     --jj-added-bg: rgb(111 208 148 / 0.1);
     --jj-added-mark: rgb(111 208 148 / 0.24);
@@ -105,6 +121,12 @@
   --jj-accent-line: rgb(107 165 255 / 0.45);
   --jj-ref: #e0a13f;
   --jj-ref-soft: rgb(224 161 63 / 0.15);
+  --jj-lane-0: #6ba5ff;
+  --jj-lane-1: #a98cf5;
+  --jj-lane-2: #3fbda4;
+  --jj-lane-3: #e0a13f;
+  --jj-lane-4: #f0809f;
+  --jj-lane-5: #5eb6e3;
   --jj-added-fg: #6fd094;
   --jj-added-bg: rgb(111 208 148 / 0.1);
   --jj-added-mark: rgb(111 208 148 / 0.24);
@@ -303,6 +325,24 @@ jj-app a.tool {
   align-items: center;
 }
 
+/* Icon-only tools: square-ish, and the glyph gets its own line box so the button
+   doesn't reserve room for a text descender under it. */
+jj-app button.tool.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+  color: var(--jj-fg-muted);
+}
+
+jj-app button.tool.icon:hover:not(:disabled) {
+  color: var(--jj-fg);
+}
+
+jj-app button.tool svg {
+  display: block;
+}
+
 jj-app button.tool:hover,
 jj-app a.tool:hover {
   background: var(--jj-surface-2);
@@ -430,28 +470,104 @@ jj-app .tab .stale-dot {
 
 jj-app .revset-bar {
   display: flex;
+  flex-direction: column; /* filter and search each get their own row */
   gap: 6px;
   padding: 6px 8px;
 }
 
-jj-app .revset-select {
+/* Revset presets. The active one is the only tag wearing its name; the rest collapse
+   into a deck of coins beside it, and a coin names itself when you point at it —
+   one at a time, so the row never turns into a panel. */
+
+jj-app .revset-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+jj-app .preset {
+  position: relative; /* so the deck can stack front-to-back */
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 21px; /* fixed, so losing the padding doesn't shrink a collapsed coin */
+  max-width: 14ch;
+  padding: 0 9px;
+  overflow: hidden;
+  white-space: nowrap;
   border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-sm);
+  border-radius: 999px;
   background: var(--jj-surface);
-  color: var(--jj-fg);
+  color: var(--jj-fg-muted);
   font-family: var(--jj-sans);
   font-size: 11px;
-  padding: 3px 6px;
+  line-height: 1;
   cursor: pointer;
-  flex: none;
+  transition:
+    min-width 0.18s ease,
+    max-width 0.18s ease,
+    padding 0.18s ease,
+    margin 0.18s ease,
+    color 0.14s ease,
+    border-color 0.14s ease,
+    background-color 0.14s ease;
 }
-jj-app .revset-select:focus {
-  outline: none;
+
+jj-app .preset.on {
+  z-index: 2; /* the active tag is the top card */
+  background: var(--jj-accent-soft);
   border-color: var(--jj-accent-line);
+  color: var(--jj-accent);
+  font-weight: 550;
+}
+
+jj-app .preset-label {
+  transition: opacity 0.14s ease;
+}
+
+/* Collapsed: as wide as it is tall, so the pill reads as a round coin. Labels fade
+   rather than clip — no half-letters showing through the edge.
+
+   The delay is the breathing room: opening is instant (that state carries no delay),
+   but closing waits a beat, so clipping the edge of a pill on the way past doesn't
+   snap it shut under the cursor. */
+jj-app .preset:not(.on):not(:hover):not(:focus-visible) {
+  min-width: 21px;
+  max-width: 21px;
+  padding: 0;
+  transition-delay: 0.2s;
+}
+
+jj-app .preset:not(.on):not(:hover):not(:focus-visible) .preset-label {
+  opacity: 0;
+  transition-delay: 0.2s;
+}
+
+/* Coins overlap into a stack, but stay clear of the active tag and of the one being
+   read — the hovered tag pulls out of the deck rather than growing out of it. No delay
+   declared here: it would land on a hovered coin too and stall its own opening. */
+jj-app .preset:not(.on) + .preset:not(.on) {
+  margin-left: -11px;
+}
+
+jj-app .preset:not(.on) + .preset:not(.on):hover,
+jj-app .preset:not(.on) + .preset:not(.on):focus-visible,
+jj-app .preset:not(.on):hover + .preset:not(.on),
+jj-app .preset:not(.on):focus-visible + .preset:not(.on) {
+  margin-left: 0;
+}
+
+jj-app .preset:hover,
+jj-app .preset:focus-visible {
+  z-index: 3;
+  color: var(--jj-fg);
+  border-color: var(--jj-border-strong);
 }
 
 jj-app .revset-input {
-  flex: 1;
+  flex: none;
   min-width: 0;
   border: 1px solid var(--jj-border);
   border-radius: var(--jj-r-sm);
@@ -1197,22 +1313,70 @@ jj-patch-view {
   min-height: 0;
 }
 
+/* Registered so the `em`/`ch` in the natural width below resolve against the code font
+   on .jj-patch and then inherit as an absolute length: rows carry their own font sizes
+   (headers, hunk labels), and unregistered custom properties would re-resolve per row. */
+@property --jj-row-width {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 0px;
+}
+
 .jj-patch {
+  /* Card gutter. Rows are absolutely positioned by the virtualizer, so their
+     `100%` resolves against the padding box — subtract the gutter explicitly or
+     every card overhangs the right edge by 2× this value. */
+  --jj-diff-gutter: 16px;
+  /* --jj-code-cols: widest line in monospace columns, set by patch-view. */
+  /* Per-side code offsets, driven by wheel/trackpad in patch-view. */
+  --jj-scroll-old: 0px;
+  --jj-scroll-new: 0px;
   display: block;
   height: 100%;
   overflow-y: auto;
-  overflow-x: auto;
+  /* The pane itself never scrolls sideways — long lines scroll inside their own
+     column instead, so the card keeps its gutters and stays put. */
+  overflow-x: hidden;
   font-family: var(--jj-mono);
   font-size: var(--jj-code-size);
   line-height: 1.55;
+  tab-size: 8; /* TAB_COLUMNS in patch-view.ts */
   box-sizing: border-box;
-  padding: 12px 24px 40px 16px;
+  padding: 12px var(--jj-diff-gutter) 40px;
+}
+
+/* Natural width: what a row would need to show its widest line uncut. Only read back
+   by patch-view to derive how far a column can scroll. Gutter columns are unified
+   3.4+3.4+1.2em and split 3.4em twice; the pixels are the content's padding-right
+   plus card and cell borders. */
+.jj-patch.unified {
+  --jj-row-width: calc(8em + var(--jj-code-cols) * 1ch + 12px);
+}
+
+.jj-patch.split {
+  --jj-row-width: calc(6.8em + var(--jj-code-cols) * 2ch + 23px);
 }
 
 .jj-patch > * {
-  width: max-content;
-  min-width: 100%;
+  width: calc(100% - var(--jj-diff-gutter) * 2);
   box-sizing: border-box;
+}
+
+/* Code pans inside its own column: .content is the window, .pan is the sheet that
+   slides. Clipping at the column (not the cell) is what keeps the line numbers put
+   while the code moves behind them. The rows are separate virtualizer children, so a
+   shared offset in CSS is what keeps them in step — including rows recycled into view
+   mid-pan. */
+.jj-patch.nowrap .line.unified .pan {
+  transform: translateX(calc(-1 * var(--jj-scroll-new)));
+}
+
+.jj-patch.nowrap .cell.left .pan {
+  transform: translateX(calc(-1 * var(--jj-scroll-old)));
+}
+
+.jj-patch.nowrap .cell.right .pan {
+  transform: translateX(calc(-1 * var(--jj-scroll-new)));
 }
 
 .jj-empty {
@@ -1380,7 +1544,6 @@ select.file-action {
 
 .expander {
   display: block;
-  width: 100%;
   text-align: left;
   padding: 4px 14px;
   color: var(--jj-accent);
@@ -1500,8 +1663,15 @@ select.file-action {
 
 .content {
   min-width: 0;
-  padding-right: 10px;
+  overflow: hidden; /* the pan window — see .pan */
   color: var(--jj-fg-soft);
+}
+
+/* The sheet the code sits on. Trailing padding rides along with it so the last
+   character keeps its breathing room at full pan. */
+.pan {
+  display: block;
+  padding-right: 10px;
 }
 
 .jj-patch.nowrap .content {
