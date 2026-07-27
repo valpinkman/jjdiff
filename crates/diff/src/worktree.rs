@@ -402,7 +402,16 @@ mod tests {
 
     fn jj(dir: &Path, args: &[&str]) {
         let out = Command::new("jj")
-            .args(["--config", "user.name=Test", "--config", "user.email=t@example.com"])
+            .args([
+                "--config",
+                "user.name=Test",
+                "--config",
+                "user.email=t@example.com",
+                // Hermetic: the developer's global config may enable commit signing,
+                // and a locked/absent SSH agent would fail repo creation here.
+                "--config",
+                "signing.behavior=drop",
+            ])
             .args(args)
             .current_dir(dir)
             .output()

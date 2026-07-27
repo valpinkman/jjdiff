@@ -1357,6 +1357,23 @@ select.file-action {
   margin-right: 5px;
 }
 
+/* Closing edge of a file card. A real row, not a pseudo-element: the virtualizer
+   measures offsetHeight, so anything contributing height must be in the row model. */
+.file-end {
+  height: 8px;
+  background: var(--jj-surface);
+  border: 1px solid var(--jj-border);
+  border-top: 0;
+  border-radius: 0 0 var(--jj-r-md) var(--jj-r-md);
+  box-sizing: border-box;
+}
+
+/* A collapsed (viewed) file is header-only, so the header closes itself. */
+.file-header.viewed {
+  border-bottom: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+}
+
 .notice {
   padding: 12px 14px;
   color: var(--jj-fg-muted);

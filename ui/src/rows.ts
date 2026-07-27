@@ -17,6 +17,8 @@ export type Row =
       hidden: number;
     }
   | { kind: 'notice'; fileIndex: number; text: string }
+  /** Closes a file card: the rounded, bordered bottom edge. */
+  | { kind: 'file-end'; fileIndex: number }
   | {
       kind: 'unified';
       fileIndex: number;
@@ -67,8 +69,8 @@ export function buildRows(
     }
     rows.push({ kind: 'file', fileIndex, file });
     if (viewed.has(file.path)) {
-      // Viewed files collapse — that is the point of the flag. This applies during guided
-      // review too: the header (with its checkbox) stays, so un-checking re-expands.
+      // Viewed files collapse to the header alone — that is the point of the flag. The
+      // header carries the closing radius itself in that case (.file-header.viewed).
       return;
     }
     if (file.binary) {
@@ -167,6 +169,7 @@ export function buildRows(
         hidden: remaining > 0 ? remaining : 0,
       });
     }
+    rows.push({ kind: 'file-end', fileIndex });
   });
   return rows;
 }

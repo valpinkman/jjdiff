@@ -344,6 +344,8 @@ export class PatchView extends LitElement {
         </button>`;
       case 'notice':
         return html`<div class="notice ${extra}">${row.text}</div>`;
+      case 'file-end':
+        return html`<div class="file-end"></div>`;
       case 'unified':
         return this.renderUnified(row.fileIndex, row.line, row.hl, extra);
       case 'split':

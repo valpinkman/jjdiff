@@ -430,6 +430,7 @@ mod tests {
     fn init_repo(dir: &Path) {
         let run = |args: &[&str]| {
             let out = Command::new("jj")
+                .args(["--config", "signing.behavior=drop"])
                 .args(args)
                 .current_dir(dir)
                 .env("JJ_USER", "Test")
@@ -504,7 +505,14 @@ mod tests {
         let repo = Repo::discover(tmp.path()).unwrap();
         let jj = |args: &[&str]| {
             let out = Command::new("jj")
-                .args(["--config", "user.name=Test", "--config", "user.email=t@example.com"])
+                .args([
+                    "--config",
+                    "user.name=Test",
+                    "--config",
+                    "user.email=t@example.com",
+                    "--config",
+                    "signing.behavior=drop",
+                ])
                 .args(args)
                 .current_dir(tmp.path())
                 .output()
@@ -540,7 +548,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let jj = |args: &[&str]| {
             let out = Command::new("jj")
-                .args(["--config", "user.name=Test", "--config", "user.email=t@example.com"])
+                .args([
+                    "--config",
+                    "user.name=Test",
+                    "--config",
+                    "user.email=t@example.com",
+                    "--config",
+                    "signing.behavior=drop",
+                ])
                 .args(args)
                 .current_dir(tmp.path())
                 .output()
