@@ -9,6 +9,9 @@ Write a guided review for the change you just made, then open jjdiff on it. Beca
 already hold the context of *why* the change looks the way it does, this produces a better
 walkthrough than jjdiff regenerating one from the diff alone.
 
+> **Need the full authoring guide?** Run `jjdiff --walkthrough-guide` — it prints this
+> document to stdout, so you can fetch it without having the skill installed.
+
 ## Steps
 
 1. Get the diff with stable hunk ids:
