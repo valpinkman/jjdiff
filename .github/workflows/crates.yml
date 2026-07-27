@@ -1,0 +1,55 @@
+# Pure Rust crates: no Tauri, no GTK/WebKit, no node. Fast signal on its own,
+# checked separately from the Tauri app in app.yml.
+name: Crates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Without this, a rapid succession of pushes to the same PR starts
+# overlapping runs that race to save the jj-cli cache under the same key.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Incremental state is dead weight in a throwaway runner, and debug info
+  # roughly doubles the target dir for no benefit when nothing here is debugged.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  crates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # crates/vcs and crates/diff tests shell out to `jj`. Compiling it from
+      # scratch takes ~4m, so cache the binary; pinned so the cache doesn't
+      # go stale silently — bump the version (and this key) deliberately.
+      - name: Cache jujutsu binary
+        id: jj-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/jj
+          key: jj-cli-0.43.0-${{ runner.os }}
+
+      - name: Install jujutsu
+        if: steps.jj-cache.outputs.cache-hit != 'true'
+        run: cargo install jj-cli --locked --version 0.43.0
+
+      - name: Lint
+        run: cargo clippy -p jjdiff-vcs -p jjdiff-diff -p jjdiff-watch --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p jjdiff-vcs -p jjdiff-diff -p jjdiff-watch

@@ -1,0 +1,62 @@
+# The Tauri app and the UI bundle. This is the expensive half: src-tauri pulls
+# the GTK/WebKit stack and most of the workspace's compile cost, so it gets
+# its own workflow rather than sharing one with the pure crates.
+name: App
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Without this, a rapid succession of pushes to the same PR starts
+# overlapping runs that race to save caches (rust-cache, pnpm) under the
+# same key.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # src-tauri links against the GTK/WebKit stack on Linux
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev
+
+      # Must run first: src-tauri's build.rs (tauri-build) fails when the
+      # frontendDist path `ui/dist` does not exist, and it is gitignored. Both
+      # cargo steps below trigger that build.rs, so neither can precede it.
+      - name: Typecheck + bundle UI
+        run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Lint
+        run: cargo clippy -p jjdiff-app --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p jjdiff-app
