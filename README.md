@@ -22,6 +22,18 @@ cargo clippy --workspace
 pnpm build                # typecheck + bundle the UI
 ```
 
+## Reviewing pull requests
+
+```bash
+jjdiff pr 75      # GitHub
+jjdiff mr 23      # GitLab
+```
+
+Needs the forge's own CLI on PATH and authenticated (`gh auth login` / `glab auth login`) —
+jjdiff never handles tokens. The proposal's head is fetched to a `jjdiff-pr-75` bookmark and
+reviewed like any other change, with reviewers, merge state and CI checks above the diff.
+Inline comments accumulated while reviewing seed the review you submit back.
+
 ## Configuration
 
 `~/.config/jjdiff/config.toml`, same convention as jj itself:

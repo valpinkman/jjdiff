@@ -8,6 +8,7 @@ pub mod cli;
 mod comments;
 mod config;
 mod editor;
+mod forge;
 mod menu;
 mod viewed;
 pub mod walkthrough;
@@ -43,6 +44,8 @@ pub struct LaunchOptions {
     pub walkthrough: bool,
     /// Agent-authored walkthrough JSON to import instead of generating one.
     pub walkthrough_file: Option<PathBuf>,
+    /// `jjdiff pr 75` — open this forge proposal for review on launch.
+    pub pull_request: Option<u32>,
 }
 
 impl LaunchOptions {
@@ -55,6 +58,7 @@ impl LaunchOptions {
             revset: args.revset.clone(),
             walkthrough: args.walkthrough,
             walkthrough_file: args.walkthrough_file.clone(),
+            pull_request: args.pull_request,
         }
     }
 }
@@ -927,6 +931,7 @@ async fn open_repository(
         revset: None,
         walkthrough: false,
         walkthrough_file: None,
+        pull_request: None,
     };
     let root = repo.root().to_path_buf();
     bind_window(&app, &state, window.label(), repo, launch);
@@ -955,6 +960,7 @@ async fn open_repo_window(
         revset: None,
         walkthrough: false,
         walkthrough_file: None,
+        pull_request: None,
     };
     spawn_window(&app, &state, repo, launch)
 }
@@ -1034,6 +1040,161 @@ async fn open_in_editor(
         editor::spawn(&argv)
     })
     .await
+}
+
+// -- Forge review (gh / glab) --
+
+/// Build a forge client for `repo` from its remote URL.
+///
+/// `origin` wins when present; otherwise the first remote does, because a repo
+/// with exactly one differently-named remote is still unambiguous. A host we
+/// cannot place is an error rather than a guess — being wrong here means
+/// shelling out to a CLI that is not there.
+fn forge_client(repo: &Repo) -> Result<forge::Client, String> {
+    let remotes = vcs(repo.remote_urls())?;
+    if remotes.is_empty() {
+        return Err("this repository has no git remote, so there is nothing to review".into());
+    }
+    let (name, url) = remotes
+        .iter()
+        .find(|(name, _)| name == "origin")
+        .or_else(|| remotes.first())
+        .expect("remotes is non-empty");
+    let kind = forge::Kind::from_remote(url).ok_or_else(|| {
+        format!("jjdiff can't tell what forge `{name}` ({url}) is — only GitHub and GitLab \
+                 have a CLI it knows how to drive")
+    })?;
+    Ok(forge::Client { kind, root: repo.root().to_path_buf() })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForgeInfo {
+    kind: forge::Kind,
+    /// "pull request" / "merge request", for user-facing strings.
+    noun: &'static str,
+}
+
+/// What forge this repo is on, or `None` when it is on none we can drive.
+/// Deliberately not an error: the UI hides forge affordances rather than
+/// showing a broken one.
+#[tauri::command]
+async fn forge_info(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<ForgeInfo>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || {
+        Ok(forge_client(&repo)
+            .ok()
+            .map(|client| ForgeInfo { kind: client.kind, noun: client.kind.noun() }))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_pull_requests(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    limit: u32,
+) -> Result<Vec<forge::Summary>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.list(limit)).await
+}
+
+#[tauri::command]
+async fn pull_request(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    number: u32,
+) -> Result<forge::PullRequest, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.pull_request(number)).await
+}
+
+/// A fetched proposal: its metadata, plus the local bookmark its head landed on
+/// so the UI can select it like any other change.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenedPullRequest {
+    #[serde(flatten)]
+    pull_request: forge::PullRequest,
+    /// Revset for the proposal head.
+    bookmark: String,
+    /// Revset for just the proposal's own commits (`base..head`).
+    revset: String,
+}
+
+/// Fetch a proposal's head and return everything needed to review it.
+///
+/// The head lands on a namespaced bookmark, which makes the whole thing
+/// jj-native: from here on a pull request is just a revset, reviewed by the
+/// same diff pane, walkthroughs and comments as anything else.
+#[tauri::command]
+async fn open_pull_request(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    number: u32,
+) -> Result<OpenedPullRequest, String> {
+    let repo = repo_handle(&state, &window)?;
+    let root = repo.root().to_path_buf();
+    let opened = blocking(move || {
+        let client = forge_client(&repo)?;
+        let pull_request = client.pull_request(number)?;
+        let remotes = vcs(repo.remote_urls())?;
+        let remote = remotes
+            .iter()
+            .find(|(name, _)| name == "origin")
+            .or_else(|| remotes.first())
+            .map(|(name, _)| name.clone())
+            .ok_or_else(|| "this repository has no git remote".to_string())?;
+        let bookmark = vcs(repo.fetch_forge_ref(
+            &remote,
+            &client.kind.head_ref(number),
+            &client.kind.local_bookmark(number),
+        ))?;
+        // The merge-base commit is an ancestor of the base branch, so the base
+        // branch has to be local for the review revset to resolve. Not fatal:
+        // an already-current repo makes this a no-op, and an offline one still
+        // gets a review if it happens to have the commit.
+        if let Err(error) = repo.git_fetch_branch(&remote, &pull_request.base) {
+            eprintln!("jjdiff: could not refresh {}: {error}", pull_request.base);
+        }
+        // Diff against the forge's own merge base rather than `base..head`,
+        // which goes empty the moment a proposal is merged.
+        let revset = if pull_request.base_oid.is_empty() {
+            format!("{}..{bookmark}", pull_request.base)
+        } else {
+            format!("{}..{bookmark}", pull_request.base_oid)
+        };
+        Ok(OpenedPullRequest { pull_request, bookmark, revset })
+    })
+    .await?;
+    // The fetch created a bookmark, so the graph changed.
+    emit_repo_changed(&app, &state, &root);
+    Ok(opened)
+}
+
+/// Submit a review. Outward-facing and effectively irreversible — the UI
+/// confirms, naming the verdict, before this is reached.
+#[tauri::command]
+async fn submit_review(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    number: u32,
+    verdict: forge::Verdict,
+    body: String,
+    comments: Vec<forge::ReviewComment>,
+) -> Result<forge::Submitted, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.submit_review(number, verdict, &body, &comments)).await
+}
+
+/// Open a URL in the system browser — the WebView cannot (see `editor::open_url`).
+#[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+    blocking(move || editor::open_url(&url)).await
 }
 
 /// Write the `jjdiff` shim on PATH so the bundle is reachable from a shell.
@@ -1239,6 +1400,7 @@ pub fn run(args: Args) {
                         revset: parsed.revset.clone(),
                         walkthrough: parsed.walkthrough,
                         walkthrough_file: parsed.walkthrough_file.clone(),
+                        pull_request: parsed.pull_request,
                     };
                     remember_repo(&state, &repo.root().to_string_lossy());
                     if let Err(error) = spawn_window(app, &state, repo, launch) {
@@ -1285,6 +1447,12 @@ pub fn run(args: Args) {
             recent_repos,
             install_terminal_helper,
             open_in_editor,
+            open_url,
+            forge_info,
+            list_pull_requests,
+            pull_request,
+            open_pull_request,
+            submit_review,
             file_content,
             file_bytes,
             import_walkthrough,

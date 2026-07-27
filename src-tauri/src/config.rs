@@ -119,6 +119,40 @@ pub fn load() -> Config {
     }
 }
 
+/// Write `[editor] command` back to the config file.
+///
+/// Edits rather than re-serializes: this is the user's file, and round-tripping
+/// it through `Config` would silently delete their comments, key order and any
+/// setting a newer jjdiff added. `toml_edit` touches only the one value.
+///
+/// Returns the path written, for the confirmation message.
+pub fn set_editor_command(command: &str) -> Result<PathBuf, String> {
+    let path = config_path().ok_or_else(|| "cannot locate $HOME".to_string())?;
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut document = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("{} is not valid TOML: {error}", path.display()))?;
+
+    // Create `[editor]` explicitly when absent. Assigning straight into
+    // `document["editor"]["command"]` auto-vivifies an *inline* table
+    // (`editor = { command = "…" }`) and hoists it above any leading comment,
+    // reordering a file we were asked only to add one key to.
+    if !document.as_table().contains_key("editor") {
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(false);
+        document["editor"] = toml_edit::Item::Table(table);
+    }
+    document["editor"]["command"] = toml_edit::value(command);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    std::fs::write(&path, document.to_string())
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +195,71 @@ mod tests {
     #[test]
     fn garbage_falls_back_to_defaults() {
         assert!(toml::from_str::<Config>("not toml [").is_err());
+    }
+
+    /// The document edit `set_editor_command` performs, minus the filesystem.
+    /// It writes to `config_path()` (i.e. $HOME), which a test must not touch,
+    /// but the edit itself is where the risk of mangling someone's file lives.
+    fn edited(original: &str, command: &str) -> String {
+        let mut document = original.parse::<toml_edit::DocumentMut>().unwrap();
+        if !document.as_table().contains_key("editor") {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(false);
+            document["editor"] = toml_edit::Item::Table(table);
+        }
+        document["editor"]["command"] = toml_edit::value(command);
+        document.to_string()
+    }
+
+    /// The editor write must be surgical.
+    #[test]
+    fn editing_the_editor_command_keeps_the_rest_of_the_file() {
+        let original = "# my jjdiff config\n\
+                        [ui]\n\
+                        # I like it dense\n\
+                        theme = \"dark\"\n\
+                        code-font-size = 11.5\n\n\
+                        [walkthrough]\n\
+                        backend = \"codex\"\n";
+        let written = edited(original, "zed {file}:{line}");
+
+        // Comments, key order and unrelated sections all survive.
+        assert!(written.contains("# my jjdiff config"));
+        assert!(written.contains("# I like it dense"));
+        assert!(written.contains("backend = \"codex\""));
+        assert!(written.contains("code-font-size = 11.5"));
+        // A real section, appended — not an inline table hoisted above the
+        // user's leading comment, which is what auto-vivification produces.
+        assert!(written.contains("[editor]"), "expected a [editor] section:\n{written}");
+        assert!(!written.contains("editor = {"), "must not write an inline table:\n{written}");
+        assert!(
+            written.trim_start().starts_with("# my jjdiff config"),
+            "the file must still open with the user's own comment:\n{written}"
+        );
+
+        // And it reloads as the value we set, without disturbing the others.
+        let parsed: Config = toml::from_str(&written).unwrap();
+        assert_eq!(parsed.editor.command, "zed {file}:{line}");
+        assert_eq!(parsed.ui.theme, "dark");
+        assert_eq!(parsed.walkthrough.backend, "codex");
+    }
+
+    #[test]
+    fn setting_the_editor_twice_replaces_rather_than_appends() {
+        let written = edited("[editor]\ncommand = \"vim {file}\"\n", "code -g {file}:{line}");
+        assert_eq!(written.matches("command =").count(), 1, "no duplicate key");
+        let parsed: Config = toml::from_str(&written).unwrap();
+        assert_eq!(parsed.editor.command, "code -g {file}:{line}");
+    }
+
+    #[test]
+    fn writes_into_an_empty_or_absent_config() {
+        // First-run case: no file yet, so the document starts empty.
+        let written = edited("", "zed {file}:{line}");
+        let parsed: Config = toml::from_str(&written).unwrap();
+        assert_eq!(parsed.editor.command, "zed {file}:{line}");
+        assert!(written.contains("[editor]"));
+        // Defaults for everything else still apply.
+        assert_eq!(parsed.ui.diff_style, "split");
     }
 }

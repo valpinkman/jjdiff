@@ -359,17 +359,49 @@ Two dead ends where we print a shrug:
 
 Small, self-contained, and each one removes a visible "the tool can't do this".
 
-### C4 — Forge review via `gh` / `glab`
+### C4 — Forge review via `gh` / `glab` ✅ DONE
 
 Reviewing *other people's* work, which jjdiff cannot do at all today. Scoped to the CLIs
 rather than REST APIs, so auth is someone else's problem:
 
-- `jjdiff pr 75` / `jjdiff mr 23` — fetch the PR head, review it as a normal diff.
-- Show reviewers, merge state and CI checks alongside the diff.
-- Submit a review (approve / request changes / comment) from the accumulated C2 comments.
-- Colocated repos make this natural: the PR branch is a git ref jj can already address.
+- `jjdiff pr 75` / `jjdiff mr 23` ✅ — fetch the head, review it as a normal diff.
+- Show reviewers, merge state and CI checks alongside the diff ✅ — a banner above the diff.
+- Submit a review (approve / request changes / comment) from the accumulated C2 comments ✅.
+- Colocated repos make this natural: the PR branch is a git ref jj can already address ✅.
 
-Depends on C2 for the comment model and C1 for the `pr`/`mr` subcommands.
+**The revset is the interesting part.** The obvious `base..head` is wrong, and silently so:
+the moment a proposal merges, its head becomes an ancestor of the base branch and the
+revset goes *empty* — the review shows nothing, with no error. The forge already knows the
+right answer, so we ask it: `gh` exposes `baseRefOid` (GitLab: `diff_refs.base_sha`), which
+is the merge base it diffs against, and `baseRefOid..head` is correct for open and merged
+proposals alike. `open_pull_request` also fetches the base branch, because that OID has to
+exist locally for the revset to resolve.
+
+Everything downstream is unchanged: the head lands on a namespaced bookmark
+(`jjdiff-pr-75`), so from there a proposal is an ordinary revset reviewed by the same diff
+pane, walkthroughs and inline comments as anything else.
+
+**A proposal is context, not a mode.** The first cut made reviewing a PR a separate view you
+entered by number and left by closing. That was backwards: `gh pr list` already reports each
+proposal's head branch, and every change already carries its bookmarks, so a match is enough
+to show the banner *on the change you are looking at*. Working on your own branch now surfaces
+its CI, reviewers and merge state without being asked. `jjdiff pr N` remains for the case the
+match cannot cover — someone else's branch, which is not local until it is fetched — and once
+fetched it resolves through the same match. Diffing the whole proposal rather than the selected
+commit is a toggle on the banner.
+
+Inline comments post as **real line comments** via `gh api …/pulls/N/reviews`, which is what
+anchoring on change ids was for. That endpoint is all-or-nothing — one comment on a line
+outside the diff rejects the entire review — so outdated comments are filtered first and a
+rejection retries with everything folded into the body rather than losing the reviewer's work.
+
+Forge detection is inferred from the remote URL rather than configured. A host we cannot
+place is an error, not a guess, and the Forge command group is absent entirely on a repo
+we cannot drive — an affordance that always fails is worse than one that is not there.
+
+**Caveat: the GitLab path is unverified.** `gh` is tested against real output (the fixture
+in `forge.rs` is captured verbatim from this repo's PR #4); `glab` is written against its
+documented JSON shape but has never run against a live instance.
 
 ### C5 — Native app polish ✅ DONE
 
@@ -413,7 +445,7 @@ Revisit only if people other than the author start reviewing with it.
 2. **C2** ✅ — the biggest capability gap; ~1.5–2 weeks.
 3. **C3** ✅ — a few days, removes two dead ends.
 4. **C5** ✅ — polish, can be interleaved whenever.
-5. **C4** — only when reviewing others' PRs actually matters to you.
+5. **C4** ✅ — only when reviewing others' PRs actually matters to you.
 6. **C6** — probably never, and that is fine.
 
 ## Risks specific to Phase 2

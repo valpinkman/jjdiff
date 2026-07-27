@@ -73,6 +73,8 @@ export interface LaunchOptions {
   walkthrough: boolean;
   /** `--walkthrough-file`: import an agent-authored walkthrough instead of generating. */
   walkthroughFile: string | null;
+  /** `jjdiff pr 75`: open this forge proposal for review on launch. */
+  pullRequest: number | null;
 }
 
 export interface WalkthroughStep {
@@ -188,6 +190,7 @@ export const getLaunchOptions = (): Promise<LaunchOptions> =>
         revset: null,
         walkthrough: false,
         walkthroughFile: null,
+        pullRequest: null,
       });
 export const getWalkthrough = (
   changeId: string,
@@ -418,6 +421,126 @@ export const getRecentRepos = (): Promise<string[]> =>
 export const installTerminalHelper = (): Promise<string> =>
   IN_TAURI ? invoke<string>('install_terminal_helper') : Promise.resolve('(mock) would install jjdiff on PATH');
 
+// -- Forge review (gh / glab) --
+
+export interface Reviewer {
+  name: string;
+  /** REQUESTED / APPROVED / CHANGES_REQUESTED / COMMENTED. */
+  state: string;
+}
+
+export interface Check {
+  name: string;
+  /** QUEUED / IN_PROGRESS / COMPLETED. */
+  status: string;
+  /** SUCCESS / FAILURE / SKIPPED / …; empty while still running. */
+  conclusion: string;
+  url: string;
+}
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  base: string;
+  head: string;
+  /** The forge's own merge base — what a merged proposal must be diffed from. */
+  baseOid: string;
+  headOid: string;
+  /** OPEN / MERGED / CLOSED. */
+  state: string;
+  draft: boolean;
+  mergeable: string;
+  url: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  reviewers: Reviewer[];
+  checks: Check[];
+}
+
+export interface PullRequestSummary {
+  number: number;
+  title: string;
+  author: string;
+  state: string;
+  draft: boolean;
+  head: string;
+  updatedAt: string;
+}
+
+/** A fetched proposal plus the revsets that make it reviewable. */
+export interface OpenedPullRequest extends PullRequest {
+  /** Local bookmark the head landed on. */
+  bookmark: string;
+  /** Revset for the proposal's own commits. */
+  revset: string;
+}
+
+export interface ForgeInfo {
+  kind: 'github' | 'gitlab';
+  /** "pull request" / "merge request". */
+  noun: string;
+}
+
+export type ReviewVerdict = 'approve' | 'requestChanges' | 'comment';
+
+/** One inline comment to post against a line of the proposal's diff. */
+export interface ReviewComment {
+  path: string;
+  line: number;
+  side: CommentSide;
+  body: string;
+}
+
+/** What a submitted review actually did. */
+export interface Submitted {
+  /** How many comments landed as real inline comments. */
+  inline: number;
+  /** Set when inline posting failed and they went into the body instead. */
+  fellBack: string | null;
+}
+
+/** Null when the repo is on no forge jjdiff can drive — not an error. */
+export const getForgeInfo = (): Promise<ForgeInfo | null> =>
+  IN_TAURI ? invoke<ForgeInfo | null>('forge_info') : mock((m) => m.mockForgeInfo);
+
+export const listPullRequests = (limit = 30): Promise<PullRequestSummary[]> =>
+  IN_TAURI
+    ? invoke<PullRequestSummary[]>('list_pull_requests', { limit })
+    : mock((m) => m.mockPullRequestList);
+
+export const getPullRequest = (number: number): Promise<PullRequest> =>
+  IN_TAURI ? invoke<PullRequest>('pull_request', { number }) : mock((m) => m.mockPullRequest);
+
+/** Fetch the proposal's head so it can be reviewed as an ordinary revset. */
+export const openPullRequest = (number: number): Promise<OpenedPullRequest> =>
+  IN_TAURI
+    ? invoke<OpenedPullRequest>('open_pull_request', { number })
+    : mock((m) => m.mockOpenedPullRequest);
+
+/**
+ * Outward-facing and effectively irreversible — confirm before calling.
+ * `comments` land as real inline comments where the forge allows it.
+ */
+export const submitReview = (
+  number: number,
+  verdict: ReviewVerdict,
+  body: string,
+  comments: ReviewComment[] = [],
+): Promise<Submitted> =>
+  IN_TAURI
+    ? invoke<Submitted>('submit_review', { number, verdict, body, comments })
+    : Promise.resolve({ inline: comments.length, fellBack: null });
+
+/**
+ * Open a URL in the system browser. The WebView has no tabs, so `target=_blank`
+ * silently does nothing — every outbound link has to go through the host OS.
+ */
+export const openUrl = (url: string): Promise<void> =>
+  IN_TAURI ? invoke<void>('open_url', { url }) : Promise.resolve(void window.open(url, '_blank'));
+
 /** One native submenu, mirroring a command-palette group. */
 export interface MenuGroup {
   title: string;
@@ -471,6 +594,7 @@ export interface SecondInstanceArgs {
   revset: string | null;
   walkthrough: boolean;
   walkthroughFile: string | null;
+  pullRequest: number | null;
 }
 export const onSecondInstance = (callback: (args: SecondInstanceArgs) => void): Promise<UnlistenFn> =>
   IN_TAURI ? listen<SecondInstanceArgs>('second-instance', (event) => callback(event.payload)) : Promise.resolve(() => {});
