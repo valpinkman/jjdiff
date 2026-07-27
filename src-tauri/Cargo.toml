@@ -26,5 +26,13 @@ tauri-plugin-dialog = "2.7.2"
 # over the same review store.
 tauri-plugin-single-instance = { version = "2", features = ["semver"] }
 
+# SQLite for review comments (threaded, with anchors + timestamps) — the JSON
+# review store was right for flags and walkthroughs, but comments want real queries.
+rusqlite = { version = "0.31", features = ["bundled"] }
+# r2d2 connection pool: Tauri commands are async + shared across the main thread
+# and blocking pool; a pool keeps SQLite access simple and thread-safe.
+r2d2 = "0.8"
+r2d2_sqlite = "0.24"
+
 [dev-dependencies]
 tempfile = "3"

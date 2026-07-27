@@ -1512,3 +1512,203 @@ select.file-action {
   box-shadow: inset -3px 0 0 var(--jj-accent);
   background: var(--jj-accent-soft) !important;
 }
+
+/* ---- Inline review comments ---- */
+
+/* Clickable line numbers open an inline composer. */
+.num.clickable {
+  cursor: pointer;
+  border-radius: 3px;
+}
+.num.clickable:hover {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+}
+
+.comment-row {
+  padding: 4px 12px 6px 52px;
+  background: var(--jj-panel);
+  border-left: 2px solid var(--jj-border);
+  margin-left: 8px;
+  border-radius: 0 6px 6px 0;
+}
+
+.comment-thread {
+  margin-bottom: 6px;
+}
+.comment-thread:last-child {
+  margin-bottom: 0;
+}
+
+.comment {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--jj-bg);
+  border: 1px solid var(--jj-border);
+}
+.comment.resolved {
+  opacity: 0.6;
+}
+.comment.outdated {
+  border-color: var(--jj-warn, #c89a2e);
+  background: var(--jj-warn-soft, rgba(200, 154, 46, 0.08));
+}
+
+.comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+  font-size: 11px;
+}
+.comment-author {
+  font-weight: 600;
+  color: var(--jj-fg);
+}
+.comment-time {
+  color: var(--jj-fg-faint);
+}
+.comment-badge {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--jj-warn, #c89a2e);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+}
+.comment-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+.comment-actions button {
+  background: none;
+  border: 0;
+  color: var(--jj-fg-muted);
+  font-size: 10.5px;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.comment-actions button:hover {
+  color: var(--jj-accent);
+  background: var(--jj-accent-soft);
+}
+
+.comment-body {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--jj-fg-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.comment-reply {
+  margin-left: 16px;
+  border-left: 2px solid var(--jj-border);
+  padding-left: 8px;
+  margin-top: 4px;
+}
+
+.comment-reply-btn {
+  background: none;
+  border: 0;
+  color: var(--jj-fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  margin-top: 3px;
+}
+.comment-reply-btn:hover {
+  color: var(--jj-accent);
+}
+
+.comment-composer {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--jj-bg);
+  border: 1px solid var(--jj-accent-line);
+}
+.comment-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--jj-border);
+  border-radius: 5px;
+  background: var(--jj-bg);
+  color: var(--jj-fg);
+  font-family: var(--jj-sans);
+  font-size: 12.5px;
+  padding: 5px 8px;
+  resize: vertical;
+  min-height: 36px;
+  outline: none;
+}
+.comment-composer textarea:focus {
+  border-color: var(--jj-accent);
+}
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+}
+.composer-actions .hint {
+  font-size: 10.5px;
+  color: var(--jj-fg-faint);
+}
+.composer-actions button {
+  border: 1px solid var(--jj-border);
+  border-radius: 5px;
+  background: var(--jj-bg);
+  color: var(--jj-fg-soft);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.composer-actions button.primary {
+  background: var(--jj-accent);
+  color: #fff;
+  border-color: var(--jj-accent);
+}
+.composer-actions button.primary:hover {
+  filter: brightness(1.05);
+}
+
+/* Review tab in the sidebar. */
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+.review-item {
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--jj-panel);
+  border: 1px solid var(--jj-border);
+  cursor: pointer;
+  font-size: 12px;
+}
+.review-item:hover {
+  border-color: var(--jj-accent-line);
+}
+.review-item .review-path {
+  font-weight: 600;
+  color: var(--jj-fg);
+}
+.review-item .review-line {
+  color: var(--jj-fg-faint);
+  font-size: 11px;
+  margin-left: 6px;
+}
+.review-item .review-snippet {
+  color: var(--jj-fg-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.review-item.outdated {
+  border-color: var(--jj-warn, #c89a2e);
+}

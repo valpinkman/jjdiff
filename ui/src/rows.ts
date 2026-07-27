@@ -1,6 +1,6 @@
 // Flat row model: the virtualizer renders one flat list of rows across all files,
 // so huge diffs stay cheap regardless of where the changes live.
-import type { FilePatch, Line } from './ipc.js';
+import type { Comment, FilePatch, Line } from './ipc.js';
 
 export type DiffLayout = 'split' | 'unified';
 
@@ -33,7 +33,9 @@ export type Row =
       right: Line | null;
       hlLeft: HlRef | null;
       hlRight: HlRef | null;
-    };
+    }
+  /** Inline review comments rendered under their anchor line. */
+  | { kind: 'comments'; fileIndex: number; path: string; comments: Comment[] };
 
 export interface HlRef {
   side: 'old' | 'new';
@@ -61,8 +63,20 @@ export function buildRows(
   /** Full new-side file text, split into lines, for context expansion. */
   fileLines: ReadonlyMap<string, string[]> = new Map(),
   expansions: ReadonlyMap<string, Expansion> = new Map(),
+  /** Inline review comments, keyed `${path}:${side}:${line}`. */
+  comments: ReadonlyMap<string, Comment[]> = new Map(),
 ): Row[] {
   const rows: Row[] = [];
+  const commentsFor = (path: string, side: 'old' | 'new', line: number | null): Comment[] => {
+    if (line === null) return [];
+    return comments.get(`${path}:${side}:${line}`) ?? [];
+  };
+  const pushCommentRow = (rows: Row[], fileIndex: number, path: string, side: 'old' | 'new', line: number | null) => {
+    const list = commentsFor(path, side, line);
+    if (list.length > 0) {
+      rows.push({ kind: 'comments', fileIndex, path, comments: list });
+    }
+  };
   files.forEach((file, fileIndex) => {
     if (hunkFilter && !file.hunks.some((hunk) => hunkFilter.has(hunk.id))) {
       return;
@@ -139,10 +153,14 @@ export function buildRows(
           const hl = refFor(line);
           if (included) {
             rows.push({ kind: 'unified', fileIndex, line, hl });
+            // Comments anchor to the side matching the line kind.
+            const side = line.kind === 'removed' ? 'old' : 'new';
+            const lineNum = side === 'old' ? line.oldLine : line.newLine;
+            pushCommentRow(rows, fileIndex, file.path, side, lineNum);
           }
         }
       } else {
-        pushSplitRows(rows, fileIndex, hunk.lines, refFor, included);
+        pushSplitRows(rows, fileIndex, hunk.lines, refFor, included, file.path, pushCommentRow);
       }
 
       previousEnd = hunk.newStart + hunk.newLines - 1;
@@ -199,12 +217,16 @@ function pushContextLine(
 }
 
 /** Pair removed/added runs side-by-side; context spans both sides. */
+type CommentPusher = (rows: Row[], fileIndex: number, path: string, side: 'old' | 'new', line: number | null) => void;
+
 function pushSplitRows(
   rows: Row[],
   fileIndex: number,
   lines: Line[],
   refFor: (line: Line) => HlRef,
   emit: boolean,
+  path: string,
+  pushCommentRow: CommentPusher,
 ) {
   let removed: { line: Line; hl: HlRef }[] = [];
   let added: { line: Line; hl: HlRef }[] = [];
@@ -221,6 +243,11 @@ function pushSplitRows(
           hlLeft: removed[i]?.hl ?? null,
           hlRight: added[i]?.hl ?? null,
         });
+        // Comments under each side that has a line number.
+        const r = removed[i];
+        const a = added[i];
+        if (r) pushCommentRow(rows, fileIndex, path, 'old', r.line.oldLine);
+        if (a) pushCommentRow(rows, fileIndex, path, 'new', a.line.newLine);
       }
     }
     removed = [];
@@ -238,6 +265,8 @@ function pushSplitRows(
       const hl = refFor(line);
       if (emit) {
         rows.push({ kind: 'split', fileIndex, left: line, right: line, hlLeft: hl, hlRight: hl });
+        pushCommentRow(rows, fileIndex, path, 'old', line.oldLine);
+        pushCommentRow(rows, fileIndex, path, 'new', line.newLine);
       }
     }
   }

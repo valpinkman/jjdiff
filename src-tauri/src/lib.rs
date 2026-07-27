@@ -5,6 +5,7 @@
 //! `jj` invocation there would freeze the window.
 
 pub mod cli;
+mod comments;
 mod config;
 mod viewed;
 pub mod walkthrough;
@@ -22,6 +23,7 @@ use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
 use cli::Args;
+use comments::{Comment, CommentStore, NewComment, Side};
 
 /// `jjdiff [revset] [-R|--repo <path>] [-w|--walkthrough] [--walkthrough-file <path>]`
 ///
@@ -58,6 +60,7 @@ struct AppState {
     launch: LaunchOptions,
     repo: Mutex<Option<Repo>>,
     review: Mutex<ReviewStore>,
+    comments: Mutex<CommentStore>,
     recents: Mutex<Vec<String>>,
     recents_path: Mutex<Option<PathBuf>>,
     _watchers: Mutex<Vec<RepoWatcher>>,
@@ -739,12 +742,136 @@ fn mark_reviewed(
     Ok(())
 }
 
+// -- Inline review comments --
+
+/// Add a comment anchored to a line in a change's diff. The anchor is keyed by
+/// change id (not commit id), so it survives `describe`/`squash`/rebase.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn add_comment(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    path: String,
+    hunk_id: String,
+    side: Side,
+    line: u32,
+    line_text: String,
+    commit_id: String,
+    author: String,
+    body: String,
+    parent_id: Option<i64>,
+) -> Result<Comment, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    state.comments.lock().expect("comments lock").add(NewComment {
+        repo: repo_key,
+        change_id,
+        path,
+        hunk_id,
+        side,
+        line,
+        line_text,
+        commit_id,
+        author,
+        body,
+        parent_id,
+    })
+}
+
+/// All comments for a change, ordered by path then line then time.
+#[tauri::command]
+fn list_comments(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+) -> Result<Vec<Comment>, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    state.comments.lock().expect("comments lock").list(&repo_key, &change_id)
+}
+
+/// Mark a comment resolved (or unresolved).
+#[tauri::command]
+fn set_comment_resolved(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    resolved: bool,
+) -> Result<(), String> {
+    state
+        .comments
+        .lock()
+        .expect("comments lock")
+        .set_resolved(id, resolved)
+}
+
+/// Delete a comment and its children.
+#[tauri::command]
+fn delete_comment(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    state.comments.lock().expect("comments lock").delete(id)
+}
+
+/// Edit the body of a comment.
+#[tauri::command]
+fn update_comment(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    body: String,
+) -> Result<(), String> {
+    state
+        .comments
+        .lock()
+        .expect("comments lock")
+        .update_body(id, &body)
+}
+
+/// Re-anchor comments for a change against the current diff. Called by the UI
+/// when a change evolves (commit id differs from what comments were written
+/// against). Returns the number of comments whose anchor changed.
+#[tauri::command]
+async fn refresh_comment_anchors(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+    current_commit_id: String,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+) -> Result<usize, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    // Compute the diff off the main thread, then run the re-anchoring (an
+    // in-memory SQLite query) back on the caller. The comment store is not
+    // `Send` through `blocking` because it borrows `state`.
+    let files = blocking(move || compute_diff(&repo, revset.as_deref(), ignore_whitespace)).await?;
+    state
+        .comments
+        .lock()
+        .expect("comments lock")
+        .refresh_anchors(&repo_key, &change_id, &current_commit_id, &files)
+}
+
+/// Render pending (unresolved) comments as a paste-ready Markdown review.
+#[tauri::command]
+fn export_review_markdown(
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+) -> Result<String, String> {
+    let repo = repo_handle(&state)?;
+    let repo_key = repo.root().to_string_lossy().into_owned();
+    state
+        .comments
+        .lock()
+        .expect("comments lock")
+        .export_markdown(&repo_key, &change_id)
+}
+
 pub fn run(args: Args) {
     let launch = LaunchOptions::from_args(&args);
+    // SQLite wants a connection to open lazily after the data dir is known, so
+    // the store starts empty and is opened in `setup` once `app_data_dir` is
+    // available.
     let state = AppState {
         launch,
         repo: Mutex::new(None),
         review: Mutex::new(ReviewStore::default()),
+        comments: Mutex::new(CommentStore::in_memory().expect("comment db bootstrap")),
         recents: Mutex::new(Vec::new()),
         recents_path: Mutex::new(None),
         _watchers: Mutex::new(Vec::new()),
@@ -811,7 +938,14 @@ pub fn run(args: Args) {
             operation_log,
             undo,
             restore_operation,
-            revert_operation
+            revert_operation,
+            add_comment,
+            list_comments,
+            set_comment_resolved,
+            delete_comment,
+            update_comment,
+            refresh_comment_anchors,
+            export_review_markdown
         ])
         .setup(|app| {
             let state = app.state::<AppState>();
@@ -826,6 +960,15 @@ pub fn run(args: Args) {
                 let recents_path = dir.join("recents.json");
                 *state.recents.lock().expect("recents lock") = load_recents(&recents_path);
                 *state.recents_path.lock().expect("recents path") = Some(recents_path);
+
+                // Open the comment DB from the app data dir; fall back to
+                // in-memory (already set in `run`) if it fails so the app
+                // still starts — comments just won't persist across launches.
+                if let Ok(db) = CommentStore::open(dir.join("comments.db")) {
+                    *state.comments.lock().expect("comments lock") = db;
+                } else {
+                    eprintln!("jjdiff: comment db disabled (could not open comments.db)");
+                }
             }
 
             // Watchers are not fatal: without them the UI still works, it just won't

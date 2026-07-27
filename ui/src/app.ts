@@ -46,12 +46,20 @@ import {
   pickRepository,
   setViewed,
   squashPaths,
+  addComment,
   type Change,
+  type Comment,
+  type CommentSide,
+  deleteComment,
+  exportReviewMarkdown,
   type FilePatch,
   type RepoState,
+  listComments,
+  refreshCommentAnchors,
   type Operation,
   type Outcome,
   type SecondInstanceArgs,
+  setCommentResolved,
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
@@ -123,7 +131,7 @@ export class App extends LitElement {
   @state() private description = '';
   @state() private barOpen = false;
   @state() private viewMode: ViewMode = 'full';
-  @state() private sidebarTab: 'stack' | 'files' | 'steps' | 'ops' = 'stack';
+  @state() private sidebarTab: 'stack' | 'files' | 'steps' | 'ops' | 'review' = 'stack';
   /** Non-working-copy selection opens the detail view instead of jumping to Files. */
   @state() private detailView = false;
   /** Collapsed detail block: sticks across selections, so "hide it" means hide it. */
@@ -159,6 +167,10 @@ export class App extends LitElement {
   /** Full file text for context expansion, fetched on demand. */
   @state() private fileLines: ReadonlyMap<string, string[]> = new Map();
   @state() private expansions: ReadonlyMap<string, { up: number; down: number }> = new Map();
+  /** Inline review comments keyed `${path}:${side}:${line}`. */
+  @state() private comments: ReadonlyMap<string, Comment[]> = new Map();
+  /** All comments for the selected change (for the Review tab). */
+  @state() private allComments: Comment[] = [];
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -264,6 +276,65 @@ export class App extends LitElement {
       this.lastOutcome = null;
     } finally {
       this.busy = null;
+    }
+  }
+
+  // ---- Inline review comments ----
+
+  private async onAddComment(
+    detail: { path: string; side: CommentSide; line: number; lineText: string; body: string; parentId: number | null },
+  ) {
+    const change = this.selectedChange;
+    if (!change || !detail.body.trim()) return;
+    try {
+      await addComment(
+        change.changeId,
+        detail.path,
+        `${detail.path}#0`, // hunk id is approximate; the store keys by change+path+line anyway
+        detail.side,
+        detail.line,
+        detail.lineText,
+        change.commitId,
+        'you',
+        detail.body,
+        detail.parentId,
+      );
+      await this.loadComments();
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
+
+  private async onResolveComment(id: number, resolved: boolean) {
+    try {
+      await setCommentResolved(id, resolved);
+      await this.loadComments();
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
+
+  private async onDeleteComment(id: number) {
+    try {
+      await deleteComment(id);
+      await this.loadComments();
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
+
+  /** Copy pending comments as a Markdown review to the clipboard. */
+  private async copyReviewMarkdown() {
+    const change = this.selectedChange;
+    if (!change) return;
+    try {
+      const md = await exportReviewMarkdown(change.changeId);
+      await navigator.clipboard.writeText(md);
+      this.lastOutcome = { message: 'Copied review as Markdown to clipboard.', operation: '' };
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
     }
   }
 
@@ -438,6 +509,18 @@ export class App extends LitElement {
     );
   }
 
+  /** Unresolved comments for the selected change (Review tab badge + list). */
+  private get pendingComments(): Comment[] {
+    return this.allComments.filter((c) => !c.resolved);
+  }
+
+  /** Scroll the diff to the file owning a comment and focus it. */
+  private scrollToComment(comment: Comment) {
+    this.focusPath = comment.path;
+    this.sidebarTab = 'files';
+    this.patchView?.scrollToPath(comment.path);
+  }
+
   private async refresh() {
     try {
       this.repo = await getRepoState(this.graphRevset ?? undefined);
@@ -449,7 +532,13 @@ export class App extends LitElement {
         this.description = current.description;
         this.seededFor = current.changeId;
       }
-      await Promise.all([this.loadDiff(), this.loadReview(), this.loadConflicts(), this.loadWalkthrough()]);
+      await Promise.all([
+        this.loadDiff(),
+        this.loadReview(),
+        this.loadConflicts(),
+        this.loadWalkthrough(),
+        this.loadComments(),
+      ]);
     } catch (error) {
       this.error = String(error);
     }
@@ -492,6 +581,39 @@ export class App extends LitElement {
     } catch {
       this.viewedPaths = new Set();
       this.reviewedCommit = null;
+    }
+  }
+
+  /** Load comments for the selected change + re-anchor against the current diff. */
+  private async loadComments() {
+    const change = this.selectedChange;
+    if (!change) {
+      this.comments = new Map();
+      this.allComments = [];
+      return;
+    }
+    try {
+      // Re-anchor if the change has evolved since comments were written.
+      await refreshCommentAnchors(
+        change.changeId,
+        change.commitId,
+        this.isWorkingCopySelected ? null : change.changeId,
+        this.ignoreWhitespace,
+      );
+      const list = await listComments(change.changeId);
+      this.allComments = list;
+      // Index by `${path}:${side}:${line}` for the diff view.
+      const map = new Map<string, Comment[]>();
+      for (const comment of list) {
+        const key = `${comment.path}:${comment.side}:${comment.line}`;
+        const existing = map.get(key);
+        if (existing) existing.push(comment);
+        else map.set(key, [comment]);
+      }
+      this.comments = map;
+    } catch {
+      this.comments = new Map();
+      this.allComments = [];
     }
   }
 
@@ -1040,6 +1162,17 @@ export class App extends LitElement {
         label: 'Clear File Focus',
         run: () => (this.focusPath = null),
       },
+      !!change && {
+        id: 'review-tab',
+        label: 'Open Review Tab',
+        hint: 'comments',
+        run: () => (this.sidebarTab = 'review'),
+      },
+      !!change && {
+        id: 'copy-review-md',
+        label: 'Copy Review as Markdown',
+        run: () => void this.copyReviewMarkdown(),
+      },
     ]);
 
     add('Change', [
@@ -1214,6 +1347,15 @@ export class App extends LitElement {
           >
             Ops
           </button>
+          <button
+            class="tab ${this.sidebarTab === 'review' ? 'active' : ''}"
+            @click=${() => (this.sidebarTab = 'review')}
+          >
+            Review
+            ${this.pendingComments.length > 0
+              ? html`<span class="count">${this.pendingComments.length}</span>`
+              : nothing}
+          </button>
         </nav>
         ${this.sidebarTab === 'stack'
           ? html`<div class="revset-bar">
@@ -1277,6 +1419,24 @@ export class App extends LitElement {
                           </div>
                         </div>`,
                       )}
+              </div>`
+          : this.sidebarTab === 'review'
+            ? html`<div class="review-list">
+                <button class="tool review-export" @click=${() => void this.copyReviewMarkdown()}>
+                  Copy as Markdown
+                </button>
+                ${this.pendingComments.length === 0
+                  ? html`<div class="ops-empty">No pending comments.</div>`
+                  : this.pendingComments.map(
+                      (comment) => html`<div
+                        class="review-item ${comment.outdated ? 'outdated' : ''}"
+                        @click=${() => this.scrollToComment(comment)}
+                      >
+                        <span class="review-path">${comment.path}</span>
+                        <span class="review-line">line ${comment.line}${comment.outdated ? ' (outdated)' : ''}</span>
+                        <div class="review-snippet">${comment.body.split('\n')[0]}</div>
+                      </div>`,
+                    )}
               </div>`
           : html`
               ${change
@@ -1668,6 +1828,13 @@ export class App extends LitElement {
           .fileLines=${this.fileLines}
           .expansions=${this.expansions}
           .themeVersion=${this.themeVersion}
+          .comments=${this.comments}
+          .canComment=${this.viewMode === 'full' && !this.walkActive}
+          @add-comment=${(e: CustomEvent) => this.onAddComment(e.detail)}
+          @resolve-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
+            this.onResolveComment(e.detail.id, e.detail.value)}
+          @delete-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
+            this.onDeleteComment(e.detail.id)}
         ></jj-patch-view>
       </main>
       ${this.barOpen

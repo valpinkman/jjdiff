@@ -94,6 +94,34 @@ export interface WalkthroughStatus {
   stale: boolean;
 }
 
+// -- Inline review comments --
+
+export type CommentSide = 'old' | 'new';
+
+export interface Comment {
+  id: number;
+  repo: string;
+  changeId: string;
+  path: string;
+  /** `<path>#<index>` — the hunk the comment was written against. */
+  hunkId: string;
+  side: CommentSide;
+  line: number;
+  /** The text of the line when the comment was written (drift + outdated view). */
+  lineText: string;
+  /** Commit id the comment was written against. */
+  commitId: string;
+  author: string;
+  body: string;
+  /** ISO 8601 timestamp (UTC). */
+  createdAt: string;
+  /** Parent comment id for threading (null = top-level). */
+  parentId: number | null;
+  resolved: boolean;
+  /** True when the anchor line no longer matches (drifted). */
+  outdated: boolean;
+}
+
 export interface Config {
   ui: {
     diffStyle: string;
@@ -288,6 +316,57 @@ export const setViewed = (changeId: string, path: string, viewed: boolean) =>
   IN_TAURI ? invoke<void>('set_viewed', { changeId, path, viewed }) : Promise.resolve();
 export const markReviewed = (changeId: string, commitId: string) =>
   IN_TAURI ? invoke<void>('mark_reviewed', { changeId, commitId }) : Promise.resolve();
+
+/** Add a comment anchored to a line in a change's diff. */
+export const addComment = (
+  changeId: string,
+  path: string,
+  hunkId: string,
+  side: CommentSide,
+  line: number,
+  lineText: string,
+  commitId: string,
+  author: string,
+  body: string,
+  parentId: number | null,
+): Promise<Comment> =>
+  IN_TAURI
+    ? invoke<Comment>('add_comment', {
+        changeId, path, hunkId, side, line, lineText, commitId, author, body, parentId,
+      })
+    : Promise.resolve({
+        id: Math.floor(Math.random() * 1e6),
+        repo: '', changeId, path, hunkId, side, line, lineText, commitId,
+        author, body, createdAt: new Date().toISOString(), parentId, resolved: false, outdated: false,
+      });
+
+/** All comments for a change, ordered by path then line then time. */
+export const listComments = (changeId: string): Promise<Comment[]> =>
+  IN_TAURI ? invoke<Comment[]>('list_comments', { changeId }) : Promise.resolve([]);
+
+export const setCommentResolved = (id: number, resolved: boolean) =>
+  IN_TAURI ? invoke<void>('set_comment_resolved', { id, resolved }) : Promise.resolve();
+
+export const deleteComment = (id: number) =>
+  IN_TAURI ? invoke<void>('delete_comment', { id }) : Promise.resolve();
+
+export const updateComment = (id: number, body: string) =>
+  IN_TAURI ? invoke<void>('update_comment', { id, body }) : Promise.resolve();
+
+/** Re-anchor comments against the current diff; returns how many moved. */
+export const refreshCommentAnchors = (
+  changeId: string,
+  currentCommitId: string,
+  revset: string | null,
+  ignoreWhitespace: boolean,
+): Promise<number> =>
+  IN_TAURI
+    ? invoke<number>('refresh_comment_anchors', { changeId, currentCommitId, revset, ignoreWhitespace })
+    : Promise.resolve(0);
+
+/** Pending (unresolved) comments as a paste-ready Markdown review. */
+export const exportReviewMarkdown = (changeId: string): Promise<string> =>
+  IN_TAURI ? invoke<string>('export_review_markdown', { changeId }) : Promise.resolve('No pending comments.');
 
 /** Import an agent-authored walkthrough JSON file for a change. */
 export const importWalkthrough = (
