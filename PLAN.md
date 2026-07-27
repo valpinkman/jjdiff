@@ -326,7 +326,7 @@ The `--walkthrough-guide` + `--walkthrough-file` pair closes the agent loop we a
 built: a skill can ask jjdiff for its guide, author a walkthrough, and open jjdiff on it —
 codiff's `$codiff` pattern, which currently has no entry point on our side.
 
-### C2 — Inline review comments
+### C2 — Inline review comments ✅ DONE
 
 The single biggest gap, and the place where jj lets us beat codiff rather than match it.
 
@@ -393,7 +393,7 @@ Revisit only if people other than the author start reviewing with it.
 ### Suggested order
 
 1. **C1** ✅ — nothing else is reachable from a terminal without it, and it is a day or two.
-2. **C2** — the biggest capability gap; ~1.5–2 weeks.
+2. **C2** ✅ — the biggest capability gap; ~1.5–2 weeks.
 3. **C3** — a few days, removes two dead ends.
 4. **C5** — polish, can be interleaved whenever.
 5. **C4** — only when reviewing others' PRs actually matters to you.

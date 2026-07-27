@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { virtualize, virtualizerRef } from '@lit-labs/virtualizer/virtualize.js';
 
 import { HighlightStore } from './highlight.js';
-import type { FilePatch, Line } from './ipc.js';
+import type { Comment, CommentSide, FilePatch, Line } from './ipc.js';
 import { renderLineContent } from './render-line.js';
 import { buildRows, type DiffLayout, type Expansion, type HlRef, type Row } from './rows.js';
 
@@ -42,9 +42,15 @@ export class PatchView extends LitElement {
   @property({ attribute: false }) expansions: ReadonlyMap<string, Expansion> = new Map();
   /** Bumped when the colour theme changes: shiki tokens are theme-specific. */
   @property({ type: Number }) themeVersion = 0;
+  /** Inline review comments, keyed `${path}:${side}:${line}`. */
+  @property({ attribute: false }) comments: ReadonlyMap<string, Comment[]> = new Map();
+  /** Whether comments can be added (working-copy + mutable change). */
+  @property({ type: Boolean }) canComment = false;
 
   @state() private cursor: number | null = null;
   @state() private searchCurrent = -1;
+  /** Active inline composer, if any. */
+  @state() private composer: { path: string; side: CommentSide; line: number; lineText: string } | null = null;
 
   private rows: Row[] = [];
   private visibleFile: string | null = null;
@@ -74,7 +80,8 @@ export class PatchView extends LitElement {
       changed.has('viewed') ||
       changed.has('hunkFilter') ||
       changed.has('fileLines') ||
-      changed.has('expansions');
+      changed.has('expansions') ||
+      changed.has('comments');
     if (contentChanged) {
       this.rows = buildRows(
         this.files,
@@ -83,6 +90,7 @@ export class PatchView extends LitElement {
         this.hunkFilter,
         this.fileLines,
         this.expansions,
+        this.comments,
       );
       if (this.cursor !== null && this.cursor >= this.rows.length) {
         this.cursor = null;
@@ -346,6 +354,8 @@ export class PatchView extends LitElement {
         return html`<div class="notice ${extra}">${row.text}</div>`;
       case 'file-end':
         return html`<div class="file-end"></div>`;
+      case 'comments':
+        return this.renderComments(row.comments, extra);
       case 'unified':
         return this.renderUnified(row.fileIndex, row.line, row.hl, extra);
       case 'split':
@@ -363,9 +373,15 @@ export class PatchView extends LitElement {
     extra: string,
   ): TemplateResult {
     const tokens = this.highlights.tokensFor(this.files[fileIndex]!, hl);
+    const file = this.files[fileIndex]!;
+    const numClick = (side: CommentSide, num: number | null) => (e: MouseEvent) => {
+      e.stopPropagation();
+      if (num === null || !this.canComment) return;
+      this.openComposer(file.path, side, num, line.text);
+    };
     return html`<div class="line unified ${line.kind} ${markerClass(line.text)} ${extra}">
-      <span class="num">${line.oldLine ?? ''}</span>
-      <span class="num">${line.newLine ?? ''}</span>
+      <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('old', line.oldLine)}>${line.oldLine ?? ''}</span>
+      <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('new', line.newLine)}>${line.newLine ?? ''}</span>
       <span class="sign">${sign(line.kind)}</span>
       <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
     </div>`;
@@ -384,14 +400,147 @@ export class PatchView extends LitElement {
     const kind = line.kind === 'context' ? 'context' : line.kind;
     const number = side === 'left' ? line.oldLine : line.newLine;
     const tokens = this.highlights.tokensFor(this.files[fileIndex]!, hl);
+    const file = this.files[fileIndex]!;
+    const commentSide: CommentSide = side === 'left' ? 'old' : 'new';
+    const numClick = (e: MouseEvent) => {
+      e.stopPropagation();
+      if (number === null || !this.canComment) return;
+      this.openComposer(file.path, commentSide, number, line.text);
+    };
     return html`<div class="cell ${side} ${kind} ${markerClass(line.text)}">
-      <span class="num">${number ?? ''}</span>
+      <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick}>${number ?? ''}</span>
       <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
     </div>`;
+  }
+
+  private openComposer(path: string, side: CommentSide, line: number, lineText: string) {
+    this.composer = { path, side, line, lineText };
+  }
+
+  private closeComposer() {
+    this.composer = null;
+  }
+
+  private submitComposer(body: string, parentId: number | null) {
+    if (!this.composer || !body.trim()) {
+      this.composer = null;
+      return;
+    }
+    const c = this.composer;
+    this.dispatchEvent(
+      new CustomEvent('add-comment', {
+        bubbles: true,
+        composed: true,
+        detail: { ...c, body, parentId },
+      }),
+    );
+    this.composer = null;
+  }
+
+  private renderComments(comments: Comment[], extra: string): TemplateResult {
+    const top: Comment[] = comments.filter((c) => c.parentId === null);
+    return html`<div class="comment-row ${extra}">
+      ${top.map((comment) => this.renderCommentThread(comment, comments))}
+      ${this.composer && this.commentsMatchActiveRow(comments)
+        ? this.renderComposer(null)
+        : nothing}
+    </div>`;
+  }
+
+  /** Whether the active composer targets the same (path, side, line) as this row. */
+  private commentsMatchActiveRow(comments: Comment[]): boolean {
+    if (!this.composer) return false;
+    const key = `${this.composer.path}:${this.composer.side}:${this.composer.line}`;
+    return comments.some((c) => `${c.path}:${c.side}:${c.line}` === key);
+  }
+
+  private renderCommentThread(top: Comment, all: Comment[]): TemplateResult {
+    const replies = all.filter((c) => c.parentId === top.id);
+    return html`<div class="comment-thread">
+      ${this.renderComment(top)}
+      ${replies.map((reply) => html`<div class="comment-reply">${this.renderComment(reply)}</div>`)}
+      ${this.composer && this.composer.path === top.path &&
+      this.composer.side === top.side &&
+      this.composer.line === top.line
+        ? this.renderComposer(top.id)
+        : html`<button class="comment-reply-btn" @click=${() => this.openComposer(top.path, top.side, top.line, top.lineText)}>
+            reply
+          </button>`}
+    </div>`;
+  }
+
+  private renderComment(comment: Comment): TemplateResult {
+    return html`<div class="comment ${comment.resolved ? 'resolved' : ''} ${comment.outdated ? 'outdated' : ''}">
+      <div class="comment-head">
+        <span class="comment-author">${comment.author}</span>
+        <span class="comment-time">${relativeAge(comment.createdAt)}</span>
+        ${comment.outdated ? html`<span class="comment-badge" title="The anchored line no longer exists">outdated</span>` : nothing}
+        <span class="comment-actions">
+          <button title="Resolve" @click=${() => this.emitCommentAction('resolve-comment', comment.id, !comment.resolved)}>
+            ${comment.resolved ? 'unresolve' : 'resolve'}
+          </button>
+          <button title="Delete" @click=${() => this.emitCommentAction('delete-comment', comment.id, true)}>delete</button>
+        </span>
+      </div>
+      <div class="comment-body">${comment.body}</div>
+    </div>`;
+  }
+
+  private renderComposer(parentId: number | null): TemplateResult {
+    return html`<div class="comment-composer">
+      <textarea
+        placeholder="Write a comment…"
+        rows="2"
+        @keydown=${(e: KeyboardEvent) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            const area = e.target as HTMLTextAreaElement;
+            this.submitComposer(area.value, parentId);
+          }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            this.closeComposer();
+          }
+        }}
+      ></textarea>
+      <div class="composer-actions">
+        <span class="hint">Mod+Enter to post</span>
+        <button @click=${() => this.closeComposer()}>Cancel</button>
+        <button class="primary" @click=${(e: Event) => {
+          const area = (e.currentTarget as HTMLElement)
+            .closest('.comment-composer')!
+            .querySelector('textarea')!;
+          this.submitComposer(area.value, parentId);
+        }}>Comment</button>
+      </div>
+    </div>`;
+  }
+
+  private emitCommentAction(name: 'resolve-comment' | 'delete-comment', id: number, value: boolean) {
+    this.dispatchEvent(
+      new CustomEvent(name, {
+        bubbles: true,
+        composed: true,
+        detail: { id, value },
+      }),
+    );
   }
 }
 
 const sign = (kind: Line['kind']) => (kind === 'added' ? '+' : kind === 'removed' ? '−' : ' ');
+
+/** Compact relative age: now, 5m, 3h, 2d. */
+function relativeAge(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return '';
+  const seconds = Math.max(0, (Date.now() - then) / 1000);
+  if (seconds < 60) return 'now';
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.floor(minutes)}m`;
+  const hours = minutes / 60;
+  if (hours < 24) return `${Math.floor(hours)}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
 
 /** jj materialized-conflict markers: `<<<<<<<`, `%%%%%%%`, `+++++++`, `|||||||`, `=======`, `>>>>>>>`, `\\\\\\\`. */
 const CONFLICT_MARKER = /^(<{7}|>{7}|={7}|\|{7}|%{7}|\+{7}|\\{7})(\s|$)/;
@@ -424,5 +573,8 @@ declare global {
     'search-state': CustomEvent<{ count: number; current: number }>;
     'expand-context': CustomEvent<{ path: string; hunkId: string; direction: 'up' | 'down' }>;
     'visible-file': CustomEvent<{ path: string }>;
+    'add-comment': CustomEvent<{ path: string; side: CommentSide; line: number; lineText: string; body: string; parentId: number | null }>;
+    'resolve-comment': CustomEvent<{ id: number; value: boolean }>;
+    'delete-comment': CustomEvent<{ id: number; value: boolean }>;
   }
 }
