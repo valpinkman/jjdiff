@@ -429,7 +429,7 @@ export class PatchView extends LitElement {
       <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('new', line.newLine)}>${line.newLine ?? ''}</span>
       <span class="sign">${sign(line.kind)}</span>
       <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
-    </div>`;
+    </div>${this.renderComposerForLine(file.path, 'old', line.oldLine) ?? this.renderComposerForLine(file.path, 'new', line.newLine) ?? nothing}`;
   }
 
   private renderCell(
@@ -455,7 +455,24 @@ export class PatchView extends LitElement {
     return html`<div class="cell ${side} ${kind} ${markerClass(line.text)}">
       <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick}>${number ?? ''}</span>
       <span class="content">${renderLineContent(line.text, tokens, line.spans)}</span>
-    </div>`;
+    </div>${this.renderComposerForLine(file.path, commentSide, number) ?? nothing}`;
+  }
+
+  /**
+   * Render the composer after a line when it targets that line and there are
+   * no existing comments there (existing comments render their own composer
+   * slot via the `comments` row). Returns `nothing` when inactive.
+   */
+  private renderComposerForLine(path: string, side: CommentSide, line: number | null): TemplateResult | typeof nothing {
+    if (!this.composer || line === null) return nothing;
+    if (this.composer.path !== path || this.composer.side !== side || this.composer.line !== line) {
+      return nothing;
+    }
+    // If there are already comments for this line, the `comments` row handles
+    // the composer slot — don't double-render.
+    const key = `${path}:${side}:${line}`;
+    if (this.comments.has(key)) return nothing;
+    return this.renderComposer(null);
   }
 
   private openComposer(path: string, side: CommentSide, line: number, lineText: string) {

@@ -53,7 +53,7 @@ pub struct Keymap {
 
 impl Default for Keymap {
     fn default() -> Self {
-        Keymap { command_bar: "Mod+Shift+p".into() }
+        Keymap { command_bar: "Mod+k".into() }
     }
 }
 

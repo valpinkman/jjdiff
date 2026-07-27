@@ -70,7 +70,7 @@ import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
 /** What the main pane shows for the selected change. */
-type ViewMode = 'full' | 'interdiff';
+type ViewMode = 'full' | 'interdiff' | 'ops';
 
 /** Revsets people actually reach for; the empty one restores the default view. */
 const REVSET_PRESETS: { label: string; revset: string }[] = [
@@ -131,7 +131,7 @@ export class App extends LitElement {
   @state() private description = '';
   @state() private barOpen = false;
   @state() private viewMode: ViewMode = 'full';
-  @state() private sidebarTab: 'stack' | 'files' | 'steps' | 'ops' | 'review' = 'stack';
+  @state() private sidebarTab: 'stack' | 'files' | 'walkthrough' | 'review' = 'stack';
   /** Non-working-copy selection opens the detail view instead of jumping to Files. */
   @state() private detailView = false;
   /** Collapsed detail block: sticks across selections, so "hide it" means hide it. */
@@ -157,7 +157,7 @@ export class App extends LitElement {
   @state() private busy: string | null = null;
   /** Revset scoping the Log graph; null = the default. */
   @state() private graphRevset: string | null = null;
-  @state() private revsetDraft = '';
+  @state() private revsetSearch = '';
   /** "system" | "light" | "dark" — runtime override of the config value. */
   @state() private theme: 'system' | 'light' | 'dark' = 'system';
   /** Bumped on theme change so the diff re-tokenizes (shiki tokens carry colours). */
@@ -173,11 +173,13 @@ export class App extends LitElement {
   @state() private allComments: Comment[] = [];
   /** Paths in markdown-preview mode → rendered HTML. */
   @state() private markdownPreviews: ReadonlyMap<string, string> = new Map();
+  /** Sidebar width in px (resizable via drag handle). */
+  @state() private sidebarWidth = 292;
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
   private seededFor: string | null = null;
-  private commandBarShortcut: Shortcut = parseShortcut('Mod+Shift+p');
+  private commandBarShortcut: Shortcut = parseShortcut('Mod+k');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -393,7 +395,7 @@ export class App extends LitElement {
             this.walkStale = false;
             this.walkActive = true;
             this.walkStep = -1;
-            this.sidebarTab = 'steps';
+            this.sidebarTab = 'walkthrough';
           });
         }
       } else if (launch.walkthrough) {
@@ -410,6 +412,42 @@ export class App extends LitElement {
 
   private get patchView(): PatchView | null {
     return this.querySelector('jj-patch-view');
+  }
+
+  /** The Walkthrough tab: shows the generate button or the walkthrough panel. */
+  private renderWalkthroughTab() {
+    const change = this.selectedChange;
+    if (this.generating) {
+      return html`<div class="walkthrough-empty">Generating walkthrough…</div>`;
+    }
+    if (!change) {
+      return html`<div class="walkthrough-empty">Select a change to generate a walkthrough.</div>`;
+    }
+    if (!this.walkthrough) {
+      return html`<div class="walkthrough-generate">
+        <p>No walkthrough for this change yet.</p>
+        <button class="tool primary" ?disabled=${this.files.length === 0} @click=${() => this.runGenerateWalkthrough()}>
+          Generate Walkthrough
+        </button>
+        ${this.walkStale ? html`<p class="stale-note">The change has evolved — regenerate to update.</p>` : nothing}
+      </div>`;
+    }
+    return html`<jj-walkthrough-panel
+      .walkthrough=${this.walkthrough}
+      .files=${this.files}
+      .viewed=${this.viewedPaths}
+      .current=${this.walkStep}
+      @step-selected=${(event: CustomEvent<number>) => {
+        this.walkStep = event.detail;
+      }}
+    ></jj-walkthrough-panel>
+    ${this.walkStale
+      ? html`<div class="walkthrough-stale">
+          <span>The change has evolved.</span>
+          <button class="tool" @click=${() => this.runGenerateWalkthrough()}>Regenerate</button>
+        </div>`
+      : nothing}
+    <button class="tool" @click=${() => this.runGenerateWalkthrough()}>Refresh Walkthrough</button>`;
   }
 
   private openSearch() {
@@ -516,12 +554,47 @@ export class App extends LitElement {
     return this.allComments.filter((c) => !c.resolved);
   }
 
+  /** The log graph filtered by the search bar (change id, commit id, description). */
+  private get filteredGraph(): Change[] {
+    if (!this.repo) return [];
+    const needle = this.revsetSearch.trim().toLowerCase();
+    if (!needle) return this.repo.graph;
+    return this.repo.graph.filter((change) =>
+      change.changeId.toLowerCase().includes(needle) ||
+      change.commitId.toLowerCase().includes(needle) ||
+      change.description.toLowerCase().includes(needle) ||
+      change.bookmarks.some((b) => b.toLowerCase().includes(needle)),
+    );
+  }
+
   /** Scroll the diff to the file owning a comment and focus it. */
   private scrollToComment(comment: Comment) {
     this.focusPath = comment.path;
     this.sidebarTab = 'files';
     this.patchView?.scrollToPath(comment.path);
   }
+
+  // ---- Sidebar resize ----
+
+  private onSidebarResizeStart = (event: MouseEvent) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = this.sidebarWidth;
+    const onMove = (e: MouseEvent) => {
+      const width = Math.max(200, Math.min(600, startWidth + (e.clientX - startX)));
+      this.sidebarWidth = width;
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   private async refresh() {
     try {
@@ -663,7 +736,12 @@ export class App extends LitElement {
       );
       this.walkthrough = status.walkthrough;
       this.walkStale = status.stale;
-      if (!status.walkthrough) {
+      // A cached walkthrough that still matches is shown immediately — no need
+      // to click "generate" again. Stale ones are shown too (with a regenerate
+      // prompt in the Walkthrough tab).
+      if (status.walkthrough) {
+        this.walkActive = true;
+      } else {
         this.walkActive = false;
       }
     } catch {
@@ -748,7 +826,7 @@ export class App extends LitElement {
     this.walkActive = true;
     this.walkStep =
       position === 'last' && this.walkthrough ? this.walkthrough.steps.length - 1 : -1;
-    this.sidebarTab = 'steps';
+    this.sidebarTab = 'walkthrough';
   }
 
   private runGenerateWalkthrough() {
@@ -766,7 +844,7 @@ export class App extends LitElement {
       this.walkStale = false;
       this.walkActive = true;
       this.walkStep = -1;
-      this.sidebarTab = 'steps';
+      this.sidebarTab = 'walkthrough';
     }).finally(() => {
       this.generating = false;
     });
@@ -779,14 +857,14 @@ export class App extends LitElement {
     }
     this.walkActive = true;
     this.walkStep = -1;
-    this.sidebarTab = 'steps';
+    this.sidebarTab = 'walkthrough';
   }
 
   private exitWalkthrough() {
     this.walkActive = false;
     this.walkStep = -1;
     this.stackReview = null;
-    if (this.sidebarTab === 'steps') {
+    if (this.sidebarTab === 'walkthrough') {
       this.sidebarTab = 'files';
     }
   }
@@ -823,7 +901,7 @@ export class App extends LitElement {
       this.lastOutcome = outcome;
       this.actionError = null;
       await this.refresh();
-      if (this.sidebarTab === 'ops') {
+      if (this.viewMode === 'ops') {
         await this.loadOperations();
       }
     } catch (error) {
@@ -838,7 +916,6 @@ export class App extends LitElement {
   private applyRevset(revset: string) {
     const next = revset.trim();
     this.graphRevset = next === '' ? null : next;
-    this.revsetDraft = next;
     void this.refresh();
   }
 
@@ -1213,7 +1290,7 @@ export class App extends LitElement {
         id: 'ops',
         label: 'Show Operation Log',
         run: () => {
-          this.sidebarTab = 'ops';
+          this.viewMode = 'ops';
           void this.loadOperations();
         },
       },
@@ -1223,6 +1300,7 @@ export class App extends LitElement {
   }
 
   protected override render() {
+    this.style.setProperty('--jj-sidebar-w', `${this.sidebarWidth}px`);
     if (this.error) {
       return html`<div class="fatal">
         <div class="card">
@@ -1266,31 +1344,23 @@ export class App extends LitElement {
             : nothing}
         </span>
         <span class="spacer"></span>
-        <button
-          class="tool ${this.walkActive ? 'on' : ''} ${this.generating ? 'generating' : ''}"
-          ?disabled=${this.generating || this.files.length === 0}
-          title=${
-            this.walkthrough
-              ? 'Guided review of this change'
-              : 'Generate a guided review with an agent CLI'
-          }
-          @click=${() => (this.walkActive ? this.exitWalkthrough() : this.startWalkthrough())}
-        >
-          ${this.generating
-            ? 'Generating…'
-            : this.walkActive
-              ? 'Exit Walkthrough'
-              : this.walkthrough
-                ? 'Walkthrough'
-                : 'Generate Walkthrough'}
-        </button>
+        ${isWc
+          ? html`<button
+              class="tool"
+              title="jj absorb — auto-distribute working-copy changes into the relevant ancestors"
+              ?disabled=${!!this.busy || this.files.length === 0}
+              @click=${this.runAbsorb}
+            >
+              ⤓
+            </button>`
+          : nothing}
         <button
           class="tool"
           title="jj git fetch — update remote-tracking state"
           ?disabled=${!!this.busy}
           @click=${this.runFetch}
         >
-          Fetch
+          ↓
         </button>
         <button
           class="tool"
@@ -1298,18 +1368,18 @@ export class App extends LitElement {
           ?disabled=${!!this.busy}
           @click=${this.runUndo}
         >
-          Undo
+          ↩
         </button>
         <button
           class="tool"
           title="Switch between side-by-side and unified diffs"
           @click=${this.toggleLayout}
         >
-          ${this.layout === 'split' ? 'Split' : 'Unified'}
+          ${this.layout === 'split' ? '◫' : '▤'}
         </button>
         <button
           class="tool"
-          title="Everything else lives here (Mod+Shift+P)"
+          title="Everything else lives here (Mod+K)"
           @click=${() => (this.barOpen = true)}
         >
           ⌘K
@@ -1330,24 +1400,15 @@ export class App extends LitElement {
             Files
             <span class="count">${this.files.length}</span>
           </button>
-          ${this.walkActive && this.walkthrough
-            ? html`<button
-                class="tab ${this.sidebarTab === 'steps' ? 'active' : ''}"
-                @click=${() => (this.sidebarTab = 'steps')}
-              >
-                Steps
-                <span class="count">${this.walkthrough.steps.length}</span>
-                ${this.walkStale ? html`<span class="stale-dot" title="Content changed"></span>` : nothing}
-              </button>`
-            : nothing}
           <button
-            class="tab ${this.sidebarTab === 'ops' ? 'active' : ''}"
-            @click=${() => {
-              this.sidebarTab = 'ops';
-              void this.loadOperations();
-            }}
+            class="tab ${this.sidebarTab === 'walkthrough' ? 'active' : ''}"
+            @click=${() => (this.sidebarTab = 'walkthrough')}
           >
-            Ops
+            Walkthrough
+            ${this.walkthrough
+              ? html`<span class="count">${this.walkthrough.steps.length}</span>`
+              : nothing}
+            ${this.walkStale ? html`<span class="stale-dot" title="Content changed"></span>` : nothing}
           </button>
           <button
             class="tab ${this.sidebarTab === 'review' ? 'active' : ''}"
@@ -1361,66 +1422,37 @@ export class App extends LitElement {
         </nav>
         ${this.sidebarTab === 'stack'
           ? html`<div class="revset-bar">
-                ${REVSET_PRESETS.map(
-                  (preset) => html`<button
-                    class="preset ${(this.graphRevset ?? '') === preset.revset ? 'on' : ''}"
-                    title=${preset.revset}
-                    @click=${() => this.applyRevset(preset.revset)}
-                  >
-                    ${preset.label}
-                  </button>`,
-                )}
+                <select
+                  class="revset-select"
+                  title="Filter the log graph"
+                  @change=${(event: Event) => {
+                    const select = event.target as HTMLSelectElement;
+                    this.applyRevset(select.value);
+                  }}
+                >
+                  ${REVSET_PRESETS.map(
+                    (preset) => html`<option
+                      value=${preset.revset}
+                      ?selected=${(this.graphRevset ?? '') === preset.revset}
+                    >
+                      ${preset.label}
+                    </option>`,
+                  )}
+                </select>
                 <input
                   class="revset-input"
-                  placeholder="revset…"
-                  .value=${this.revsetDraft}
+                  placeholder="Search commits…"
+                  .value=${this.revsetSearch}
                   @input=${(event: Event) =>
-                    (this.revsetDraft = (event.target as HTMLInputElement).value)}
-                  @keydown=${(event: KeyboardEvent) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      this.applyRevset(this.revsetDraft);
-                    }
-                  }}
+                    (this.revsetSearch = (event.target as HTMLInputElement).value)}
                 />
               </div>
               <div class="stack">
               <jj-log-graph
-                .changes=${this.repo.graph}
+                .changes=${this.filteredGraph}
                 .selected=${selectedId}
                 @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
               ></jj-log-graph>
-              </div>`
-          : this.sidebarTab === 'ops'
-            ? html`<div class="files">
-                ${this.operations.length === 0
-                  ? html`<div class="ops-empty">No operations recorded yet.</div>`
-                  : this.operations
-                      .filter((operation) => !operation.snapshot)
-                      .map(
-                        (operation, index) => html`<div class="op">
-                          <div class="op-head">
-                            <span class="op-when">${relativeTime(operation.time)}</span>
-                            ${index === 0
-                              ? html`<span class="op-current">current</span>`
-                              : nothing}
-                          </div>
-                          <div class="op-desc">${operation.description}</div>
-                          ${operation.args
-                            ? html`<code class="op-args">${operation.args}</code>`
-                            : nothing}
-                          <div class="op-actions">
-                            ${index === 0
-                              ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
-                              : html`<button
-                                  class="tool"
-                                  @click=${() => this.restoreTo(operation)}
-                                >
-                                  Restore here
-                                </button>`}
-                          </div>
-                        </div>`,
-                      )}
               </div>`
           : this.sidebarTab === 'review'
             ? html`<div class="review-list">
@@ -1454,16 +1486,8 @@ export class App extends LitElement {
                   </button>`
                 : nothing}
               <div class="files">
-                ${this.sidebarTab === 'steps' && this.walkthrough
-                  ? html`<jj-walkthrough-panel
-                      .walkthrough=${this.walkthrough}
-                      .files=${this.files}
-                      .viewed=${this.viewedPaths}
-                      .current=${this.walkStep}
-                      @step-selected=${(event: CustomEvent<number>) => {
-                        this.walkStep = event.detail;
-                      }}
-                    ></jj-walkthrough-panel>`
+                ${this.sidebarTab === 'walkthrough'
+                  ? this.renderWalkthroughTab()
                   : html`<jj-file-tree
                       .files=${this.files}
                       .selected=${this.focusPath}
@@ -1475,6 +1499,10 @@ export class App extends LitElement {
               </div>
             `}
       </aside>
+      <div
+        class="sidebar-resize"
+        @mousedown=${this.onSidebarResizeStart}
+      ></div>
       <main
         @squash-file=${this.onSquashFile}
         @toggle-viewed=${this.onToggleViewed}
@@ -1488,7 +1516,42 @@ export class App extends LitElement {
         @expand-context=${this.onExpandContext}
         @toggle-markdown=${(e: CustomEvent<{ path: string }>) => this.onToggleMarkdown(e.detail.path)}
       >
-        ${change && this.detailView
+        ${this.viewMode === 'ops'
+          ? html`<div class="ops-view">
+              <div class="ops-header">
+                <h2>Operation Log</h2>
+                <button class="tool" @click=${() => (this.viewMode = 'full')}>Back to Diff</button>
+              </div>
+              ${this.operations.length === 0
+                ? html`<div class="ops-empty">No operations recorded yet.</div>`
+                : this.operations
+                    .filter((operation) => !operation.snapshot)
+                    .map(
+                      (operation, index) => html`<div class="op">
+                        <div class="op-head">
+                          <span class="op-when">${relativeTime(operation.time)}</span>
+                          ${index === 0
+                            ? html`<span class="op-current">current</span>`
+                            : nothing}
+                        </div>
+                        <div class="op-desc">${operation.description}</div>
+                        ${operation.args
+                          ? html`<code class="op-args">${operation.args}</code>`
+                          : nothing}
+                        <div class="op-actions">
+                          ${index === 0
+                            ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
+                            : html`<button
+                                class="tool"
+                                @click=${() => this.restoreTo(operation)}
+                              >
+                                Restore here
+                              </button>`}
+                        </div>
+                      </div>`,
+                    )}
+            </div>`
+          : change && this.detailView
           ? html`<section class="detail ${this.detailCollapsed ? 'collapsed' : ''}">
               <header
                 class="detail-head"
@@ -1832,7 +1895,7 @@ export class App extends LitElement {
           .expansions=${this.expansions}
           .themeVersion=${this.themeVersion}
           .comments=${this.comments}
-          .canComment=${this.viewMode === 'full' && !this.walkActive}
+          .canComment=${!this.walkActive && this.selectedChange !== null}
           .revset=${this.isWorkingCopySelected ? null : this.selected}
           .markdownPreviews=${this.markdownPreviews}
           @add-comment=${(e: CustomEvent) => this.onAddComment(e.detail)}
