@@ -46,6 +46,10 @@ export class PatchView extends LitElement {
   @property({ attribute: false }) comments: ReadonlyMap<string, Comment[]> = new Map();
   /** Whether comments can be added (working-copy + mutable change). */
   @property({ type: Boolean }) canComment = false;
+  /** Revset for the diff being shown; null = working copy. Used for image fetching. */
+  @property({ attribute: false }) revset: string | null = null;
+  /** Paths in markdown-preview mode → rendered HTML. */
+  @property({ attribute: false }) markdownPreviews: ReadonlyMap<string, string> = new Map();
 
   @state() private cursor: number | null = null;
   @state() private searchCurrent = -1;
@@ -81,7 +85,8 @@ export class PatchView extends LitElement {
       changed.has('hunkFilter') ||
       changed.has('fileLines') ||
       changed.has('expansions') ||
-      changed.has('comments');
+      changed.has('comments') ||
+      changed.has('markdownPreviews');
     if (contentChanged) {
       this.rows = buildRows(
         this.files,
@@ -91,6 +96,7 @@ export class PatchView extends LitElement {
         this.fileLines,
         this.expansions,
         this.comments,
+        this.markdownPreviews,
       );
       if (this.cursor !== null && this.cursor >= this.rows.length) {
         this.cursor = null;
@@ -149,6 +155,25 @@ export class PatchView extends LitElement {
       this.cursor = index;
       this.scrollToRow(index, 'start');
     }
+  }
+
+  /** The revset to fetch file bytes at; null = working copy (on-disk). */
+  private revsetForFile(_fileIndex: number): string | null {
+    return this.revset;
+  }
+
+  private isMarkdown(path: string): boolean {
+    return path.toLowerCase().endsWith('.md');
+  }
+
+  private emitToggleMarkdown(path: string) {
+    this.dispatchEvent(
+      new CustomEvent('toggle-markdown', {
+        bubbles: true,
+        composed: true,
+        detail: { path },
+      }),
+    );
   }
 
   /** Advance the current search match (wraps). */
@@ -315,6 +340,18 @@ export class PatchView extends LitElement {
                 )}
               </select>`
             : nothing}
+          ${this.isMarkdown(file.path)
+            ? html`<button
+                class="file-action md-toggle"
+                title="Toggle between diff and rendered preview"
+                @click=${(event: Event) => {
+                  event.stopPropagation();
+                  this.emitToggleMarkdown(file.path);
+                }}
+              >
+                ${this.markdownPreviews.has(file.path) ? 'diff' : 'preview'}
+              </button>`
+            : nothing}
           ${this.canMarkViewed
             ? html`<label class="file-action viewed-toggle" title="Mark as viewed">
                 <input
@@ -352,8 +389,16 @@ export class PatchView extends LitElement {
         </button>`;
       case 'notice':
         return html`<div class="notice ${extra}">${row.text}</div>`;
+      case 'image':
+        return html`<jj-image-view
+          .path=${row.path}
+          .oldPath=${row.oldPath}
+          .revset=${this.revsetForFile(row.fileIndex)}
+        ></jj-image-view>`;
       case 'file-end':
         return html`<div class="file-end"></div>`;
+      case 'markdown':
+        return html`<div class="markdown-preview" .innerHTML=${row.html}></div>`;
       case 'comments':
         return this.renderComments(row.comments, extra);
       case 'unified':
@@ -573,6 +618,7 @@ declare global {
     'search-state': CustomEvent<{ count: number; current: number }>;
     'expand-context': CustomEvent<{ path: string; hunkId: string; direction: 'up' | 'down' }>;
     'visible-file': CustomEvent<{ path: string }>;
+    'toggle-markdown': CustomEvent<{ path: string }>;
     'add-comment': CustomEvent<{ path: string; side: CommentSide; line: number; lineText: string; body: string; parentId: number | null }>;
     'resolve-comment': CustomEvent<{ id: number; value: boolean }>;
     'delete-comment': CustomEvent<{ id: number; value: boolean }>;

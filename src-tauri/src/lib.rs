@@ -614,6 +614,67 @@ async fn file_content(
     .await
 }
 
+/// Raw bytes of a file as base64 + mime type — for rendering images in the diff
+/// view. `revset: None` = the on-disk working-copy version.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileBytes {
+    /// Base64-encoded file contents.
+    data: String,
+    /// MIME type inferred from the extension (e.g. `image/png`).
+    mime: String,
+}
+
+#[tauri::command]
+async fn file_bytes(
+    state: tauri::State<'_, AppState>,
+    revset: Option<String>,
+    path: String,
+) -> Result<FileBytes, String> {
+    let repo = repo_handle(&state)?;
+    blocking(move || {
+        let bytes = match revset {
+            Some(revset) => vcs(repo.file_bytes(&revset, &path))?,
+            None => {
+                let full = repo.root().join(&path);
+                std::fs::read(&full)
+                    .map_err(|error| format!("cannot read {}: {error}", full.display()))?
+            }
+        };
+        // Size cap: 10 MB. Larger images are refused rather than base64-bloated into IPC.
+        const MAX_BYTES: usize = 10 * 1024 * 1024;
+        if bytes.len() > MAX_BYTES {
+            return Err(format!(
+                "file is {} KB — jjdiff only renders images up to {} KB",
+                bytes.len() / 1024,
+                MAX_BYTES / 1024
+            ));
+        }
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let mime = mime_for(&path);
+        Ok(FileBytes { data, mime })
+    })
+    .await
+}
+
+/// Infer a MIME type from a file extension. Falls back to
+/// `application/octet-stream` — the image view will refuse to render it.
+fn mime_for(path: &str) -> String {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+    .to_string()
+}
+
 /// Stored walkthrough for a change/// Stored walkthrough for a change, plus whether it still matches the current diff.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -922,6 +983,7 @@ pub fn run(args: Args) {
             recent_repos,
             install_terminal_helper,
             file_content,
+            file_bytes,
             import_walkthrough,
             edit_change,
             split_paths,

@@ -3024,6 +3024,7 @@ dependencies = [
 name = "jjdiff-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "jjdiff-diff",
  "jjdiff-vcs",
  "jjdiff-watch",

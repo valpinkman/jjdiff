@@ -26,6 +26,11 @@ impl JjRunner {
         self.run(args, true)
     }
 
+    /// Like [`Self::read`], but returns raw bytes — for binary files (images).
+    pub fn read_bytes(&self, args: &[&str]) -> Result<Vec<u8>> {
+        self.run_bytes(args, true)
+    }
+
     /// Mutating invocation: lets jj snapshot the working copy as usual.
     pub fn mutate(&self, args: &[&str]) -> Result<String> {
         self.run(args, false)
@@ -54,6 +59,17 @@ impl JjRunner {
     }
 
     fn run(&self, args: &[&str], ignore_working_copy: bool) -> Result<String> {
+        let output = self.run_inner(args, ignore_working_copy)?;
+        String::from_utf8(output)
+            .map_err(|error| VcsError::Parse(format!("non-UTF-8 jj output: {error}")))
+    }
+
+    fn run_bytes(&self, args: &[&str], ignore_working_copy: bool) -> Result<Vec<u8>> {
+        let output = self.run_inner(args, ignore_working_copy)?;
+        Ok(output)
+    }
+
+    fn run_inner(&self, args: &[&str], ignore_working_copy: bool) -> Result<Vec<u8>> {
         let mut cmd = Command::new(&self.bin);
         cmd.current_dir(&self.cwd).args(COMMON_ARGS);
         // `jj --version` rejects repo-level flags; everything else gets the discipline flag.
@@ -76,7 +92,6 @@ impl JjRunner {
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
             });
         }
-        String::from_utf8(output.stdout)
-            .map_err(|error| VcsError::Parse(format!("non-UTF-8 jj output: {error}")))
+        Ok(output.stdout)
     }
 }

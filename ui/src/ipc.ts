@@ -385,6 +385,16 @@ export const getFileContent = (revset: string | null, path: string): Promise<str
     ? invoke<string>('file_content', { revset, path })
     : mock((m) => m.mockFileContent(path));
 
+/** Raw bytes of a file as base64 + mime, for rendering images. */
+export interface FileBytes {
+  data: string;
+  mime: string;
+}
+export const getFileBytes = (revset: string | null, path: string): Promise<FileBytes> =>
+  IN_TAURI
+    ? invoke<FileBytes>('file_bytes', { revset, path })
+    : Promise.resolve({ data: '', mime: 'application/octet-stream' });
+
 /** Switch the app to another repository (path must be a colocated jj repo). */
 export const openRepository = (path: string) =>
   IN_TAURI ? invoke<void>('open_repository', { path }) : Promise.resolve();

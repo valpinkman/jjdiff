@@ -176,6 +176,12 @@ impl Repo {
         self.runner.read(&["file", "show", "-r", revset, path])
     }
 
+    /// Raw bytes of `path` at `revset` — for binary files (images). Unlike
+    /// [`file_content`](Self::file_content), this does not reject non-UTF-8.
+    pub fn file_bytes(&self, revset: &str, path: &str) -> Result<Vec<u8>> {
+        self.runner.read_bytes(&["file", "show", "-r", revset, path])
+    }
+
     /// How a change evolved: one entry per predecessor commit, newest first. Entry 0 is the
     /// current commit. Powers "what changed since I last reviewed" interdiffs.
     ///
