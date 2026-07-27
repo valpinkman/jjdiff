@@ -171,6 +171,8 @@ export class App extends LitElement {
   @state() private comments: ReadonlyMap<string, Comment[]> = new Map();
   /** All comments for the selected change (for the Review tab). */
   @state() private allComments: Comment[] = [];
+  /** Paths in markdown-preview mode → rendered HTML. */
+  @state() private markdownPreviews: ReadonlyMap<string, string> = new Map();
 
   private unlisten: (() => void) | null = null;
   /** The change id the description editor was last seeded from. */
@@ -1484,6 +1486,7 @@ export class App extends LitElement {
           this.visibleFile = event.detail.path;
         }}
         @expand-context=${this.onExpandContext}
+        @toggle-markdown=${(e: CustomEvent<{ path: string }>) => this.onToggleMarkdown(e.detail.path)}
       >
         ${change && this.detailView
           ? html`<section class="detail ${this.detailCollapsed ? 'collapsed' : ''}">
@@ -1830,6 +1833,8 @@ export class App extends LitElement {
           .themeVersion=${this.themeVersion}
           .comments=${this.comments}
           .canComment=${this.viewMode === 'full' && !this.walkActive}
+          .revset=${this.isWorkingCopySelected ? null : this.selected}
+          .markdownPreviews=${this.markdownPreviews}
           @add-comment=${(e: CustomEvent) => this.onAddComment(e.detail)}
           @resolve-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
             this.onResolveComment(e.detail.id, e.detail.value)}
@@ -1873,6 +1878,28 @@ export class App extends LitElement {
       this.actionError = String(error);
     }
   };
+
+  /** Toggle a `.md` file between diff view and rendered preview. */
+  private async onToggleMarkdown(path: string) {
+    const next = new Map(this.markdownPreviews);
+    if (next.has(path)) {
+      next.delete(path);
+      this.markdownPreviews = next;
+      return;
+    }
+    try {
+      const text = await getFileContent(
+        this.isWorkingCopySelected ? null : this.selected,
+        path,
+      );
+      const { marked } = await import('marked');
+      const html = marked.parse(text, { async: false }) as string;
+      next.set(path, html);
+      this.markdownPreviews = next;
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
 
   private onSquashFile = (event: CustomEvent<{ path: string; into: string }>) => {
     void this.run(async () => {

@@ -17,6 +17,10 @@ export type Row =
       hidden: number;
     }
   | { kind: 'notice'; fileIndex: number; text: string }
+  /** Binary image file — the view fetches and renders it. */
+  | { kind: 'image'; fileIndex: number; path: string; oldPath: string | null }
+  /** Rendered markdown preview (replaces the diff rows for `.md` files). */
+  | { kind: 'markdown'; fileIndex: number; path: string; html: string }
   /** Closes a file card: the rounded, bordered bottom edge. */
   | { kind: 'file-end'; fileIndex: number }
   | {
@@ -65,6 +69,8 @@ export function buildRows(
   expansions: ReadonlyMap<string, Expansion> = new Map(),
   /** Inline review comments, keyed `${path}:${side}:${line}`. */
   comments: ReadonlyMap<string, Comment[]> = new Map(),
+  /** Paths in markdown-preview mode → rendered HTML. Replaces the diff rows. */
+  markdownPreviews: ReadonlyMap<string, string> = new Map(),
 ): Row[] {
   const rows: Row[] = [];
   const commentsFor = (path: string, side: 'old' | 'new', line: number | null): Comment[] => {
@@ -87,8 +93,18 @@ export function buildRows(
       // header carries the closing radius itself in that case (.file-header.viewed).
       return;
     }
+    // Markdown preview: replaces the diff rows with a rendered view.
+    if (markdownPreviews.has(file.path)) {
+      rows.push({ kind: 'markdown', fileIndex, path: file.path, html: markdownPreviews.get(file.path)! });
+      rows.push({ kind: 'file-end', fileIndex });
+      return;
+    }
     if (file.binary) {
-      rows.push({ kind: 'notice', fileIndex, text: 'Binary file' });
+      if (isImagePath(file.path) || isImagePath(file.oldPath)) {
+        rows.push({ kind: 'image', fileIndex, path: file.path, oldPath: file.oldPath });
+      } else {
+        rows.push({ kind: 'notice', fileIndex, text: 'Binary file' });
+      }
       return;
     }
     if (file.skipped) {
@@ -292,4 +308,12 @@ export function sideTexts(file: FilePatch): SideTexts {
     }
   }
   return { old: oldLines, new: newLines };
+}
+
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+
+export function isImagePath(path: string | null | undefined): boolean {
+  if (!path) return false;
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return IMAGE_EXTENSIONS.has(ext);
 }

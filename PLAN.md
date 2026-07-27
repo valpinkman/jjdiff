@@ -347,7 +347,7 @@ The single biggest gap, and the place where jj lets us beat codiff rather than m
 Ships useful without any forge integration — copy-as-markdown alone covers the solo and
 agent-assisted workflows.
 
-### C3 — Content jjdiff currently refuses to show
+### C3 — Content jjdiff currently refuses to show ✅ DONE
 
 Two dead ends where we print a shrug:
 
@@ -394,7 +394,7 @@ Revisit only if people other than the author start reviewing with it.
 
 1. **C1** ✅ — nothing else is reachable from a terminal without it, and it is a day or two.
 2. **C2** ✅ — the biggest capability gap; ~1.5–2 weeks.
-3. **C3** — a few days, removes two dead ends.
+3. **C3** ✅ — a few days, removes two dead ends.
 4. **C5** — polish, can be interleaved whenever.
 5. **C4** — only when reviewing others' PRs actually matters to you.
 6. **C6** — probably never, and that is fine.
