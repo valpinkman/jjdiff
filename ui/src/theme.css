@@ -465,24 +465,88 @@ jj-app .pr-conflict {
   font-weight: 550;
 }
 
-/* Description + conversation.
+/* The proposal as its own view, sharing the ops view's shape: it replaces the
+   diff rather than hanging above it, because the description and thread are
+   prose of unbounded length and the code is what the pane is for. */
+/* The proposal view owns the pane. Its siblings — the change detail card, the
+   conflict/review banners, the breadcrumb — are all context for the *diff*, and
+   leaving them mounted left the view with a third of the height and a band of
+   dead space beneath it. Hidden here rather than unmounted in the template:
+   they are spread across a long render and this keeps "a view replaces the
+   pane" as one statement instead of a condition repeated on each. */
+jj-app main.showing-pr > *:not(.pr-view) {
+  display: none;
+}
 
-   Capped and scrolled internally rather than left to grow: the diff is the
-   content (§1), and a long description with a dozen comments would otherwise
-   push it off screen every time the branch is selected. The header disclosure
-   collapses it outright. */
-jj-app .pr-details {
-  max-height: 40vh;
+jj-app .pr-view {
+  padding: 16px 20px 24px;
   overflow-y: auto;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--jj-border);
+  box-sizing: border-box;
+  /* `main` is a flex column and the diff pane is a sibling, so `height: 100%`
+     resolves and is then shrunk — the view ends up a fraction of the pane with
+     dead space under it. Claim the free space instead, and `min-height: 0` so
+     the internal scroll works rather than the whole column growing. */
+  flex: 1;
+  min-height: 0;
+}
+
+jj-app .pr-view-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+jj-app .pr-view-head h2 {
+  margin: 0;
+  font-family: var(--jj-sans);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--jj-fg);
+}
+
+jj-app .pr-view-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--jj-border);
+  font-size: 12px;
+  color: var(--jj-fg-muted);
+}
+
+/* Description + conversation. */
+jj-app .pr-details {
+  margin-top: 12px;
+  max-width: 82ch;
+}
+
+jj-app .pr-empty {
+  margin-top: 40px;
+  text-align: center;
+  color: var(--jj-fg-muted);
+}
+jj-app .pr-empty-glyph {
+  font-size: 26px;
+  opacity: 0.5;
+}
+jj-app .pr-empty-title {
+  margin-top: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--jj-fg-soft);
+}
+jj-app .pr-empty-hint {
+  margin-top: 3px;
+  font-size: 12.5px;
 }
 
 jj-app .pr-details .markdown-preview {
   padding: 0;
-  max-width: 74ch;
-  font-size: 12.5px;
+  max-width: 78ch;
+  font-size: 13px;
 }
 
 jj-app .pr-body {
@@ -552,11 +616,6 @@ jj-app .pr-more:hover {
 jj-app .pr-more {
   display: inline-block;
   margin-top: 10px;
-}
-
-jj-app .pr-disclose {
-  font-size: 11px;
-  min-width: 26px;
 }
 
 /* Unpushed commits on the proposal's head. Same weight as a conflict on purpose:

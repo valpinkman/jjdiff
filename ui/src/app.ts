@@ -94,7 +94,7 @@ import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
 /** What the main pane shows for the selected change. */
-type ViewMode = 'full' | 'interdiff' | 'ops';
+type ViewMode = 'full' | 'interdiff' | 'ops' | 'pr';
 
 /** Revsets people actually reach for; the empty one restores the default view. */
 const REVSET_PRESETS: { label: string; revset: string }[] = [
@@ -168,6 +168,10 @@ export class App extends LitElement {
   @state() private barOpen = false;
   @state() private viewMode: ViewMode = 'full';
   @state() private sidebarTab: 'stack' | 'files' | 'walkthrough' | 'review' = 'stack';
+  /** Description editing is opt-in. Reading a change is the common case, and a
+   *  textarea permanently sitting there reads as an input to fill in rather
+   *  than a message to read. */
+  @state() private editingDescription = false;
   /** Non-working-copy selection opens the detail view instead of jumping to Files. */
   @state() private detailView = false;
   /** Collapsed detail block: sticks across selections, so "hide it" means hide it. */
@@ -235,7 +239,6 @@ export class App extends LitElement {
   @state() private prBody: TemplateResult | null = null;
   @state() private prActivity: Activity[] = [];
   @state() private prActivityBodies: ReadonlyMap<string, TemplateResult> = new Map();
-  @state() private prDetailsOpen = true;
   /** Which proposal the loaded body and conversation belong to — a late
    *  response for a proposal you have already navigated away from is dropped
    *  rather than rendered under the wrong banner. */
@@ -357,6 +360,7 @@ export class App extends LitElement {
       this.stackReview = null;
       this.viewMode = 'full';
       this.sidebarTab = 'stack';
+      this.editingDescription = false;
       await this.refresh();
     });
   }
@@ -525,6 +529,9 @@ export class App extends LitElement {
     if (!this.forge) return;
     if (maxAgeMs && Date.now() - this.proposalIndexAt < maxAgeMs) return;
     await this.loadProposalIndex();
+    // Force the conversation to reload next time the view is opened: a push
+    // moved the head, and comments may have arrived with it.
+    this.prDetailsFor = null;
     await this.syncMatchedProposal(true);
   }
 
@@ -633,7 +640,6 @@ export class App extends LitElement {
     const previous = this.pullRequest;
     try {
       this.pullRequest = await getPullRequest(matched.number);
-      void this.loadProposalDetails(this.pullRequest);
     } catch {
       // A failed refresh must not take a banner that is already on screen down
       // with it; only a first load has nothing to fall back to.
@@ -652,7 +658,6 @@ export class App extends LitElement {
     try {
       const opened = await openPullRequest(number);
       this.pullRequest = opened;
-      void this.loadProposalDetails(opened);
       this.focusPath = null;
       this.viewMode = 'full';
       await this.refresh();
@@ -808,7 +813,6 @@ export class App extends LitElement {
       this.actionError = null;
       // Reviewer state and merge status just changed.
       this.pullRequest = await getPullRequest(pr.number);
-      void this.loadProposalDetails(this.pullRequest);
     } catch (error) {
       this.actionError = String(error);
     } finally {
@@ -1289,6 +1293,9 @@ export class App extends LitElement {
     // so a stack-only lookup silently blanked their description.
     this.description = change.description;
     this.seededFor = change.changeId;
+    // Back to reading. Carrying an open editor across a selection would offer a
+    // half-typed message as though it belonged to the change now on screen.
+    this.editingDescription = false;
     // Selecting a change leaves whole-proposal mode: the diff should follow
     // what was clicked.
     this.prRevset = null;
@@ -1549,13 +1556,28 @@ export class App extends LitElement {
     });
   }
 
+  private startDescriptionEdit() {
+    const change = this.selectedChange;
+    if (!change) return;
+    this.description = change.description;
+    this.editingDescription = true;
+  }
+
+  private cancelDescriptionEdit() {
+    this.description = this.selectedChange?.description ?? '';
+    this.editingDescription = false;
+  }
+
   private async saveDescription() {
     const change = this.selectedChange;
     if (!change) return;
     if (!(await this.confirmImmutableRewrite(change, 'Rewrite'))) return;
-    void this.command('describe', () =>
+    await this.command('describe', () =>
       describeChange(change.changeId, this.description, change.immutable),
     );
+    // Back to reading on success only. A failed describe keeps the box open
+    // with the text still in it, rather than discarding what was typed.
+    if (!this.actionError) this.editingDescription = false;
   }
 
   private commitAndNew() {
@@ -1984,6 +2006,12 @@ export class App extends LitElement {
           run: () => void this.showProposalList(),
         },
         !!this.pullRequest && {
+          id: 'pr-view',
+          label: `Show ${Noun}`,
+          hint: `#${this.pullRequest.number}`,
+          run: () => this.showProposalView(),
+        },
+        !!this.pullRequest && {
           id: 'pr-review',
           label: 'Submit Review…',
           run: () => void this.openReviewComposer(),
@@ -2216,6 +2244,7 @@ export class App extends LitElement {
         @mousedown=${this.onSidebarResizeStart}
       ></div>
       <main
+        class=${this.viewMode === 'pr' ? 'showing-pr' : ''}
         @squash-file=${this.onSquashFile}
         @toggle-viewed=${this.onToggleViewed}
         @search-state=${(event: CustomEvent<{ count: number; current: number }>) => {
@@ -2228,6 +2257,9 @@ export class App extends LitElement {
         @expand-context=${this.onExpandContext}
         @toggle-markdown=${(e: CustomEvent<{ path: string }>) => this.onToggleMarkdown(e.detail.path)}
       >
+        ${this.viewMode === 'pr' && this.pullRequest
+          ? this.renderProposalView(this.pullRequest)
+          : nothing}
         ${this.viewMode === 'ops'
           ? html`<div class="ops-view">
               <div class="ops-header">
@@ -2309,26 +2341,42 @@ export class App extends LitElement {
               ${this.detailCollapsed
                 ? nothing
                 : html`
-              <textarea
-                class="detail-edit"
-                .value=${this.description}
-                @input=${(event: Event) =>
-                  (this.description = (event.target as HTMLTextAreaElement).value)}
-              ></textarea>
-              <div class="detail-actions">
-                <button
-                  class="tool ${change.immutable ? 'danger' : ''}"
-                  title=${
-                    change.immutable
-                      ? 'jj describe --ignore-immutable — rewrite the message of a published commit. You will be asked to confirm.'
-                      : 'jj describe — save this message onto the change.'
-                  }
-                  ?disabled=${this.description === change.description}
-                  @click=${this.saveDescription}
-                >
-                  Save description
-                </button>
-              </div>
+              ${this.editingDescription
+                ? html`<textarea
+                      class="detail-edit"
+                      .value=${this.description}
+                      @input=${(event: Event) =>
+                        (this.description = (event.target as HTMLTextAreaElement).value)}
+                    ></textarea>
+                    <div class="detail-actions">
+                      <button
+                        class="tool ${change.immutable ? 'danger' : ''}"
+                        title=${
+                          change.immutable
+                            ? 'jj describe --ignore-immutable — rewrite the message of a published commit. You will be asked to confirm.'
+                            : 'jj describe — save this message onto the change.'
+                        }
+                        ?disabled=${this.description === change.description}
+                        @click=${this.saveDescription}
+                      >
+                        Save description
+                      </button>
+                      <button class="tool" @click=${this.cancelDescriptionEdit}>Cancel</button>
+                    </div>`
+                : html`<div class="detail-desc">${descriptionParts(change.description)}</div>
+                    <div class="detail-actions">
+                      <button
+                        class="tool"
+                        title=${
+                          change.immutable
+                            ? 'jj describe --ignore-immutable — this change is immutable, so you will be asked to confirm before the message is rewritten.'
+                            : 'jj describe — edit this change\'s message.'
+                        }
+                        @click=${this.startDescriptionEdit}
+                      >
+                        Edit description
+                      </button>
+                    </div>`}
 
               <div class="detail-actions">
                 <span class="action-group">
@@ -2594,30 +2642,32 @@ export class App extends LitElement {
               <span class="crumb-name">${basename(this.visibleFile)}</span>
             </div>`
           : nothing}
-        <jj-patch-view
-          .files=${visible}
-          .layout=${this.layout}
-          .viewed=${this.viewedPaths}
-          .canSquash=${isWc && this.viewMode === 'full' && !this.walkActive && this.squashTargets.length > 0}
-          .canMarkViewed=${this.viewMode === 'full'}
-          .squashTargets=${this.squashTargets}
-          .conflicted=${this.conflictedPaths}
-          .hunkFilter=${this.walkFilter}
-          .searchQuery=${this.searchOpen ? this.searchQuery : null}
-          .wordWrap=${this.wordWrap}
-          .fileLines=${this.fileLines}
-          .expansions=${this.expansions}
-          .themeVersion=${this.themeVersion}
-          .comments=${this.comments}
-          .canComment=${!this.walkActive && this.selectedChange !== null}
-          .revset=${this.isWorkingCopySelected ? null : this.selected}
-          .markdownPreviews=${this.markdownPreviews}
-          @add-comment=${(e: CustomEvent) => this.onAddComment(e.detail)}
-          @resolve-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
-            this.onResolveComment(e.detail.id, e.detail.value)}
-          @delete-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
-            this.onDeleteComment(e.detail.id)}
-        ></jj-patch-view>
+        ${this.viewMode === 'pr'
+          ? nothing
+          : html`<jj-patch-view
+              .files=${visible}
+              .layout=${this.layout}
+              .viewed=${this.viewedPaths}
+              .canSquash=${isWc && this.viewMode === 'full' && !this.walkActive && this.squashTargets.length > 0}
+              .canMarkViewed=${this.viewMode === 'full'}
+              .squashTargets=${this.squashTargets}
+              .conflicted=${this.conflictedPaths}
+              .hunkFilter=${this.walkFilter}
+              .searchQuery=${this.searchOpen ? this.searchQuery : null}
+              .wordWrap=${this.wordWrap}
+              .fileLines=${this.fileLines}
+              .expansions=${this.expansions}
+              .themeVersion=${this.themeVersion}
+              .comments=${this.comments}
+              .canComment=${!this.walkActive && this.selectedChange !== null}
+              .revset=${this.isWorkingCopySelected ? null : this.selected}
+              .markdownPreviews=${this.markdownPreviews}
+              @add-comment=${(e: CustomEvent) => this.onAddComment(e.detail)}
+              @resolve-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
+                this.onResolveComment(e.detail.id, e.detail.value)}
+              @delete-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
+                this.onDeleteComment(e.detail.id)}
+            ></jj-patch-view>`}
       </main>
       ${this.barOpen
         ? html`<jj-command-bar
@@ -2652,7 +2702,9 @@ export class App extends LitElement {
    */
   private renderPullRequestBanner() {
     const pr = this.pullRequest;
-    if (!pr) return nothing;
+    // The indicator is an entry point to the proposal view; inside that view it
+    // would just repeat the title immediately above itself.
+    if (!pr || this.viewMode === 'pr') return nothing;
     const whole = this.prRevset !== null;
     const conflicting = pr.mergeable === 'CONFLICTING';
     return html`
@@ -2661,8 +2713,8 @@ export class App extends LitElement {
           ${proposalState(pr)}
           <button
             class="pr-open"
-            title=${`Open #${pr.number} on the forge`}
-            @click=${() => void this.openExternal(pr.url)}
+            title=${`Open #${pr.number} in jjdiff`}
+            @click=${() => this.showProposalView()}
           >
             <span class="pr-number">#${pr.number}</span>
             <strong class="pr-title">${pr.title}</strong>
@@ -2675,13 +2727,6 @@ export class App extends LitElement {
             ${whole ? 'This change only' : 'Diff whole PR'}
           </button>
           <button class="tool" @click=${() => void this.openReviewComposer()}>Review…</button>
-          <button
-            class="tool icon pr-disclose"
-            title=${this.prDetailsOpen ? 'Hide the description and conversation' : 'Show the description and conversation'}
-            @click=${() => (this.prDetailsOpen = !this.prDetailsOpen)}
-          >
-            ${this.prDetailsOpen ? '▾' : '▸'}
-          </button>
         </div>
         <div class="pr-meta">
           <span>${pr.author}</span>
@@ -2720,27 +2765,100 @@ export class App extends LitElement {
               </span>`
             : nothing}
         </div>
-        ${this.prDetailsOpen ? this.renderProposalDetails(pr) : nothing}
       </div>
       ${this.reviewDraft ? this.renderReviewComposer(pr) : nothing}
     `;
   }
 
   /**
-   * The proposal's description and conversation.
+   * Switch the main pane to the proposal.
    *
-   * Height-capped and scrolled internally rather than allowed to grow: a long
-   * description with twenty comments would otherwise push the diff off screen
-   * every time you select the branch, and the diff is the content (DESIGN.md
-   * §1). The disclosure in the header collapses it entirely.
+   * The description and conversation load here rather than with the banner:
+   * they cost two more `gh` calls, and most selections never open this view.
+   * Already-loaded content is reused, so coming back is instant.
+   */
+  private showProposalView() {
+    const pr = this.pullRequest;
+    if (!pr) return;
+    this.viewMode = 'pr';
+    if (this.prDetailsFor !== pr.number) void this.loadProposalDetails(pr);
+  }
+
+  /**
+   * The proposal as its own view: description, then the conversation.
    *
-   * Links go through a delegated handler — the WebView has no tabs, so an
+   * A view rather than a panel above the diff. Everything here is prose of
+   * unbounded length, and hanging it over the diff meant the code — the thing
+   * being reviewed — started halfway down the window.
+   *
+   * Links go through a delegated handler; the WebView has no tabs, so an
    * ordinary `<a>` click does nothing at all.
    */
+  private renderProposalView(pr: PullRequest) {
+    return html`<div class="pr-view" @click=${this.onProposalLinkClick}>
+      <div class="pr-view-head">
+        ${proposalState(pr)}
+        <span class="pr-number">#${pr.number}</span>
+        <h2>${pr.title}</h2>
+        <span class="spacer"></span>
+        <button class="tool" @click=${() => void this.toggleProposalDiff()}>
+          ${this.prRevset ? 'This change only' : 'Diff whole PR'}
+        </button>
+        <button class="tool" @click=${() => void this.openReviewComposer()}>Review…</button>
+        <button class="tool" @click=${() => (this.viewMode = 'full')}>Back to Diff</button>
+      </div>
+      <div class="pr-view-meta">
+        <span>${pr.author}</span>
+        <span class="pr-branches"><code>${pr.base}</code> ← <code>${pr.head}</code></span>
+        ${pr.additions || pr.deletions
+          ? html`<span class="pr-stat">
+              <span class="plus">+${pr.additions}</span>
+              <span class="minus">−${pr.deletions}</span>
+            </span>`
+          : nothing}
+        ${pr.mergeable === 'CONFLICTING'
+          ? html`<span class="pr-conflict">⚠ conflicts</span>`
+          : nothing}
+        ${this.renderChecks(pr)} ${this.renderHeadDrift(pr)}
+        ${pr.reviewers.length
+          ? html`<span class="pr-reviewers">
+              ${pr.reviewers.map(
+                (reviewer) => html`<span
+                  class="tag muted ${reviewer.state === 'APPROVED'
+                    ? 'approved'
+                    : reviewer.state === 'CHANGES_REQUESTED'
+                      ? 'changes'
+                      : ''}"
+                  title=${reviewerTitle(reviewer.state)}
+                  >${reviewer.state === 'APPROVED'
+                    ? '✓ '
+                    : reviewer.state === 'CHANGES_REQUESTED'
+                      ? '✕ '
+                      : ''}${reviewer.name}</span
+                >`,
+              )}
+            </span>`
+          : nothing}
+        <span class="spacer"></span>
+        <a class="pr-more" href=${pr.url}>Open on GitHub →</a>
+      </div>
+      ${this.renderProposalDetails(pr)}
+    </div>`;
+  }
+
+  /** Description + conversation, shared by the proposal view. */
   private renderProposalDetails(pr: PullRequest) {
     const hasBody = this.prBody !== null;
-    if (!hasBody && this.prActivity.length === 0) return nothing;
-    return html`<div class="pr-details" @click=${this.onProposalLinkClick}>
+    if (!hasBody && this.prActivity.length === 0) {
+      return html`<div class="pr-empty">
+        <div class="pr-empty-glyph">💬</div>
+        <div class="pr-empty-title">No description or comments yet</div>
+        <div class="pr-empty-hint">
+          Anything written on #${pr.number} shows up here.
+        </div>
+      </div>`;
+    }
+    return html`<div class="pr-details">
       ${hasBody ? html`<div class="pr-body markdown-preview">${this.prBody}</div>` : nothing}
       ${this.prActivity.map((entry, index) => {
         const body = this.prActivityBodies.get(activityKey(entry, index));
@@ -2768,11 +2886,6 @@ export class App extends LitElement {
           ${body ? html`<div class="markdown-preview">${body}</div>` : nothing}
         </article>`;
       })}
-      ${pr.url
-        ? html`<a class="pr-more" href=${pr.url}
-            >Open #${pr.number} on the forge to reply →</a
-          >`
-        : nothing}
     </div>`;
   }
 
