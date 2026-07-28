@@ -55,6 +55,29 @@ struct CommitInfo {
     committer: Signature,
 }
 
+/// How a local bookmark stands against one remote it tracks.
+///
+/// **The counts are stated from the local bookmark's point of view**, which is the
+/// inverse of the template keywords they come from. `jj bookmark list` renders a
+/// remote ref's own perspective ("@origin (behind by 2 commits)" means the *remote*
+/// lags), but a reviewer is asking about their own branch: what would a push send,
+/// what would a fetch bring. See [`crate::Repo::bookmark_statuses`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookmarkStatus {
+    pub name: String,
+    pub remote: String,
+    /// Commits the local bookmark has that the remote does not — what a push would send.
+    pub ahead: u32,
+    /// Commits the remote has that the local does not — what a fetch would bring.
+    pub behind: u32,
+}
+
+pub(crate) fn parse_bookmark_status(line: &str) -> Result<BookmarkStatus> {
+    serde_json::from_str(line)
+        .map_err(|error| VcsError::Parse(format!("bad bookmark record: {error}; line: {line}")))
+}
+
 /// One predecessor version of a change, from `jj evolog`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

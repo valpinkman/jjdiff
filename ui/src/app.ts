@@ -1,4 +1,4 @@
-import { html, LitElement, nothing } from 'lit';
+import { html, LitElement, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { keyed } from 'lit/directives/keyed.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -7,6 +7,7 @@ import './command-bar.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
+import { renderMarkdown } from './markdown.js';
 import {
   abandonChange,
   absorb,
@@ -42,6 +43,8 @@ import {
   newChange,
   getForgeInfo,
   getPullRequest,
+  getPullRequestActivity,
+  type Activity,
   listPullRequests,
   onMenuCommand,
   onRepoChanged,
@@ -63,6 +66,7 @@ import {
   setViewed,
   squashPaths,
   addComment,
+  type BookmarkStatus,
   type Change,
   type Comment,
   type CommentSide,
@@ -111,6 +115,10 @@ function descriptionParts(description: string) {
 }
 
 /** Compact relative age: now, 5m, 3h, 2d. */
+function activityKey(entry: { createdAt: string; url: string }, index: number): string {
+  return `${index}:${entry.url || entry.createdAt}`;
+}
+
 function relativeTime(timestamp: string): string {
   const then = Date.parse(timestamp);
   if (Number.isNaN(then)) return '';
@@ -130,6 +138,14 @@ function relativeTime(timestamp: string): string {
  * styles live in theme.css under the `jj-app` prefix; leaf widgets with no cross-boundary
  * text selection (file tree, command bar) keep their own shadow styles.
  */
+/**
+ * How stale the proposal index may be before a window focus reloads it. Long
+ * enough that alt-tabbing between two windows does not spawn a `gh` process
+ * per switch, short enough that stepping out to open a proposal and coming
+ * straight back finds it.
+ */
+const PROPOSAL_REFRESH_MS = 15_000;
+
 @customElement('jj-app')
 export class App extends LitElement {
   protected override createRenderRoot() {
@@ -211,6 +227,19 @@ export class App extends LitElement {
   @state() private prRevset: string | null = null;
   /** Open proposals indexed by head branch, for matching against bookmarks. */
   @state() private proposalsByBranch: ReadonlyMap<string, PullRequestSummary> = new Map();
+  /** When `proposalsByBranch` was last (re)loaded; drives the focus throttle. */
+  private proposalIndexAt = 0;
+
+  /** Rendered proposal body, and its conversation. Both are markdown from the
+   *  forge, so both go through the sanitising renderer. */
+  @state() private prBody: TemplateResult | null = null;
+  @state() private prActivity: Activity[] = [];
+  @state() private prActivityBodies: ReadonlyMap<string, TemplateResult> = new Map();
+  @state() private prDetailsOpen = true;
+  /** Which proposal the loaded body and conversation belong to — a late
+   *  response for a proposal you have already navigated away from is dropped
+   *  rather than rendered under the wrong banner. */
+  private prDetailsFor: number | null = null;
   /** Review composer state; null when closed. */
   @state() private reviewDraft: { verdict: ReviewVerdict; body: string } | null = null;
   /**
@@ -255,6 +284,10 @@ export class App extends LitElement {
   private onWindowFocus = () => {
     this.menuSignature = '';
     this.syncMenu();
+    // Coming back to the window is the signal that something may have happened
+    // elsewhere — a proposal opened from a terminal or a browser, which touches
+    // the repo not at all and so trips no watcher.
+    void this.refreshProposals(PROPOSAL_REFRESH_MS);
   };
 
   /** Run a command the native menu dispatched — unless another window owns focus. */
@@ -448,11 +481,14 @@ export class App extends LitElement {
    * Index the open proposals by their head branch, so a change that carries a
    * matching bookmark can show its proposal without being asked to.
    *
-   * One `gh pr list` per repo, not per selection — it is a network call. Failure
-   * is silent: no forge, no auth or no network simply means no banner.
+   * One `gh pr list` per refresh, not per selection — it is a network call.
+   * Failure is silent: no forge, no auth or no network simply means no banner.
    */
   private async loadProposalIndex() {
     if (!this.forge) return;
+    // Stamped before the attempt, not after, so a forge that is down throttles
+    // its own retries instead of one per focus.
+    this.proposalIndexAt = Date.now();
     try {
       const proposals = await listPullRequests();
       const index = new Map<string, PullRequestSummary>();
@@ -466,8 +502,99 @@ export class App extends LitElement {
       }
       this.proposalsByBranch = index;
     } catch {
-      this.proposalsByBranch = new Map();
+      // Keep whatever we had. This used to clear, which was harmless when the
+      // index loaded once per repo — as a background refresh it would make a
+      // visible banner vanish on one flaky network call.
+      if (this.proposalsByBranch.size === 0) this.proposalsByBranch = new Map();
     }
+  }
+
+  /**
+   * Re-index proposals and re-match the selection against them.
+   *
+   * A proposal can appear or move while jjdiff is not the focused app — `gh pr
+   * create` in a terminal, or the "create a pull request" link a push prints.
+   * Neither touches the repo, so no watcher fires and nothing would bring the
+   * banner in until a manual reload.
+   *
+   * `maxAgeMs` skips the work when the index is already fresher than that;
+   * focus fires on every alt-tab and each call is a `gh` subprocess plus a
+   * network round trip. Omit it to force.
+   */
+  private async refreshProposals(maxAgeMs = 0) {
+    if (!this.forge) return;
+    if (maxAgeMs && Date.now() - this.proposalIndexAt < maxAgeMs) return;
+    await this.loadProposalIndex();
+    await this.syncMatchedProposal(true);
+  }
+
+  /**
+   * Tracking state for one bookmark. A bookmark can track several remotes; the
+   * one that has drifted is the one worth reporting, so a diverged remote wins
+   * over a synced one rather than whichever happened to be listed first.
+   */
+  private tracking(bookmark: string): BookmarkStatus | null {
+    const all = this.repo?.bookmarks.filter((entry) => entry.name === bookmark) ?? [];
+    return all.find((entry) => entry.ahead || entry.behind) ?? all[0] ?? null;
+  }
+
+  /**
+   * `↑2 ↓1` beside a bookmark. Absent when the bookmark is in sync — a badge
+   * that is always on screen stops being read, and "in sync" is the state you
+   * do not need telling about.
+   */
+  private renderTracking(bookmark: string) {
+    const status = this.tracking(bookmark);
+    if (!status || (!status.ahead && !status.behind)) return nothing;
+    const parts = [
+      status.ahead ? `${status.ahead} to push` : '',
+      status.behind ? `${status.behind} to pull` : '',
+    ].filter(Boolean);
+    return html`<span
+      class="tag-track"
+      title=${`${bookmark} vs ${status.remote}: ${parts.join(', ')}`}
+      >${status.ahead ? html`<span class="ahead">↑${status.ahead}</span>` : nothing}${status.behind
+        ? html`<span class="behind">↓${status.behind}</span>`
+        : nothing}</span
+    >`;
+  }
+
+  /**
+   * Load the proposal's body and conversation.
+   *
+   * Deliberately after the banner is already on screen: this is two more `gh`
+   * calls, and state, checks and reviewers are what a reviewer needs first.
+   * A failure leaves the banner intact and simply shows no conversation.
+   */
+  private async loadProposalDetails(pr: PullRequest) {
+    const number = pr.number;
+    this.prDetailsFor = number;
+    this.prBody = null;
+    this.prActivity = [];
+    this.prActivityBodies = new Map();
+
+    if (pr.body.trim()) {
+      const body = await renderMarkdown(pr.body);
+      if (this.prDetailsFor !== number) return;
+      this.prBody = body;
+    }
+
+    let entries: Activity[];
+    try {
+      entries = await getPullRequestActivity(number);
+    } catch {
+      return;
+    }
+    if (this.prDetailsFor !== number) return;
+    const bodies = new Map<string, TemplateResult>();
+    await Promise.all(
+      entries.map(async (entry, index) => {
+        if (entry.body.trim()) bodies.set(activityKey(entry, index), await renderMarkdown(entry.body));
+      }),
+    );
+    if (this.prDetailsFor !== number) return;
+    this.prActivity = entries;
+    this.prActivityBodies = bodies;
   }
 
   /** The open proposal for the selected change, matched on its bookmarks. */
@@ -486,19 +613,31 @@ export class App extends LitElement {
    * selection matched. The list call carries none of that, so this fills it in
    * once per number and is skipped when it is already loaded.
    */
-  private async syncMatchedProposal() {
+  private async syncMatchedProposal(refetch = false) {
     const matched = this.matchedProposal;
     if (!matched) {
       // Only clear a banner we inferred; an explicitly opened proposal owns the
       // view until it is closed.
-      if (!this.prRevset) this.pullRequest = null;
+      if (!this.prRevset) {
+        this.pullRequest = null;
+        this.prDetailsFor = null;
+        this.prBody = null;
+        this.prActivity = [];
+      }
       return;
     }
-    if (this.pullRequest?.number === matched.number) return;
+    // `refetch` is for the case where the number has not changed but its
+    // contents have — after a push, the head moved and the checks it reports
+    // are about the previous one.
+    if (!refetch && this.pullRequest?.number === matched.number) return;
+    const previous = this.pullRequest;
     try {
       this.pullRequest = await getPullRequest(matched.number);
+      void this.loadProposalDetails(this.pullRequest);
     } catch {
-      this.pullRequest = null;
+      // A failed refresh must not take a banner that is already on screen down
+      // with it; only a first load has nothing to fall back to.
+      this.pullRequest = previous?.number === matched.number ? previous : null;
     }
   }
 
@@ -513,6 +652,7 @@ export class App extends LitElement {
     try {
       const opened = await openPullRequest(number);
       this.pullRequest = opened;
+      void this.loadProposalDetails(opened);
       this.focusPath = null;
       this.viewMode = 'full';
       await this.refresh();
@@ -668,6 +808,7 @@ export class App extends LitElement {
       this.actionError = null;
       // Reviewer state and merge status just changed.
       this.pullRequest = await getPullRequest(pr.number);
+      void this.loadProposalDetails(this.pullRequest);
     } catch (error) {
       this.actionError = String(error);
     } finally {
@@ -1370,10 +1511,51 @@ export class App extends LitElement {
     }
   }
 
-  private saveDescription() {
+  /**
+   * Gate anything that rewrites a commit jj has marked immutable.
+   *
+   * jjdiff used to disable these actions outright, which is the safe default and
+   * the wrong one for the case that actually comes up: fixing your own already-
+   * pushed commit. So the affordance exists, and the guarantee is preserved by
+   * making the user say yes to a description of what they are about to break —
+   * not by a mode, a setting, or a checkbox that stays ticked.
+   *
+   * Returns true for mutable changes without asking anything.
+   */
+  private confirmImmutableRewrite(change: Change, verb: string): Promise<boolean> {
+    if (!change.immutable) return Promise.resolve(true);
+    const label = change.description.split('\n')[0] || change.changeId.slice(0, 8);
+    // Naming the bookmark makes the consequence concrete instead of theoretical:
+    // "you will need to force-push main" lands differently than "may require a
+    // force push".
+    // Abandon deletes rather than rewrites, and saying "gives it a new commit id"
+    // about a commit that is about to stop existing is the kind of small
+    // inaccuracy that teaches people to stop reading these dialogs.
+    const effect =
+      verb === 'Abandon'
+        ? 'Abandoning it drops the commit from history entirely.'
+        : 'Rewriting it gives it a new commit id; the old one stays where it already is.';
+    const shared = change.bookmarks.length
+      ? `It is published as ${change.bookmarks.join(', ')}. The remote still has the original, so pushing over it needs a force — and anyone who already pulled it has to reconcile.`
+      : 'Anyone who already has this commit — the remote, CI, a teammate — keeps the original; they do not follow along.';
+    return askConfirm({
+      heading: `${verb} "${label}"? This change is immutable.`,
+      detail:
+        'jj marks a commit immutable once it is published — part of trunk, tagged, or already on a remote — precisely to stop this happening by accident.\n\n' +
+        `${effect} ${shared}\n\n` +
+        'Everything built on top is rebased onto the result. jjdiff passes --ignore-immutable for this one command only, and the whole thing is undoable from the Ops tab.',
+      confirmLabel: `${verb} anyway`,
+      danger: true,
+    });
+  }
+
+  private async saveDescription() {
     const change = this.selectedChange;
-    if (!change || change.immutable) return;
-    void this.command('describe', () => describeChange(change.changeId, this.description));
+    if (!change) return;
+    if (!(await this.confirmImmutableRewrite(change, 'Rewrite'))) return;
+    void this.command('describe', () =>
+      describeChange(change.changeId, this.description, change.immutable),
+    );
   }
 
   private commitAndNew() {
@@ -1394,11 +1576,14 @@ export class App extends LitElement {
   }
 
   /** Actions available on the selected change, gated by jj's own rules. */
-  private editSelected() {
+  private async editSelected() {
     const change = this.selectedChange;
     if (!change) return;
+    // `jj edit` is how you change an immutable commit's *code* — the working copy
+    // lands on it and every subsequent save rewrites it.
+    if (!(await this.confirmImmutableRewrite(change, 'Work on'))) return;
     void this.command('edit', async () => {
-      const outcome = await editChange(change.changeId);
+      const outcome = await editChange(change.changeId, change.immutable);
       this.selected = null;
       this.seededFor = null;
       this.detailView = false;
@@ -1420,17 +1605,21 @@ export class App extends LitElement {
 
   private async abandonSelected() {
     const change = this.selectedChange;
-    if (!change || change.immutable) return;
+    if (!change) return;
     const label = change.description.split('\n')[0] || change.changeId.slice(0, 8);
-    const ok = await askConfirm({
-      heading: `Abandon "${label}"?`,
-      detail: 'Undoable from the Ops tab.',
-      confirmLabel: 'Abandon',
-      danger: true,
-    });
+    // One dialog, not two: the immutable warning already says everything the
+    // ordinary abandon confirmation would, and more.
+    const ok = change.immutable
+      ? await this.confirmImmutableRewrite(change, 'Abandon')
+      : await askConfirm({
+          heading: `Abandon "${label}"?`,
+          detail: 'Undoable from the Ops tab.',
+          confirmLabel: 'Abandon',
+          danger: true,
+        });
     if (!ok) return;
     void this.command('abandon', async () => {
-      const outcome = await abandonChange(change.changeId);
+      const outcome = await abandonChange(change.changeId, change.immutable);
       this.selected = null;
       this.detailView = false;
       return outcome;
@@ -1451,7 +1640,10 @@ export class App extends LitElement {
 
   private async rebaseSelected() {
     const change = this.selectedChange;
-    if (!change || change.immutable || !this.repo) return;
+    if (!change || !this.repo) return;
+    // Warn before the destination prompt — nobody should fill in a form for an
+    // operation they are then told they probably do not want.
+    if (!(await this.confirmImmutableRewrite(change, 'Rebase'))) return;
     const destination = await askText({
       heading: 'Rebase onto which revision?',
       detail: 'A change id, bookmark, or revset (e.g. main, @-).',
@@ -1460,20 +1652,21 @@ export class App extends LitElement {
     });
     if (!destination?.trim()) return;
     void this.command('rebase', () =>
-      rebaseChange('source', change.changeId, destination.trim()),
+      rebaseChange('source', change.changeId, destination.trim(), change.immutable),
     );
   }
 
-  private splitSelectedFiles() {
+  private async splitSelectedFiles() {
     const change = this.selectedChange;
-    if (!change || change.immutable) return;
+    if (!change) return;
     const paths = this.focusPath ? [this.focusPath] : [...this.viewedPaths];
     if (paths.length === 0) {
       this.actionError =
         'Select a file (or mark the files to keep as viewed) before splitting.';
       return;
     }
-    void this.command('split', () => splitPaths(change.changeId, paths));
+    if (!(await this.confirmImmutableRewrite(change, 'Split'))) return;
+    void this.command('split', () => splitPaths(change.changeId, paths, change.immutable));
   }
 
   private async restoreSelectedFile() {
@@ -1522,6 +1715,10 @@ export class App extends LitElement {
         bookmark ? { bookmark } : { change: change.changeId },
       );
       this.lastOutcome = result;
+      // A push either creates the branch a proposal will attach to, or moves an
+      // existing proposal's head — in which case its checks are now running
+      // against something other than what they last reported.
+      void this.refreshProposals();
       return result;
     });
   }
@@ -1606,7 +1803,6 @@ export class App extends LitElement {
   private get commands(): Command[] {
     const change = this.selectedChange;
     const isWc = this.isWorkingCopySelected;
-    const mutable = !!change && !change.immutable;
     const stackSize = this.repo?.stack.filter((c) => !c.immutable && !c.empty).length ?? 0;
     const commands: Command[] = [];
     const add = (group: string, entries: (Command | false)[]) => {
@@ -1729,14 +1925,14 @@ export class App extends LitElement {
     ]);
 
     add('Change', [
-      mutable && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
+      !!change && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
       { id: 'jj-new', label: 'New Change on Top (jj new)', run: () => this.newOnSelected() },
       isWc && { id: 'jj-absorb', label: 'Absorb Into Ancestors (jj absorb)', run: () => this.runAbsorb() },
-      mutable && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => void this.rebaseSelected() },
-      mutable && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
+      !!change && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => void this.rebaseSelected() },
+      !!change && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
       { id: 'jj-duplicate', label: 'Duplicate Change (jj duplicate)', run: () => this.duplicateSelected() },
       { id: 'jj-backout', label: 'Back Out Change (jj backout)', run: () => this.backoutSelected() },
-      mutable && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => void this.abandonSelected() },
+      !!change && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => void this.abandonSelected() },
       isWc && {
         id: 'jj-restore',
         label: 'Discard Working-Copy Changes (jj restore)',
@@ -1753,7 +1949,7 @@ export class App extends LitElement {
         label: 'Reload Repository',
         run: () => {
           void this.refresh();
-          void this.loadProposalIndex();
+          void this.refreshProposals();
         },
       },
       { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
@@ -2083,7 +2279,7 @@ export class App extends LitElement {
                 <span class="detail-id">${change.changeId.slice(0, 12)}</span>
                 ${change.bookmarks.map(
                   (bookmark) => html`<span class="tag"
-                    >${bookmark}
+                    >${bookmark}${this.renderTracking(bookmark)}
                     <button
                       class="tag-x"
                       title="Delete bookmark"
@@ -2113,33 +2309,36 @@ export class App extends LitElement {
               ${this.detailCollapsed
                 ? nothing
                 : html`
-              ${change.immutable
-                ? html`<div class="detail-desc">${descriptionParts(change.description)}</div>`
-                : html`<textarea
-                      class="detail-edit"
-                      .value=${this.description}
-                      @input=${(event: Event) =>
-                        (this.description = (event.target as HTMLTextAreaElement).value)}
-                    ></textarea>
-                    <div class="detail-actions">
-                      <button
-                        class="tool"
-                        title="jj describe — save this message onto the change."
-                        ?disabled=${this.description === change.description}
-                        @click=${this.saveDescription}
-                      >
-                        Save description
-                      </button>
-                    </div>`}
+              <textarea
+                class="detail-edit"
+                .value=${this.description}
+                @input=${(event: Event) =>
+                  (this.description = (event.target as HTMLTextAreaElement).value)}
+              ></textarea>
+              <div class="detail-actions">
+                <button
+                  class="tool ${change.immutable ? 'danger' : ''}"
+                  title=${
+                    change.immutable
+                      ? 'jj describe --ignore-immutable — rewrite the message of a published commit. You will be asked to confirm.'
+                      : 'jj describe — save this message onto the change.'
+                  }
+                  ?disabled=${this.description === change.description}
+                  @click=${this.saveDescription}
+                >
+                  Save description
+                </button>
+              </div>
 
               <div class="detail-actions">
                 <span class="action-group">
                   <button
                     class="tool primary"
                     title=${`jj edit — move the working copy onto this change so your edits land in it.${
-                      change.immutable ? ' Blocked: this change is immutable.' : ''
+                      change.immutable
+                        ? ' This change is immutable; jjdiff will explain what rewriting it costs before doing anything.'
+                        : ''
                     }`}
-                    ?disabled=${change.immutable}
                     @click=${this.editSelected}
                   >
                     Work on this
@@ -2158,10 +2357,9 @@ export class App extends LitElement {
                     class="tool"
                     title=${
                       change.immutable
-                        ? 'jj rebase — blocked: this change is immutable (at or below trunk).'
+                        ? 'jj rebase -s --ignore-immutable — this change is immutable (at or below trunk); you will be asked to confirm first.'
                         : 'jj rebase -s — move this change and everything built on top of it onto a different parent. Conflicts are recorded, not fatal.'
                     }
-                    ?disabled=${change.immutable}
                     @click=${this.rebaseSelected}
                   >
                     Rebase…
@@ -2169,13 +2367,13 @@ export class App extends LitElement {
                   <button
                     class="tool"
                     title=${
-                      change.immutable
-                        ? 'jj split — blocked: this change is immutable.'
-                        : this.files.length < 2
-                          ? 'jj split — needs at least two files; there is nothing to separate.'
+                      this.files.length < 2
+                        ? 'jj split — needs at least two files; there is nothing to separate.'
+                        : change.immutable
+                          ? 'jj split --ignore-immutable — this change is immutable; you will be asked to confirm first.'
                           : 'jj split — pull the focused file out into its own change, leaving the rest here. File-level, no hunk picking.'
                     }
-                    ?disabled=${change.immutable || this.files.length < 2}
+                    ?disabled=${this.files.length < 2}
                     @click=${this.splitSelectedFiles}
                   >
                     Split file
@@ -2221,10 +2419,9 @@ export class App extends LitElement {
                   class="tool danger"
                   title=${
                     change.immutable
-                      ? 'jj abandon — blocked: this change is immutable.'
+                      ? 'jj abandon --ignore-immutable — this change is immutable; you will be asked to confirm first. Back out is usually what you want for published work.'
                       : 'jj abandon — remove this change from history entirely, as if it never existed. Undoable from the Ops tab. To reverse already-pushed work instead, use Back out.'
                   }
-                  ?disabled=${change.immutable}
                   @click=${this.abandonSelected}
                 >
                   Abandon
@@ -2475,9 +2672,16 @@ export class App extends LitElement {
             ? html`<span class="pr-scope">whole ${this.forge?.noun ?? 'PR'}</span>`
             : nothing}
           <button class="tool" @click=${() => void this.toggleProposalDiff()}>
-            ${whole ? 'This change only' : `Diff whole ${this.forge?.kind === 'gitlab' ? 'MR' : 'PR'}`}
+            ${whole ? 'This change only' : 'Diff whole PR'}
           </button>
           <button class="tool" @click=${() => void this.openReviewComposer()}>Review…</button>
+          <button
+            class="tool icon pr-disclose"
+            title=${this.prDetailsOpen ? 'Hide the description and conversation' : 'Show the description and conversation'}
+            @click=${() => (this.prDetailsOpen = !this.prDetailsOpen)}
+          >
+            ${this.prDetailsOpen ? '▾' : '▸'}
+          </button>
         </div>
         <div class="pr-meta">
           <span>${pr.author}</span>
@@ -2495,7 +2699,7 @@ export class App extends LitElement {
                 >⚠ conflicts</span
               >`
             : nothing}
-          ${this.renderChecks(pr)}
+          ${this.renderChecks(pr)} ${this.renderHeadDrift(pr)}
           ${pr.reviewers.length
             ? html`<span class="pr-reviewers">
                 ${pr.reviewers.map(
@@ -2516,9 +2720,95 @@ export class App extends LitElement {
               </span>`
             : nothing}
         </div>
+        ${this.prDetailsOpen ? this.renderProposalDetails(pr) : nothing}
       </div>
       ${this.reviewDraft ? this.renderReviewComposer(pr) : nothing}
     `;
+  }
+
+  /**
+   * The proposal's description and conversation.
+   *
+   * Height-capped and scrolled internally rather than allowed to grow: a long
+   * description with twenty comments would otherwise push the diff off screen
+   * every time you select the branch, and the diff is the content (DESIGN.md
+   * §1). The disclosure in the header collapses it entirely.
+   *
+   * Links go through a delegated handler — the WebView has no tabs, so an
+   * ordinary `<a>` click does nothing at all.
+   */
+  private renderProposalDetails(pr: PullRequest) {
+    const hasBody = this.prBody !== null;
+    if (!hasBody && this.prActivity.length === 0) return nothing;
+    return html`<div class="pr-details" @click=${this.onProposalLinkClick}>
+      ${hasBody ? html`<div class="pr-body markdown-preview">${this.prBody}</div>` : nothing}
+      ${this.prActivity.map((entry, index) => {
+        const body = this.prActivityBodies.get(activityKey(entry, index));
+        return html`<article class="pr-event ${entry.kind}">
+          <header>
+            <strong>${entry.author}</strong>
+            ${entry.kind === 'review' && entry.state !== 'COMMENTED'
+              ? html`<span
+                  class="pr-verdict ${entry.state === 'APPROVED' ? 'approved' : 'changes'}"
+                  >${entry.state === 'APPROVED' ? '✓ approved' : '✕ changes requested'}</span
+                >`
+              : nothing}
+            ${entry.kind === 'inline'
+              ? html`<code class="pr-anchor" title="Comment anchored to this line"
+                  >${entry.path}${entry.line ? `:${entry.line}` : ''}</code
+                >`
+              : nothing}
+            <span class="spacer"></span>
+            ${entry.url
+              ? html`<a class="pr-event-link" href=${entry.url} title="Open on the forge"
+                  >${relativeTime(entry.createdAt)}</a
+                >`
+              : html`<span class="pr-event-link">${relativeTime(entry.createdAt)}</span>`}
+          </header>
+          ${body ? html`<div class="markdown-preview">${body}</div>` : nothing}
+        </article>`;
+      })}
+      ${pr.url
+        ? html`<a class="pr-more" href=${pr.url}
+            >Open #${pr.number} on the forge to reply →</a
+          >`
+        : nothing}
+    </div>`;
+  }
+
+  /**
+   * Send any link inside the proposal panel to the OS browser. Delegated
+   * because the markdown is generated: there is nowhere to attach a handler
+   * per anchor, and `target="_blank"` is a silent no-op in this WebView.
+   */
+  private onProposalLinkClick = (event: MouseEvent) => {
+    const anchor = (event.target as HTMLElement | null)?.closest?.('a[href]');
+    const href = anchor?.getAttribute('href');
+    if (!href) return;
+    event.preventDefault();
+    void this.openExternal(href);
+  };
+
+  /**
+   * Unpushed commits on the proposal's head branch.
+   *
+   * This is the fact that decides whether anything else on the banner can be
+   * trusted. Reviewers, merge state and above all CI describe the head the forge
+   * has; if the local branch has moved since, every one of them is about
+   * different code than the diff on screen — and a green "checks passed" next to
+   * unpushed work reads as approval of what you are looking at.
+   */
+  private renderHeadDrift(pr: PullRequest) {
+    const ahead = this.tracking(pr.head)?.ahead ?? 0;
+    if (!ahead) return nothing;
+    const noun = this.forge?.noun ?? 'pull request';
+    return html`<span
+      class="pr-drift"
+      title=${`${ahead} local commit${ahead === 1 ? '' : 's'} on ${pr.head} ${
+        ahead === 1 ? 'has' : 'have'
+      } not been pushed. Everything this ${noun} reports — checks, reviews, merge state — is about the head the forge has, not the code shown here.`}
+      >⚠ ${ahead} unpushed</span
+    >`;
   }
 
   /**

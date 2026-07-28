@@ -22,7 +22,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
-use jjdiff_vcs::{Change, Operation, Outcome, Repo};
+use jjdiff_vcs::{BookmarkStatus, Change, Operation, Outcome, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
@@ -188,6 +188,9 @@ struct RepoState {
     stack: Vec<Change>,
     /// Recent history (ancestors of @ and all bookmarks) for the graph view.
     graph: Vec<Change>,
+    /// Ahead/behind for every bookmark tracking a remote. Empty on a repo with
+    /// no remotes, which is not an error — it is most repos jjdiff opens.
+    bookmarks: Vec<BookmarkStatus>,
 }
 
 #[derive(Serialize)]
@@ -304,6 +307,10 @@ async fn repo_state(
             working_copy: vcs(repo.working_copy())?,
             stack: vcs(repo.stack())?,
             graph: vcs(repo.graph(&graph_revset, 200))?,
+            // Tolerated rather than propagated: a repo whose remote state cannot
+            // be read is still perfectly reviewable, and failing the whole
+            // repo_state call would black out the window over a badge.
+            bookmarks: repo.bookmark_statuses().unwrap_or_default(),
         })
     })
     .await
@@ -419,8 +426,9 @@ async fn describe(
     state: tauri::State<'_, AppState>,
     change_id: String,
     message: String,
+    allow_immutable: bool,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state, &window)?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
     run_mutation(&app, &state, repo, move |repo| repo.describe(&change_id, &message)).await
 }
 
@@ -442,8 +450,9 @@ async fn edit_change(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
+    allow_immutable: bool,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state, &window)?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
     run_mutation(&app, &state, repo, move |repo| repo.edit(&revset)).await
 }
 
@@ -456,8 +465,9 @@ async fn squash_paths(
     paths: Vec<String>,
     into: Option<String>,
     from: Option<String>,
+    allow_immutable: bool,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state, &window)?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
     run_mutation(&app, &state, repo, move |repo| {
         repo.squash_paths(
             from.as_deref().unwrap_or("@"),
@@ -486,11 +496,12 @@ async fn split_paths(
     state: tauri::State<'_, AppState>,
     revset: String,
     paths: Vec<String>,
+    allow_immutable: bool,
 ) -> Result<Outcome, String> {
     if paths.is_empty() {
         return Err("select at least one file to split out".into());
     }
-    let repo = repo_handle(&state, &window)?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
     run_mutation(&app, &state, repo, move |repo| repo.split_paths(&revset, &paths)).await
 }
 
@@ -500,8 +511,9 @@ async fn abandon_change(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
+    allow_immutable: bool,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state, &window)?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
     run_mutation(&app, &state, repo, move |repo| repo.abandon(&revset)).await
 }
 
@@ -536,8 +548,9 @@ async fn rebase_change(
     mode: String,
     revset: String,
     destination: String,
+    allow_immutable: bool,
 ) -> Result<Outcome, String> {
-    let repo = repo_handle(&state, &window)?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
     run_mutation(&app, &state, repo, move |repo| repo.rebase(&mode, &revset, &destination)).await
 }
 
@@ -1042,7 +1055,7 @@ async fn open_in_editor(
     .await
 }
 
-// -- Forge review (gh / glab) --
+// -- Forge review (gh) --
 
 /// Build a forge client for `repo` from its remote URL.
 ///
@@ -1061,8 +1074,8 @@ fn forge_client(repo: &Repo) -> Result<forge::Client, String> {
         .or_else(|| remotes.first())
         .expect("remotes is non-empty");
     let kind = forge::Kind::from_remote(url).ok_or_else(|| {
-        format!("jjdiff can't tell what forge `{name}` ({url}) is — only GitHub and GitLab \
-                 have a CLI it knows how to drive")
+        format!("jjdiff can't tell what forge `{name}` ({url}) is — only GitHub has a \
+                 CLI it knows how to drive")
     })?;
     Ok(forge::Client { kind, root: repo.root().to_path_buf() })
 }
@@ -1071,7 +1084,7 @@ fn forge_client(repo: &Repo) -> Result<forge::Client, String> {
 #[serde(rename_all = "camelCase")]
 struct ForgeInfo {
     kind: forge::Kind,
-    /// "pull request" / "merge request", for user-facing strings.
+    /// What the forge calls a proposal, for user-facing strings.
     noun: &'static str,
 }
 
@@ -1110,6 +1123,19 @@ async fn pull_request(
 ) -> Result<forge::PullRequest, String> {
     let repo = repo_handle(&state, &window)?;
     blocking(move || forge_client(&repo)?.pull_request(number)).await
+}
+
+/// The proposal's conversation. Separate from [`pull_request`] on purpose: it
+/// costs two more `gh` calls, and the banner should not wait on them to say
+/// what the state and checks are.
+#[tauri::command]
+async fn pull_request_activity(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    number: u32,
+) -> Result<Vec<forge::Activity>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.activity(number)).await
 }
 
 /// A fetched proposal: its metadata, plus the local bookmark its head landed on
@@ -1451,6 +1477,7 @@ pub fn run(args: Args) {
             forge_info,
             list_pull_requests,
             pull_request,
+            pull_request_activity,
             open_pull_request,
             submit_review,
             file_content,

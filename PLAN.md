@@ -174,6 +174,11 @@ suppresses the correcting re-seed in `refresh()`. Fix: resolve through `selected
 (which already searches the graph) and render immutable descriptions read-only rather than
 as an editable box that silently discards edits.
 
+**Superseded in part.** Immutable descriptions are editable again — but the premise has
+changed, not been ignored. Read-only was right when the alternative was an edit that went
+nowhere; now Save routes through the immutable-rewrite confirmation and actually lands, so
+the box no longer lies about what it does.
+
 ### M8 — Change detail view ✅
 
 Clicking a change currently jumps to Files, which throws away the change's identity. Replace
@@ -215,10 +220,18 @@ no remote, nothing to squash).
 | Remote | `git fetch`, `git push -b/--change`, bookmark create/set/delete/track, **open pull request** | Push needs bookmarks; `--change` auto-names from the change id. Show ahead/behind per bookmark. See PR note below |
 | Files | `restore <paths>` | Discard changes — the one genuinely destructive op; confirm, and it is undoable |
 
-**Safety model** (applies to all of the above): immutable targets are blocked client-side
-*and* by jj itself; destructive commands (`abandon`, `restore`, `op abandon`) confirm first;
+**Safety model** (applies to all of the above): destructive commands (`abandon`, `restore`,
+`op abandon`) confirm first;
 everything reports what it did and offers Undo. Long operations (fetch/push) run async with
 progress, since they already block on the network.
+
+**Immutable targets are warned about, not blocked.** They used to be disabled outright,
+which is the safe default and the wrong one for the case that actually arises: fixing your
+own already-pushed commit. Now `describe`, `edit`, `abandon`, `rebase` and `split` are
+offered on immutable changes and gated by a dialog naming the bookmark, the force-push it
+implies, and the descendants that get rebased — after which jjdiff passes
+`--ignore-immutable` for that one command. It is a per-call argument end to end, never a
+mode or a setting: jj's guarantee is worth keeping for the next command as well as this one.
 
 ### M11 — Revset filtering ✅
 
@@ -253,8 +266,14 @@ is out of date before you push over it.
 
 - **Interactive (hunk-level) split** — file-level `jj split <paths>` shipped; hunk-level
   still needs a scripted diff-editor shim.
-- **Ahead/behind per bookmark** — `fetch`/`push` shipped, but the remote-tracking status
-  display did not; wants `jj log -T 'remote_bookmarks'` plumbing.
+- ~~**Ahead/behind per bookmark**~~ ✅ **DONE.** `Repo::bookmark_statuses` templates
+  `jj bookmark list --all-remotes` for `tracking_ahead_count`/`tracking_behind_count`,
+  which are stated from the *remote* ref's side and so mean the opposite of the names
+  jjdiff uses — the inversion happens once, in that function, and is tested in both
+  directions against a real remote. Bookmark tags show `↑2 ↓1` (neutral: a position is
+  not an outcome) and disappear when in sync. The payoff is on the forge banner: an
+  unpushed head means CI, reviewers and merge state describe code the forge has and the
+  reviewer does not, so `renderHeadDrift` says so next to the checks.
 - **Rebase destination picker** — currently a prompt for a revset; a graph-target picker
   (and eventually drag-to-rebase) is the better UI.
 - **Conflict resolution** — still terminal-only, for the reason given in M4.
@@ -359,7 +378,7 @@ Two dead ends where we print a shrug:
 
 Small, self-contained, and each one removes a visible "the tool can't do this".
 
-### C4 — Forge review via `gh` / `glab` ✅ DONE
+### C4 — Forge review via `gh` ✅ DONE
 
 Reviewing *other people's* work, which jjdiff cannot do at all today. Scoped to the CLIs
 rather than REST APIs, so auth is someone else's problem:
@@ -399,9 +418,19 @@ Forge detection is inferred from the remote URL rather than configured. A host w
 place is an error, not a guess, and the Forge command group is absent entirely on a repo
 we cannot drive — an affordance that always fails is worse than one that is not there.
 
-**Caveat: the GitLab path is unverified.** `gh` is tested against real output (the fixture
-in `forge.rs` is captured verbatim from this repo's PR #4); `glab` is written against its
-documented JSON shape but has never run against a live instance.
+**The conversation is part of the review.** The banner carries the proposal's
+description and its full thread — discussion comments, review verdicts and
+line-anchored comments — merged from the three places GitHub keeps them and
+sorted by time. It is height-capped and scrolled internally rather than left to
+grow: the diff is the content, and a long description with a dozen comments
+would otherwise push it off screen on every selection. Forge markdown is
+sanitised through an allow-list before rendering; it is untrusted text in a
+WebView holding the whole IPC surface.
+
+**GitLab was dropped.** It was written against `glab`'s documented JSON and
+never run against a live instance, which is worse than absent — it advertised
+support that had never worked once. The code is in history if it is ever worth
+finishing against a real instance.
 
 ### C5 — Native app polish ✅ DONE
 

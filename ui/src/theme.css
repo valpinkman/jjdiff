@@ -46,6 +46,14 @@
   --jj-added-mark: rgb(31 122 68 / 0.22);
   --jj-removed-fg: #c0392f;
   --jj-removed-bg: rgb(184 49 47 / 0.08);
+
+  /* Merged. The one hue outside the diff pair, and it exists because a merged
+     proposal is neither a success nor a failure — it is *gone*, and reading as
+     green made landed work look like a passing check. Tuned deeper and less
+     saturated than GitHub's #8250df to sit at the same weight as the green and
+     red above it. */
+  --jj-merged-fg: #7442cf;
+  --jj-merged-bg: rgb(116 66 207 / 0.1);
   --jj-removed-mark: rgb(184 49 47 / 0.2);
   --jj-hunk-bg: rgb(23 23 26 / 0.035);
   --jj-num-fg: rgb(23 23 26 / 0.3);
@@ -95,6 +103,8 @@
     --jj-added-mark: rgb(111 208 148 / 0.24);
     --jj-removed-fg: #ee7e7e;
     --jj-removed-bg: rgb(238 126 126 / 0.09);
+    --jj-merged-fg: #bfa0f8;
+    --jj-merged-bg: rgb(191 160 248 / 0.13);
     --jj-removed-mark: rgb(238 126 126 / 0.22);
     --jj-hunk-bg: rgb(232 232 234 / 0.04);
     --jj-num-fg: rgb(232 232 234 / 0.28);
@@ -132,6 +142,8 @@
   --jj-added-mark: rgb(111 208 148 / 0.24);
   --jj-removed-fg: #ee7e7e;
   --jj-removed-bg: rgb(238 126 126 / 0.09);
+  --jj-merged-fg: #bfa0f8;
+  --jj-merged-bg: rgb(191 160 248 / 0.13);
   --jj-removed-mark: rgb(238 126 126 / 0.22);
   --jj-hunk-bg: rgb(232 232 234 / 0.04);
   --jj-num-fg: rgb(232 232 234 / 0.28);
@@ -383,8 +395,9 @@ jj-app .pr-branches code {
   color: var(--jj-fg-soft);
 }
 
-/* State pill. Outcomes take the diff hues (merged succeeded, closed did not);
-   open and draft stay neutral so the coloured ones carry weight. */
+/* State pill, colour-coded the way every forge does it: grey draft, green open,
+   purple merged, red closed. Recognition wins here — this is the one place the
+   app mirrors a vocabulary people already read fluently elsewhere. */
 jj-app .pr-state {
   display: inline-flex;
   align-items: center;
@@ -406,14 +419,15 @@ jj-app .pr-state-glyph {
   line-height: 1;
 }
 
+/* Draft keeps the neutral base above: not started is not an outcome. */
 jj-app .pr-state.open {
-  color: var(--jj-fg-soft);
-  border-color: var(--jj-border-strong);
+  background: var(--jj-added-bg);
+  color: var(--jj-added-fg);
 }
 
 jj-app .pr-state.merged {
-  background: var(--jj-added-bg);
-  color: var(--jj-added-fg);
+  background: var(--jj-merged-bg);
+  color: var(--jj-merged-fg);
 }
 
 jj-app .pr-state.closed {
@@ -449,6 +463,109 @@ jj-app .pr-stat .minus {
 jj-app .pr-conflict {
   color: var(--jj-removed-fg);
   font-weight: 550;
+}
+
+/* Description + conversation.
+
+   Capped and scrolled internally rather than left to grow: the diff is the
+   content (§1), and a long description with a dozen comments would otherwise
+   push it off screen every time the branch is selected. The header disclosure
+   collapses it outright. */
+jj-app .pr-details {
+  max-height: 40vh;
+  overflow-y: auto;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--jj-border);
+}
+
+jj-app .pr-details .markdown-preview {
+  padding: 0;
+  max-width: 74ch;
+  font-size: 12.5px;
+}
+
+jj-app .pr-body {
+  padding-bottom: 4px;
+}
+
+/* Each event is a card on the panel, so a thread reads as discrete entries
+   rather than one run of prose. */
+jj-app .pr-event {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md, 10px);
+  background: var(--jj-surface);
+}
+
+jj-app .pr-event > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--jj-fg-muted);
+  margin-bottom: 2px;
+}
+
+jj-app .pr-event > header strong {
+  color: var(--jj-fg-soft);
+  font-weight: 600;
+}
+
+/* A verdict is an outcome, so it takes the diff hues; a plain comment is not
+   and stays neutral. */
+jj-app .pr-verdict {
+  font-weight: 600;
+}
+jj-app .pr-verdict.approved {
+  color: var(--jj-added-fg);
+}
+jj-app .pr-verdict.changes {
+  color: var(--jj-removed-fg);
+}
+
+/* Where an inline comment hangs. Mono because it is a path and a line number —
+   the same reason the branch names beside it are. */
+jj-app .pr-anchor {
+  font-family: var(--jj-mono);
+  font-size: 10.5px;
+  color: var(--jj-fg-muted);
+  background: var(--jj-wash);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+jj-app .pr-event-link,
+jj-app .pr-more {
+  color: var(--jj-fg-faint);
+  font-size: 11.5px;
+  text-decoration: none;
+}
+
+jj-app .pr-event-link:hover,
+jj-app .pr-more:hover {
+  color: var(--jj-accent);
+  text-decoration: underline;
+}
+
+jj-app .pr-more {
+  display: inline-block;
+  margin-top: 10px;
+}
+
+jj-app .pr-disclose {
+  font-size: 11px;
+  min-width: 26px;
+}
+
+/* Unpushed commits on the proposal's head. Same weight as a conflict on purpose:
+   both mean the banner beside it is describing something other than the code on
+   screen, which is the one thing a reviewer must not miss. */
+jj-app .pr-drift {
+  color: var(--jj-removed-fg);
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Checks read as one verdict. Pass/fail reuse the diff hues; running is neutral
@@ -1030,6 +1147,21 @@ jj-app .tag {
   background: var(--jj-ref-soft);
   color: var(--jj-ref);
   white-space: nowrap;
+}
+
+/* Ahead/behind inside a bookmark tag. Deliberately *not* coloured: being ahead
+   of a remote is a position, not an outcome, and DESIGN.md keeps green and red
+   for things that succeeded or failed. It reads as part of the amber bookmark
+   tag it lives in, one step quieter than the name. */
+jj-app .tag-track {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 1px;
+  font-family: var(--jj-mono);
+  font-size: 9.5px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
 }
 
 jj-app .badge.warn,

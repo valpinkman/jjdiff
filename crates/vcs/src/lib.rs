@@ -11,7 +11,7 @@
 mod change;
 mod runner;
 
-pub use change::{Change, EvologEntry, Operation, Signature};
+pub use change::{BookmarkStatus, Change, EvologEntry, Operation, Signature};
 pub use runner::JjRunner;
 
 use std::path::{Path, PathBuf};
@@ -53,6 +53,9 @@ pub struct Outcome {
 pub struct Repo {
     root: PathBuf,
     runner: JjRunner,
+    /// Opt-in to rewriting commits jj has marked immutable. Off by default and
+    /// never persisted — see [`Repo::allowing_immutable`].
+    allow_immutable: bool,
 }
 
 /// Template producing one JSON object per revision (JSONL). Field names match
@@ -73,11 +76,22 @@ impl Repo {
         if !root.join(".git").exists() {
             return Err(VcsError::NotColocated(root));
         }
-        Ok(Repo { runner: JjRunner::new(root.clone()), root })
+        Ok(Repo { runner: JjRunner::new(root.clone()), root, allow_immutable: false })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// A handle whose *rewriting* commands carry `--ignore-immutable`.
+    ///
+    /// Deliberately per-call rather than a mode on the app: nothing stores it, so
+    /// the override lasts exactly one command and the next one is gated again.
+    /// jj marks commits immutable to stop precisely this happening by accident,
+    /// and a sticky "allow immutable" toggle would hand that guarantee back for
+    /// the rest of a session.
+    pub fn allowing_immutable(&self, allow: bool) -> Repo {
+        Repo { allow_immutable: allow, ..self.clone() }
     }
 
     /// `jj --version` → e.g. "0.43.0".
@@ -268,8 +282,26 @@ impl Repo {
         Ok(Outcome { message, operation: self.current_operation().unwrap_or_default() })
     }
 
+    /// [`Self::mutate`] for verbs that *rewrite an existing commit*, which are the
+    /// only ones jj's immutability check applies to — and the only ones that accept
+    /// `--ignore-immutable`. `backout` and `duplicate` reject the flag outright
+    /// (they add commits rather than rewrite them), so routing everything through
+    /// one helper would turn an unrelated command into a parse error.
+    ///
+    /// The flag goes before the subcommand: that is the position jj accepts on
+    /// every rewriting verb, and it matches how `--ignore-working-copy` is passed
+    /// on the read path.
+    fn mutate_rewriting(&self, args: &[&str]) -> Result<Outcome> {
+        if !self.allow_immutable {
+            return self.mutate(args);
+        }
+        let mut full = vec!["--ignore-immutable"];
+        full.extend_from_slice(args);
+        self.mutate(&full)
+    }
+
     pub fn describe(&self, change_id: &str, message: &str) -> Result<Outcome> {
-        self.mutate(&["describe", "-r", change_id, "-m", message])
+        self.mutate_rewriting(&["describe", "-r", change_id, "-m", message])
     }
 
     /// `jj new` on top of `parents` (the working copy when empty).
@@ -281,7 +313,7 @@ impl Repo {
 
     /// `jj edit` — move the working copy onto an existing change.
     pub fn edit(&self, revset: &str) -> Result<Outcome> {
-        self.mutate(&["edit", revset])
+        self.mutate_rewriting(&["edit", revset])
     }
 
     /// Move `paths` (all when empty) from one change into another.
@@ -291,12 +323,12 @@ impl Repo {
             args.push("--");
             args.extend(paths.iter().map(String::as_str));
         }
-        self.mutate(&args)
+        self.mutate_rewriting(&args)
     }
 
     /// `jj absorb`: route working-copy hunks into the ancestors that last touched them.
     pub fn absorb(&self) -> Result<Outcome> {
-        self.mutate(&["absorb"])
+        self.mutate_rewriting(&["absorb"])
     }
 
     /// File-level `jj split`: the named paths move to the first commit, the rest to a
@@ -304,11 +336,11 @@ impl Repo {
     pub fn split_paths(&self, revset: &str, paths: &[String]) -> Result<Outcome> {
         let mut args: Vec<&str> = vec!["split", "-r", revset, "--"];
         args.extend(paths.iter().map(String::as_str));
-        self.mutate(&args)
+        self.mutate_rewriting(&args)
     }
 
     pub fn abandon(&self, revset: &str) -> Result<Outcome> {
-        self.mutate(&["abandon", revset])
+        self.mutate_rewriting(&["abandon", revset])
     }
 
     pub fn duplicate(&self, revset: &str) -> Result<Outcome> {
@@ -327,7 +359,7 @@ impl Repo {
             "branch" => "-b",
             _ => "-r",
         };
-        self.mutate(&["rebase", flag, revset, "-d", destination])
+        self.mutate_rewriting(&["rebase", flag, revset, "-d", destination])
     }
 
     /// Discard working-copy changes to `paths` (all when empty). Destructive, but the
@@ -338,10 +370,38 @@ impl Repo {
             args.push("--");
             args.extend(paths.iter().map(String::as_str));
         }
-        self.mutate(&args)
+        self.mutate_rewriting(&args)
     }
 
     // -- Bookmarks --
+
+    /// Ahead/behind for every local bookmark that tracks a remote.
+    ///
+    /// Two traps, both encoded here rather than at the call site:
+    ///
+    /// 1. **The counts are inverted.** The keywords live on the *remote* ref and
+    ///    describe the remote's position, so `tracking_behind_count` — the remote
+    ///    lagging — is the local bookmark being *ahead*. Reading them straight
+    ///    produces a display that is exactly backwards, and plausibly so.
+    /// 2. **The `git` remote is not a remote.** Colocated repos carry a synthetic
+    ///    `git` remote mirroring the git HEAD refs; it is always in sync by
+    ///    construction, so reporting it is noise that dilutes the real answer.
+    ///
+    /// Untracked and local-only bookmarks are omitted — there is no remote to be
+    /// ahead of, and the count keywords error rather than return zero.
+    pub fn bookmark_statuses(&self) -> Result<Vec<BookmarkStatus>> {
+        const BOOKMARK_TEMPLATE: &str = r#"if(remote && tracked, "{\"name\":" ++ json(name) ++ ",\"remote\":" ++ json(remote) ++ ",\"ahead\":" ++ tracking_behind_count.lower() ++ ",\"behind\":" ++ tracking_ahead_count.lower() ++ "}\n")"#;
+        let out = self.runner.read(&[
+            "bookmark", "list", "--all-remotes", "-T", BOOKMARK_TEMPLATE,
+        ])?;
+        let mut statuses: Vec<BookmarkStatus> = out
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(change::parse_bookmark_status)
+            .collect::<Result<_>>()?;
+        statuses.retain(|status| status.remote != "git");
+        Ok(statuses)
+    }
 
     pub fn bookmark_set(&self, name: &str, revset: &str) -> Result<Outcome> {
         self.mutate(&["bookmark", "set", name, "-r", revset])
@@ -663,6 +723,114 @@ mod tests {
             matches!(error, VcsError::CommandFailed { .. }),
             "expected CommandFailed, got {error:?}"
         );
+    }
+
+    /// The counts are inverted relative to the template keywords they come from,
+    /// so a plausible-looking implementation reports the exact opposite. This
+    /// drives both directions against a real remote for that reason — a unit test
+    /// on a fixture could not have caught it.
+    #[test]
+    fn bookmark_statuses_report_ahead_and_behind_from_the_local_side() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin.git");
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").args(args).current_dir(dir).output().expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(tmp.path(), &["init", "--bare", "-q", "origin.git"]);
+        init_repo(&work);
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "signing.behavior=drop"])
+                .args(args)
+                .current_dir(&work)
+                .env("JJ_USER", "Test")
+                .env("JJ_EMAIL", "test@example.com")
+                .output()
+                .expect("jj runs");
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let repo = Repo::discover(&work).unwrap();
+
+        // No remotes yet: an empty list, not an error.
+        assert!(repo.bookmark_statuses().unwrap().is_empty());
+
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "remote", "add", "origin", origin.to_str().unwrap()]);
+        jj(&["git", "push", "-b", "main"]);
+
+        // In sync — and the synthetic `git` remote of a colocated repo must not
+        // show up at all.
+        let synced = repo.bookmark_statuses().unwrap();
+        assert_eq!(synced.len(), 1, "only the real remote: {synced:?}");
+        assert_eq!(synced[0].remote, "origin");
+        assert_eq!((synced[0].ahead, synced[0].behind), (0, 0));
+
+        // Two local commits the remote has never seen → ahead by 2.
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        jj(&["commit", "-m", "local one"]);
+        std::fs::write(work.join("b.txt"), "two\n").unwrap();
+        jj(&["commit", "-m", "local two"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        let ahead = repo.bookmark_statuses().unwrap();
+        assert_eq!((ahead[0].ahead, ahead[0].behind), (2, 0), "local is ahead: {ahead:?}");
+
+        // Publish, then rewind the local bookmark one commit → behind by 1.
+        jj(&["git", "push", "-b", "main"]);
+        jj(&["bookmark", "set", "main", "-r", "main@origin-", "--allow-backwards"]);
+        let behind = repo.bookmark_statuses().unwrap();
+        assert_eq!((behind[0].ahead, behind[0].behind), (0, 1), "local is behind: {behind:?}");
+    }
+
+    /// `--ignore-immutable` is opt-in per handle, and the default handle must
+    /// still be refused by jj — otherwise the confirmation in the UI is
+    /// decoration over an override that was always on.
+    #[test]
+    fn immutable_commits_are_rewritable_only_through_the_opt_in_handle() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+
+        // Pin an immutable set that is not just the root commit: everything at or
+        // below the initial commit, which is what `trunk()` would give in a repo
+        // with a real main bookmark.
+        let target = repo.log("@-").unwrap()[0].change_id.clone();
+        let out = Command::new("jj")
+            // The parenthesised alias name has to be a quoted TOML key.
+            .args(["config", "set", "--repo", "revset-aliases.'immutable_heads()'", "@-"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("jj runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(repo.log("@-").unwrap()[0].immutable, "test setup: @- must be immutable");
+
+        // Default handle: jj refuses, and says why.
+        let error = repo.describe(&target, "rewritten").unwrap_err();
+        match &error {
+            VcsError::CommandFailed { stderr, .. } => {
+                assert!(stderr.contains("immutable"), "expected an immutability error, got {stderr}");
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+
+        // Opt-in handle: the same call lands.
+        repo.allowing_immutable(true).describe(&target, "rewritten").unwrap();
+        assert_eq!(repo.log(&target).unwrap()[0].first_line(), "rewritten");
+
+        // And the opt-in does not stick to the original handle.
+        assert!(repo.describe(&target, "again").is_err(), "the override must be per-handle");
     }
 
     #[test]

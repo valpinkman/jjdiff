@@ -1,6 +1,7 @@
 // Fixture backend for running the UI in a plain browser (`pnpm dev` without Tauri).
 // Lets UI work be verified visually without a jj repo or the native shell.
 import type {
+  Activity,
   Change,
   Config,
   FilePatch,
@@ -72,6 +73,14 @@ export const mockRepoState: RepoState = {
   workingCopy: wc,
   stack: [wc, retry, pool],
   graph: [wc, retry, sidebranch, pool, trunk1, trunk2],
+  // One of each case so `pnpm dev` exercises all three renderings: ahead (and on
+  // the mock proposal's head branch, so the banner's staleness warning shows),
+  // behind, and in sync — which must render nothing at all.
+  bookmarks: [
+    { name: 'sync-retries', remote: 'origin', ahead: 2, behind: 0 },
+    { name: 'streaming', remote: 'origin', ahead: 0, behind: 3 },
+    { name: 'main', remote: 'origin', ahead: 0, behind: 0 },
+  ],
 };
 
 export const mockFiles: FilePatch[] = [
@@ -176,7 +185,8 @@ export const mockForgeInfo: ForgeInfo = { kind: 'github', noun: 'pull request' }
 export const mockPullRequest: PullRequest = {
   number: 75,
   title: 'Add retry-with-backoff to the sync engine',
-  body: 'Transient failures no longer abort a sync.',
+  body:
+    '## What\n\nTransient failures no longer abort a sync. `retryWithBackoff` wraps the push\nand backs off exponentially.\n\n- caps at `MAX_ATTEMPTS`\n- base delay moved to `BASE_DELAY_MS`\n\n## Why\n\nThe old code aborted the whole sync on the first network blip. See [the issue](https://example.test/issues/12).\n',
   author: 'Ada Example',
   base: 'main',
   head: 'sync-retries',
@@ -200,6 +210,51 @@ export const mockPullRequest: PullRequest = {
     { name: 'lint', status: 'IN_PROGRESS', conclusion: '', url: 'https://example.test/3' },
   ],
 };
+
+// One of each kind, so `pnpm dev` shows a discussion comment, both review
+// verdicts and a line-anchored comment without needing a forge.
+export const mockActivity: Activity[] = [
+  {
+    kind: 'comment',
+    author: 'Grace Example',
+    body: 'Nice — the backoff table is much easier to follow now.\n\nOne thought: should `BASE_DELAY_MS` be configurable?',
+    createdAt: '2026-07-27T09:12:00Z',
+    state: '',
+    path: '',
+    line: 0,
+    url: 'https://example.test/owner/repo/pull/75#issuecomment-1',
+  },
+  {
+    kind: 'inline',
+    author: 'Alan Example',
+    body: 'This retries forever if `task` always throws. Worth a cap?',
+    createdAt: '2026-07-27T10:03:00Z',
+    state: '',
+    path: 'src/sync/backoff.ts',
+    line: 3,
+    url: 'https://example.test/owner/repo/pull/75#discussion_r1',
+  },
+  {
+    kind: 'review',
+    author: 'Alan Example',
+    body: 'Looks good once the retry cap is in.',
+    createdAt: '2026-07-27T10:05:00Z',
+    state: 'CHANGES_REQUESTED',
+    path: '',
+    line: 0,
+    url: 'https://example.test/owner/repo/pull/75#pullrequestreview-1',
+  },
+  {
+    kind: 'review',
+    author: 'Grace Example',
+    body: '',
+    createdAt: '2026-07-28T08:40:00Z',
+    state: 'APPROVED',
+    path: '',
+    line: 0,
+    url: 'https://example.test/owner/repo/pull/75#pullrequestreview-2',
+  },
+];
 
 export const mockOpenedPullRequest: OpenedPullRequest = {
   ...mockPullRequest,

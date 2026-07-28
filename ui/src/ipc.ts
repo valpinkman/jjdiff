@@ -22,6 +22,20 @@ export interface Change {
   bookmarks: string[];
 }
 
+/**
+ * How a local bookmark stands against a remote it tracks. Stated from the local
+ * bookmark's side — `jj bookmark list` phrases it from the remote's, and the
+ * backend inverts it once so nothing downstream has to remember which is which.
+ */
+export interface BookmarkStatus {
+  name: string;
+  remote: string;
+  /** Commits the local bookmark has that the remote does not — a push would send these. */
+  ahead: number;
+  /** Commits the remote has that the local does not — a fetch would bring these. */
+  behind: number;
+}
+
 export interface RepoState {
   root: string;
   jjVersion: string;
@@ -29,6 +43,8 @@ export interface RepoState {
   stack: Change[];
   /** Recent history (ancestors of @ and all bookmarks) for the graph view. */
   graph: Change[];
+  /** Tracking state per bookmark; empty when the repo has no remotes. */
+  bookmarks: BookmarkStatus[];
 }
 
 export type FileStatus = 'added' | 'deleted' | 'modified' | 'renamed';
@@ -235,34 +251,58 @@ export const getInterdiffSinceReviewed = (
 const mockOutcome = (message: string): Promise<Outcome> =>
   Promise.resolve({ message, operation: 'mock-op' });
 
-export const describeChange = (changeId: string, message: string): Promise<Outcome> =>
-  IN_TAURI ? invoke<Outcome>('describe', { changeId, message }) : mockOutcome('Described.');
+/**
+ * `allowImmutable` passes jj's `--ignore-immutable` for this one call. It is a
+ * per-call argument rather than app state on purpose: jj marks commits immutable
+ * to stop them being rewritten by accident, and a mode would surrender that for
+ * a whole session instead of a single, confirmed command.
+ */
+export const describeChange = (
+  changeId: string,
+  message: string,
+  allowImmutable = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('describe', { changeId, message, allowImmutable })
+    : mockOutcome('Described.');
 export const newChange = (parents: string[] = []): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('new_change', { parents }) : mockOutcome('New change created.');
 /** jj edit — move the working copy onto an existing change. */
-export const editChange = (revset: string): Promise<Outcome> =>
-  IN_TAURI ? invoke<Outcome>('edit_change', { revset }) : mockOutcome('Working copy moved.');
+export const editChange = (revset: string, allowImmutable = false): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('edit_change', { revset, allowImmutable })
+    : mockOutcome('Working copy moved.');
 /** Move paths from `from` into `into`: jj-native partial commit. */
 export const squashPaths = (
   paths: string[],
   into?: string,
   from?: string,
+  allowImmutable = false,
 ): Promise<Outcome> =>
   IN_TAURI
     ? invoke<Outcome>('squash_paths', {
         paths,
         into: into ?? null,
         from: from ?? null,
+        allowImmutable,
       })
     : mockOutcome('Squashed.');
 /** jj absorb — returns jj's summary of what moved where. */
 export const absorb = (): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('absorb') : mockOutcome('Absorbed 2 hunks (mock).');
 /** File-level split: `paths` stay put, the rest move to a new child change. */
-export const splitPaths = (revset: string, paths: string[]): Promise<Outcome> =>
-  IN_TAURI ? invoke<Outcome>('split_paths', { revset, paths }) : mockOutcome('Split.');
-export const abandonChange = (revset: string): Promise<Outcome> =>
-  IN_TAURI ? invoke<Outcome>('abandon_change', { revset }) : mockOutcome('Abandoned.');
+export const splitPaths = (
+  revset: string,
+  paths: string[],
+  allowImmutable = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('split_paths', { revset, paths, allowImmutable })
+    : mockOutcome('Split.');
+export const abandonChange = (revset: string, allowImmutable = false): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('abandon_change', { revset, allowImmutable })
+    : mockOutcome('Abandoned.');
 export const duplicateChange = (revset: string): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('duplicate_change', { revset }) : mockOutcome('Duplicated.');
 export const backoutChange = (revset: string): Promise<Outcome> =>
@@ -272,9 +312,10 @@ export const rebaseChange = (
   mode: string,
   revset: string,
   destination: string,
+  allowImmutable = false,
 ): Promise<Outcome> =>
   IN_TAURI
-    ? invoke<Outcome>('rebase_change', { mode, revset, destination })
+    ? invoke<Outcome>('rebase_change', { mode, revset, destination, allowImmutable })
     : mockOutcome('Rebased.');
 /** Discard working-copy changes to `paths` (all when empty). */
 export const restorePaths = (paths: string[]): Promise<Outcome> =>
@@ -421,7 +462,7 @@ export const getRecentRepos = (): Promise<string[]> =>
 export const installTerminalHelper = (): Promise<string> =>
   IN_TAURI ? invoke<string>('install_terminal_helper') : Promise.resolve('(mock) would install jjdiff on PATH');
 
-// -- Forge review (gh / glab) --
+// -- Forge review (gh) --
 
 export interface Reviewer {
   name: string;
@@ -470,6 +511,24 @@ export interface PullRequestSummary {
   updatedAt: string;
 }
 
+/**
+ * One entry in a proposal's conversation. GitHub keeps these in three places
+ * that only read as one thread once merged and sorted by time.
+ */
+export interface Activity {
+  /** `comment` (discussion), `review` (a verdict) or `inline` (anchored to a line). */
+  kind: 'comment' | 'review' | 'inline';
+  author: string;
+  body: string;
+  createdAt: string;
+  /** Review verdict; empty for anything that is not a review. */
+  state: string;
+  /** Inline only. */
+  path: string;
+  line: number;
+  url: string;
+}
+
 /** A fetched proposal plus the revsets that make it reviewable. */
 export interface OpenedPullRequest extends PullRequest {
   /** Local bookmark the head landed on. */
@@ -479,8 +538,8 @@ export interface OpenedPullRequest extends PullRequest {
 }
 
 export interface ForgeInfo {
-  kind: 'github' | 'gitlab';
-  /** "pull request" / "merge request". */
+  kind: 'github';
+  /** What the forge calls a proposal ("pull request"). */
   noun: string;
 }
 
@@ -513,6 +572,15 @@ export const listPullRequests = (limit = 30): Promise<PullRequestSummary[]> =>
 
 export const getPullRequest = (number: number): Promise<PullRequest> =>
   IN_TAURI ? invoke<PullRequest>('pull_request', { number }) : mock((m) => m.mockPullRequest);
+
+/**
+ * The proposal's conversation, oldest first. Separate from `getPullRequest`
+ * because it costs two more `gh` calls and the banner should not wait on them.
+ */
+export const getPullRequestActivity = (number: number): Promise<Activity[]> =>
+  IN_TAURI
+    ? invoke<Activity[]>('pull_request_activity', { number })
+    : mock((m) => m.mockActivity);
 
 /** Fetch the proposal's head so it can be reviewed as an ordinary revset. */
 export const openPullRequest = (number: number): Promise<OpenedPullRequest> =>
