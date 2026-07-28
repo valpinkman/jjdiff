@@ -14,6 +14,8 @@ export interface Command {
 @customElement('jj-command-bar')
 export class CommandBar extends LitElement {
   static override styles = css`
+    /* The palette is the app's one genuinely floating surface, so it is the one
+       place the full elevation and blur budget is spent. */
     :host {
       position: fixed;
       inset: 0;
@@ -21,23 +23,37 @@ export class CommandBar extends LitElement {
       justify-content: center;
       align-items: flex-start;
       padding-top: 12vh;
-      background: rgb(0 0 0 / 0.25);
+      /* Blur rather than a flat scrim: the app stays legible as context behind
+         the palette instead of being replaced by a grey sheet, which is what
+         tells you this is a layer and not a new screen. */
+      background: rgb(0 0 0 / 0.22);
+      backdrop-filter: blur(3px) saturate(0.9);
+      -webkit-backdrop-filter: blur(3px) saturate(0.9);
       z-index: 100;
+      animation: scrim-in var(--jj-t-2, 180ms) ease-out;
+    }
+    @keyframes scrim-in {
+      from {
+        opacity: 0;
+      }
     }
     .panel {
-      width: min(580px, 90vw);
+      width: min(600px, 92vw);
       padding-bottom: 6px;
-      background: var(--jj-bg);
+      background: var(--jj-bg-panel);
       border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-lg, 14px);
+      border-radius: var(--jj-r-lg, 18px);
       box-shadow: var(--jj-shadow-pop, 0 12px 40px rgb(0 0 0 / 0.3));
       overflow: hidden;
-      animation: bar-in 0.16s ease-out;
+      /* The one overshoot in the app. The palette does not slide in from
+         somewhere — it arrives, and a hair of scale past 1 is what an arrival
+         feels like. Everything else decelerates into place instead. */
+      animation: bar-in var(--jj-t-3, 260ms) var(--jj-ease-pop, cubic-bezier(0.34, 1.32, 0.64, 1));
     }
     @keyframes bar-in {
       from {
         opacity: 0;
-        transform: translateY(-6px) scale(0.99);
+        transform: translateY(-10px) scale(0.965);
       }
     }
     input {
@@ -48,23 +64,29 @@ export class CommandBar extends LitElement {
       background: transparent;
       color: var(--jj-fg);
       font-family: var(--jj-sans);
-      font-size: 14px;
-      padding: 13px 17px;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+      padding: 15px 18px;
       outline: none;
     }
     input::placeholder {
       color: var(--jj-fg-faint);
     }
+    /* A row in a list: square and full-bleed, with its own horizontal padding
+       so the highlight reaches both edges of the panel. A rounded fill inset by
+       a margin reads as a card in a stack of cards. */
     .item {
+      position: relative;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      padding: 7px 12px;
-      margin: 0 5px;
-      border-radius: var(--jj-r-sm, 7px);
+      padding: 8px 18px;
+      border-radius: 0;
       cursor: pointer;
-      transition: background-color 0.12s ease;
+      transition:
+        background-color var(--jj-t-1, 120ms) ease,
+        color var(--jj-t-1, 120ms) ease;
     }
     .group {
       font-size: 10.5px;
@@ -72,24 +94,54 @@ export class CommandBar extends LitElement {
       letter-spacing: 0.04em;
       text-transform: uppercase;
       color: var(--jj-fg-faint);
-      padding: 10px 17px 4px;
+      padding: 12px 18px 4px;
     }
     .list {
-      max-height: 60vh;
+      max-height: 58vh;
       overflow-y: auto;
+      padding-top: 4px;
+      scroll-padding: 8px 0;
     }
     .item.active {
       background: var(--jj-accent-soft);
       color: var(--jj-accent);
     }
+    /* A bar on the leading edge, grown from nothing rather than switched on, so
+       arrowing down the list reads as one cursor moving. */
+    .item.active::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--jj-accent);
+      animation: cursor-in var(--jj-t-2, 180ms) var(--jj-ease-out, ease-out);
+    }
+    @keyframes cursor-in {
+      from {
+        transform: scaleY(0.2);
+        opacity: 0;
+      }
+    }
     .hint {
       color: var(--jj-fg-muted);
       font-size: 11px;
+      font-variant-numeric: tabular-nums;
     }
     .none {
-      padding: 12px 14px;
+      padding: 14px 18px;
       color: var(--jj-fg-muted);
-      font-style: italic;
+    }
+    /* theme.css has the app-wide switch, but a universal rule in a document
+       stylesheet does not cross a shadow boundary — every shadow root that
+       animates has to opt out for itself. */
+    @media (prefers-reduced-motion: reduce) {
+      :host,
+      .panel,
+      .item.active::before {
+        animation: none;
+      }
     }
   `;
 

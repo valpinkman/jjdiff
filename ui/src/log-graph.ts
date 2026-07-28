@@ -5,8 +5,21 @@ import { layoutGraph, type GraphRow } from './graph.js';
 import type { Change } from './ipc.js';
 
 const LANE_W = 12;
-const ROW_H = 30;
+/* Taller than the text needs. A commit list is scanned, not read, and rows this
+   dense read as a table dump; the extra 6px is what lets each row register as a
+   separate thing at a glance. */
+const ROW_H = 36;
 const DOT_R = 3.5;
+/**
+ * Left/right margin inside the graph SVG, in px.
+ *
+ * An `<svg>` clips to its own box, and the widest thing drawn on lane 0 is the
+ * working copy's halo: `DOT_R * 2.4` at rest and 1.18× that at the top of its
+ * breath, so ~9.9px of radius. At the old inset of 2 the lane centre sat at 8
+ * and the halo lost its left edge to the viewport — a circle with a flat side.
+ * The inset has to clear the largest *animated* radius, not the resting one.
+ */
+const RAIL_INSET = 11;
 
 /**
  * jj-log-style commit graph. Message-first rows: change ids stay out of the list (the
@@ -25,18 +38,28 @@ export class LogGraph extends LitElement {
       padding: 4px 0;
     }
     .row {
-      transition: background-color 0.13s ease;
+      position: relative;
+      transition:
+        background-color var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
+        color var(--jj-t-2, 180ms) var(--jj-ease-out, ease);
       display: flex;
       align-items: center;
       gap: 7px;
       width: 100%;
       height: ${ROW_H}px;
       border: 0;
-      border-radius: var(--jj-r-sm, 7px);
+      /* Square and full-bleed. A rounded row inside a padded list reads as a
+         card in a stack of cards; a full-width band reads as a row in a list,
+         which is what it is. */
+      border-radius: 0;
       background: none;
       color: var(--jj-fg);
       font: inherit;
       text-align: left;
+      /* No left padding: the graph SVG carries its own RAIL_INSET, which is
+         what keeps the rail clear of the 2px selection bar *and* gives the
+         working copy's halo room to breathe without being clipped. Padding here
+         as well would just push the graph twice as far from the edge. */
       padding: 0 10px 0 0;
       cursor: pointer;
       box-sizing: border-box;
@@ -50,6 +73,26 @@ export class LogGraph extends LitElement {
     }
     .row.selected {
       background: var(--jj-accent-soft);
+    }
+    /* The same cursor bar as the command palette: selection in this app is one
+       shape wherever it appears, a soft fill with a bar on its leading edge.
+       Flush to the pane's left edge and the full height of the row — a cursor
+       on the list, not a pill floating inside it. */
+    .row.selected::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--jj-accent);
+      animation: row-cursor var(--jj-t-2, 180ms) var(--jj-ease-out, ease-out);
+    }
+    @keyframes row-cursor {
+      from {
+        transform: scaleY(0.2);
+        opacity: 0;
+      }
     }
     svg {
       flex: none;
@@ -84,10 +127,31 @@ export class LogGraph extends LitElement {
       stroke: var(--jj-bg-panel);
       stroke-width: 2.5;
     }
-    /* Halo under the working-copy dot: "you are here", visible without a label. */
+    /* Halo under the working-copy dot: "you are here", visible without a label.
+       It breathes, slowly — the working copy is the one row in the graph that is
+       still moving, and a stationary marker on it says the opposite. Slow enough
+       (4s) to be noticed only when the eye rests there, which is the point:
+       peripheral vision reads it as alive without it ever asking for attention. */
     .dot-halo {
       fill: var(--jj-accent);
       opacity: 0.18;
+      transform-origin: center;
+      transform-box: fill-box;
+      animation: halo 4s ease-in-out infinite;
+    }
+    @keyframes halo {
+      50% {
+        opacity: 0.3;
+        transform: scale(1.18);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .dot-halo {
+        animation: none;
+      }
+      .row.selected::before {
+        animation: none;
+      }
     }
     .dot-conflict {
       fill: var(--jj-removed-fg);
@@ -99,10 +163,10 @@ export class LogGraph extends LitElement {
       font-family: var(--jj-sans);
       font-size: 10px;
       font-weight: 600;
-      border-radius: 999px;
+      border-radius: var(--jj-r-pill, 999px);
       background: var(--jj-ref-soft);
       color: var(--jj-ref);
-      padding: 1px 7px;
+      padding: 2px 8px;
       line-height: 15px;
     }
     .tag.warn {
@@ -148,13 +212,13 @@ export class LogGraph extends LitElement {
   protected override render() {
     const rows = layoutGraph(this.changes);
     const maxWidth = Math.max(1, ...rows.map((row) => row.width));
-    const gutter = maxWidth * LANE_W + 2;
+    const gutter = maxWidth * LANE_W + RAIL_INSET * 2;
     return html`${rows.map((row) => this.renderRow(row, gutter))}`;
   }
 
   private renderRow(row: GraphRow, gutter: number): TemplateResult {
     const { change } = row;
-    const x = (lane: number) => lane * LANE_W + LANE_W / 2 + 2;
+    const x = (lane: number) => lane * LANE_W + LANE_W / 2 + RAIL_INSET;
     const mid = ROW_H / 2;
     const cx = x(row.lane);
 

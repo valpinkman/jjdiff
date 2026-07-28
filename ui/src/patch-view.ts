@@ -62,6 +62,8 @@ export class PatchView extends LitElement {
   /** How far each side's code is panned, in px. The pane itself never scrolls sideways. */
   private codeScroll = { old: 0, new: 0 };
   private visibleFile: string | null = null;
+  /** The file whose header is currently pinned, or null when it is on screen. */
+  @state() private stuck: FilePatch | null = null;
   private searchMatches: number[] = [];
   private highlights = new HighlightStore();
 
@@ -332,13 +334,28 @@ export class PatchView extends LitElement {
     host?.[virtualizerRef]?.element(index)?.scrollIntoView({ block });
   }
 
-  /** Report which file the viewport is currently inside (sticky breadcrumb). */
+  /**
+   * Which file the viewport is inside, and whether its header has scrolled off.
+   *
+   * `position: sticky` is not available here: the virtualizer positions every
+   * row absolutely, and an absolutely-positioned element cannot stick. So the
+   * pinned header is a separate element overlaying the top of the pane, shown
+   * only while the real one is above the fold — which is also what stops the
+   * path appearing twice on screen at once.
+   */
   private onVisibilityChanged = (event: Event) => {
-    const first = (event as CustomEvent<{ first: number }>).detail?.first ?? 0;
+    // `visibilityChanged` carries `first`/`last` as own properties on the event
+    // object — it is not a CustomEvent and has no `detail`. Reading `.detail`
+    // yielded undefined and fell back to 0, so this always reported the first
+    // file in the diff no matter where the viewport was.
+    const first = (event as Event & { first?: number }).first ?? 0;
     // Walk back to the file header owning the topmost visible row.
     for (let index = Math.min(first, this.rows.length - 1); index >= 0; index--) {
       const row = this.rows[index];
       if (row?.kind === 'file') {
+        // `index === first` means the header itself is the topmost row, so it is
+        // still on screen and nothing needs pinning.
+        this.stuck = index < first ? row.file : null;
         if (this.visibleFile !== row.file.path) {
           this.visibleFile = row.file.path;
           this.dispatchEvent(
@@ -352,6 +369,7 @@ export class PatchView extends LitElement {
         return;
       }
     }
+    this.stuck = null;
   };
 
   private rowClasses(index: number): string {
@@ -389,24 +407,96 @@ export class PatchView extends LitElement {
   protected override render() {
     if (this.files.length === 0) {
       return html`<div class="jj-empty">
-        <div class="glyph">✓</div>
-        <div class="title">Nothing to review</div>
-        <div class="hint">Changes appear here live as files are edited or a revision is selected.</div>
+        <div class="jj-empty-copy">
+          <div class="glyph">✓</div>
+          <div class="title">Nothing to review</div>
+          <div class="hint">
+            Changes appear here live as files are edited or a revision is selected.
+          </div>
+        </div>
       </div>`;
     }
     // The virtualize() DIRECTIVE, not the <lit-virtualizer> element: the element renders rows
     // into its shadow root, which would cut them off from theme.css and break cross-row text
     // selection — the whole reason this component is light DOM.
-    return html`<div
-      class="jj-patch ${this.layout} ${this.wordWrap ? 'wrap' : 'nowrap'}"
-      @visibilityChanged=${this.onVisibilityChanged}
-    >
-      ${virtualize({
-        items: this.rows,
-        renderItem: (row: Row, index: number) => this.renderRow(row, index) as TemplateResult,
-        scroller: true,
-      })}
-    </div>`;
+    return html`${this.stuck
+        ? html`<div class="file-header stuck" data-path=${this.stuck.path}>
+            ${this.renderFileHeaderBody(this.stuck, this.viewed.has(this.stuck.path))}
+          </div>`
+        : nothing}
+      <div
+        class="jj-patch ${this.layout} ${this.wordWrap ? 'wrap' : 'nowrap'}"
+        @visibilityChanged=${this.onVisibilityChanged}
+      >
+        ${virtualize({
+          items: this.rows,
+          renderItem: (row: Row, index: number) => this.renderRow(row, index) as TemplateResult,
+          scroller: true,
+        })}
+      </div>`;
+  }
+
+  /**
+   * The contents of a file header, shared by the row and the sticky bar.
+   *
+   * One template, two mounts: the header that scrolls with the card and the one
+   * pinned to the top of the pane are the same control, so "viewed" is in the
+   * same place with the same shape whether or not you have scrolled past it.
+   */
+  private renderFileHeaderBody(file: FilePatch, isViewed: boolean) {
+    return html`
+      <span class="file-status ${file.status}">${file.status}</span>
+      <span class="file-path"
+        >${file.oldPath ? html`${file.oldPath} → ` : nothing}${file.path}</span
+      >
+      <span class="file-counts"
+        >${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
+        ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}</span
+      >
+      ${this.conflicted.has(file.path) ? html`<span class="conflict-badge">conflict</span>` : nothing}
+      ${this.canSquash
+        ? html`<select
+            class="file-action"
+            title="Squash this file into another change (jj squash)"
+            @click=${(event: Event) => event.stopPropagation()}
+            @change=${(event: Event) => {
+              const select = event.target as HTMLSelectElement;
+              if (select.value) {
+                this.emitSquash(file.path, select.value);
+                select.value = '';
+              }
+            }}
+          >
+            <option value="">⇩ move to…</option>
+            ${this.squashTargets.map(
+              (target) => html`<option value=${target.changeId}>${target.label}</option>`,
+            )}
+          </select>`
+        : nothing}
+      ${this.isMarkdown(file.path)
+        ? html`<button
+            class="file-action md-toggle"
+            title="Toggle between diff and rendered preview"
+            @click=${(event: Event) => {
+              event.stopPropagation();
+              this.emitToggleMarkdown(file.path);
+            }}
+          >
+            ${this.markdownPreviews.has(file.path) ? 'diff' : 'preview'}
+          </button>`
+        : nothing}
+      ${this.canMarkViewed
+        ? html`<label class="file-action viewed-toggle" title="Mark as viewed">
+            <input
+              type="checkbox"
+              .checked=${isViewed}
+              @change=${(event: Event) =>
+                this.emit('toggle-viewed', file.path, (event.target as HTMLInputElement).checked)}
+            />
+            viewed
+          </label>`
+        : nothing}
+    `;
   }
 
   private renderRow(row: Row, index: number): TemplateResult {
@@ -419,60 +509,7 @@ export class PatchView extends LitElement {
           class="file-header ${isViewed ? 'viewed' : ''} ${extra}"
           data-path=${file.path}
         >
-          <span class="file-status ${file.status}">${file.status}</span>
-          <span class="file-path"
-            >${file.oldPath ? html`${file.oldPath} → ` : nothing}${file.path}</span
-          >
-          <span class="file-counts"
-            >${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
-            ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}</span
-          >
-          ${this.conflicted.has(file.path)
-            ? html`<span class="conflict-badge">conflict</span>`
-            : nothing}
-          ${this.canSquash
-            ? html`<select
-                class="file-action"
-                title="Squash this file into another change (jj squash)"
-                @click=${(event: Event) => event.stopPropagation()}
-                @change=${(event: Event) => {
-                  const select = event.target as HTMLSelectElement;
-                  if (select.value) {
-                    this.emitSquash(file.path, select.value);
-                    select.value = '';
-                  }
-                }}
-              >
-                <option value="">⇩ move to…</option>
-                ${this.squashTargets.map(
-                  (target) =>
-                    html`<option value=${target.changeId}>${target.label}</option>`,
-                )}
-              </select>`
-            : nothing}
-          ${this.isMarkdown(file.path)
-            ? html`<button
-                class="file-action md-toggle"
-                title="Toggle between diff and rendered preview"
-                @click=${(event: Event) => {
-                  event.stopPropagation();
-                  this.emitToggleMarkdown(file.path);
-                }}
-              >
-                ${this.markdownPreviews.has(file.path) ? 'diff' : 'preview'}
-              </button>`
-            : nothing}
-          ${this.canMarkViewed
-            ? html`<label class="file-action viewed-toggle" title="Mark as viewed">
-                <input
-                  type="checkbox"
-                  .checked=${isViewed}
-                  @change=${(event: Event) =>
-                    this.emit('toggle-viewed', file.path, (event.target as HTMLInputElement).checked)}
-                />
-                viewed
-              </label>`
-            : nothing}
+          ${this.renderFileHeaderBody(file, isViewed)}
         </div>`;
       }
       case 'hunk':

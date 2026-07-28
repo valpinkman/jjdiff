@@ -92,6 +92,7 @@ export const shortcutReference = (commandBar: string): KeyGroup[] => [
     bindings: [
       { keys: formatShortcut(commandBar), label: 'Command palette' },
       { keys: formatShortcut('Mod+f'), label: 'Find in diffs' },
+      { keys: formatShortcut('Mod+b'), label: 'Show / hide sidebar' },
       { keys: '?', label: 'This shortcut sheet' },
       { keys: 'Esc', label: 'Close overlay' },
     ],
