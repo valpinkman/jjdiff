@@ -4,3 +4,4 @@ dist/
 src-tauri/gen/
 .DS_Store
 *.log
+.playwright-mcp/

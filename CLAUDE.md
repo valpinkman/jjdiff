@@ -92,15 +92,23 @@ Window labels are `main` plus `repo-N`. `capabilities/default.json` must cover t
 
 ## Forge review
 
-`forge.rs` drives `gh`/`glab` as CLIs, never REST — jjdiff handles no tokens. The forge is inferred from the remote URL; a host it can't place is an error rather than a guess, and the UI hides forge affordances entirely rather than offering ones that fail.
+`forge.rs` drives `gh` as a CLI, never REST — jjdiff handles no tokens. **GitHub only:** a GitLab path existed and was deleted rather than kept, because it was written against `glab`'s documented JSON and never run against a live instance — shipping the appearance of support. `Kind` stays an enum so restoring it is a variant, not a rewrite, and it is recoverable from history. The forge is inferred from the remote URL; a host it can't place is an error rather than a guess, and the UI hides forge affordances entirely rather than offering ones that fail.
 
 **Never diff a proposal with `base..head`.** Once merged, the head is an ancestor of the base branch and that revset is silently *empty* — a review showing nothing, with no error. Use the forge's own merge base (`baseRefOid`, or GitLab's `diff_refs.base_sha`), which is correct for open and merged proposals alike. `open_pull_request` also fetches the base branch so that OID resolves locally.
 
 **A proposal is context on a change, not a mode.** `gh pr list` returns each proposal's head branch and every `Change` carries its bookmarks, so selecting a change with a matching bookmark surfaces its banner automatically — CI, reviewers and merge state show up while you work on your own branch, without asking. The index is loaded once per repo (it is a network call), not per selection. `jjdiff pr N` exists for the other case: a proposal whose branch is not local. It fetches, and the banner then arrives through the same match. `prRevset` is set only while the diff shows the *whole* proposal instead of the selected change — a toggle, not a screen.
 
+**The proposal is a view, not a panel.** The banner in the diff pane is an *indicator* — state, checks, drift, one line — and clicking it switches `viewMode` to `'pr'`, which is where the description and conversation live. They were briefly a disclosure above the diff; prose of unbounded length hanging over the code meant the thing being reviewed started halfway down the window. Two consequences worth knowing: `main` is a flex column, so a view that does not claim `flex: 1; min-height: 0` gets shrunk to a fraction of the pane, and its siblings (detail card, banners, breadcrumb) are hidden by `main.showing-pr > *:not(.pr-view)` rather than unmounted individually. The body and conversation load **when the view is opened**, not with the banner — two extra `gh` calls that most selections never need — and are cached until a refresh clears `prDetailsFor`.
+
+**Opening a proposal touches nothing jjdiff watches.** `gh pr create` in a terminal, or the "create a pull request" link a push prints, writes no jj operation and no file — so neither watcher fires and the banner would stay missing until a manual reload. The index is therefore refreshed on **window focus** (throttled by `PROPOSAL_REFRESH_MS`, since focus fires on every alt-tab and each call is a `gh` subprocess) and after every **push**, which either creates the branch a proposal attaches to or moves an existing one's head. Because `loadProposalIndex` now runs in the background, both it and `syncMatchedProposal` keep their previous value on failure: clearing was harmless when the index loaded once per repo, but as a refresh it would make a visible banner vanish on one flaky call.
+
 `Repo::fetch_forge_ref` is the one place jjdiff shells out to **git** instead of jj: proposal heads live outside `refs/heads/*` and `jj git fetch` takes bookmark globs, not refspecs. It's safe only because `discover` guarantees colocation. The head lands on a `jjdiff-pr-N` bookmark, after which a proposal is an ordinary revset — same diff pane, comments and walkthroughs as any change.
 
-The GitHub path is tested against a fixture captured verbatim from real `gh` output. **The GitLab path has never run against a live instance.**
+Every parser is tested against fixtures captured verbatim from real `gh` output on this repo's own pull requests.
+
+**A proposal's conversation lives in three places** and only reads as one thread once merged and sorted by time: issue comments and reviews come from `gh pr view --json comments,reviews`, while comments anchored to a line only come from `gh api …/pulls/N/comments`. `Client::activity` merges them. Two details that look like bugs otherwise: submitting inline comments creates a **review row with no verdict and no body** purely to hang them on (filtered out, or it renders as a blank entry), and an inline comment's `line` goes **null** once its anchor leaves the diff, so `original_line` is the fallback that keeps it attached to a real place.
+
+**Forge markdown is untrusted and goes through `ui/src/markdown.ts`.** A proposal body or comment is arbitrary text from anyone who can open a PR, rendered in a WebView that can invoke every Tauri command. `marked` does not sanitise. The CSP (`default-src 'self'`) blocks inline handlers, but it is a backstop and is **absent under `pnpm dev`** — relying on it would make the browser build the exploitable one. The scrubber is an allow-list (unknown elements unwrap, keeping their text); `<script>`/`<style>` are dropped outright rather than unwrapped, or their source would render as prose. Links are plain `<a href>` handled by a delegated listener, because `target="_blank"` does nothing here.
 
 ## The WebView has no dialogs
 
@@ -109,6 +117,20 @@ The GitHub path is tested against a fixture captured verbatim from real `gh` out
 Use `askText` / `askConfirm` from `ui/src/prompt.ts` instead. They also work in the browser mock, which the native dialog plugin does not.
 
 Same class of gap: **`target="_blank"` does nothing** — there is no tab to open. Outbound links go through the `open_url` command (`editor::open_url`), which hands the URL to the OS and refuses any scheme that isn't http/https.
+
+## Ahead/behind is reported inverted by jj
+
+`Repo::bookmark_statuses` reads `tracking_ahead_count` / `tracking_behind_count`, and **both mean the opposite of what the field names in `BookmarkStatus` mean**. The keywords live on the *remote* ref and describe the remote's position — `jj bookmark list` prints `@origin (behind by 2 commits)` when your local branch is two commits **ahead**. jjdiff states everything from the local bookmark's side (`ahead` = a push would send these), so the mapping is crossed exactly once, in that one function. Read it straight and the badges are backwards in a way that looks entirely plausible; `bookmark_statuses_report_ahead_and_behind_from_the_local_side` drives both directions against a real remote for that reason.
+
+The synthetic `git` remote of a colocated repo is filtered out — it is in sync by construction, so reporting it is noise.
+
+The one place this matters beyond a badge is the PR banner: `renderHeadDrift` warns when the proposal's head branch has unpushed commits, because CI, reviewers and merge state all describe the head *the forge has*. A green "checks passed" beside unpushed work reads as approval of code the forge never saw.
+
+## Rewriting immutable commits is per-call, never a mode
+
+`Repo::allowing_immutable(true)` returns a handle whose **rewriting** verbs carry `--ignore-immutable`; `Repo::mutate_rewriting` applies it and `Repo::mutate` does not. The split is not cosmetic: `backout` and `duplicate` *reject* the flag (they add commits rather than rewrite them), so funnelling every mutation through one helper turns an unrelated command into a clap parse error.
+
+The opt-in is a per-call argument all the way from `ui/src/ipc.ts` to the CLI — nothing stores it. jj marks commits immutable to stop them being rewritten by accident, and a persisted "allow immutable" toggle would hand that guarantee back for a whole session instead of one confirmed command. On the frontend every such action routes through `App.confirmImmutableRewrite`, which returns `true` immediately for mutable changes and otherwise names the bookmark, the force-push, and the descendants that get rebased. Adding a new rewriting command means threading `allowImmutable` through and calling that helper — a rewriting action that skips it is one that silently rewrites published history.
 
 ## Keyboard shortcuts
 

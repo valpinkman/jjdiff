@@ -116,10 +116,10 @@ impl Args {
                         }
                     }
                 }
-                // `pr`/`mr` are only a subcommand when a number follows. A
-                // revset genuinely called `pr` stays reachable, and `jjdiff pr`
-                // with no number falls through to being treated as one.
-                "pr" | "mr"
+                // `pr` is only a subcommand when a number follows. A revset
+                // genuinely called `pr` stays reachable, and `jjdiff pr` with no
+                // number falls through to being treated as one.
+                "pr"
                     if pull_request.is_none()
                         && peekable.peek().is_some_and(|next| next.parse::<u32>().is_ok()) =>
                 {
@@ -177,7 +177,6 @@ USAGE:
     jjdiff [revset]                Open a repo (defaults to cwd)
     jjdiff -R <path> [revset]      Open an explicit repo
     jjdiff pr <number>             Review a GitHub pull request
-    jjdiff mr <number>             Review a GitLab merge request
     jjdiff -w [revset]             Open and generate a walkthrough
     jjdiff --walkthrough-file <f>  Open an agent-authored walkthrough
     jjdiff --walkthrough-guide     Print the walkthrough authoring guide
@@ -191,8 +190,8 @@ USAGE:
 A revset of `@` (the working copy) is used when none is given. Headless
 commands write to stdout and exit without opening a window.
 
-Reviewing a proposal needs the forge's own CLI on PATH (`gh` for GitHub,
-`glab` for GitLab), already authenticated — jjdiff never handles tokens.
+Reviewing a proposal needs `gh` on PATH and already authenticated — jjdiff
+never handles tokens. GitHub only for now.
 
 Repository:  https://tangled.sh/valpinkman.tngl.sh/jjdiff
 ";
@@ -472,12 +471,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_pr_and_mr_subcommands() {
+    fn parses_the_pr_subcommand() {
         let pr = Args::parse(&argv("pr 75")).unwrap();
         assert_eq!(pr.pull_request, Some(75));
         assert_eq!(pr.revset, None, "the number is not a revset");
-        // Both spellings work on either forge — the remote decides which it is.
-        assert_eq!(Args::parse(&argv("mr 23")).unwrap().pull_request, Some(23));
+        // `mr` is not a spelling jjdiff knows any more: GitLab support was
+        // dropped, so `mr` is just a revset and the number after it is a second
+        // positional — an error, which is what someone with the old habit should
+        // get rather than a silently empty view of a revset named `mr`.
+        assert!(matches!(
+            Args::parse(&argv("mr 23")),
+            Err(ParseError::UnexpectedPositional(value)) if value == "23"
+        ));
         // Combines with -R, like every other launch form.
         let scoped = Args::parse(&argv("-R /code/repo pr 9")).unwrap();
         assert_eq!(scoped.repo_path.as_deref(), Some(std::path::Path::new("/code/repo")));
@@ -615,9 +620,7 @@ mod tests {
             assert!(HELP.contains(flag), "HELP is missing {flag}");
         }
         // Subcommands, not flags — equally undiscoverable if unlisted.
-        for subcommand in ["jjdiff pr <number>", "jjdiff mr <number>"] {
-            assert!(HELP.contains(subcommand), "HELP is missing {subcommand}");
-        }
+        assert!(HELP.contains("jjdiff pr <number>"), "HELP is missing the pr subcommand");
     }
 
     #[test]

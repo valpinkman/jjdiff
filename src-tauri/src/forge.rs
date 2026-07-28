@@ -1,4 +1,4 @@
-//! Forge review through `gh` / `glab`.
+//! Forge review through the `gh` CLI.
 //!
 //! Discipline (PLAN.md, C4): scoped to the **CLIs, not the REST APIs**, so auth
 //! is someone else's problem — we never see a token, never refresh one, and
@@ -9,9 +9,11 @@
 //! The forge is inferred from the remote URL rather than configured: a
 //! colocated repo already knows where it pushes.
 //!
-//! GitLab support is written against `glab`'s documented JSON shape but has
-//! **not** been exercised against a live GitLab instance — unlike the GitHub
-//! path, which is tested against real `gh` output (see the fixtures below).
+//! GitHub only. A GitLab path existed and was removed: it was written against
+//! `glab`'s documented JSON and never run against a live instance, so it was
+//! shipping the *appearance* of support. `Kind` stays an enum so adding one
+//! back is a variant rather than a rewrite, and `from_remote` still refuses a
+//! host it cannot place instead of guessing.
 
 use std::process::Command;
 
@@ -22,7 +24,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     GitHub,
-    GitLab,
 }
 
 impl Kind {
@@ -31,20 +32,13 @@ impl Kind {
     /// there is no reliable probe short of talking to the server.
     pub fn from_remote(url: &str) -> Option<Kind> {
         let host = remote_host(url)?.to_ascii_lowercase();
-        if host == "github.com" || host.starts_with("github.") {
-            Some(Kind::GitHub)
-        } else if host == "gitlab.com" || host.contains("gitlab") {
-            Some(Kind::GitLab)
-        } else {
-            None
-        }
+        (host == "github.com" || host.starts_with("github.")).then_some(Kind::GitHub)
     }
 
     /// The CLI that drives this forge.
     pub fn binary(self) -> &'static str {
         match self {
             Kind::GitHub => "gh",
-            Kind::GitLab => "glab",
         }
     }
 
@@ -52,16 +46,15 @@ impl Kind {
     pub fn noun(self) -> &'static str {
         match self {
             Kind::GitHub => "pull request",
-            Kind::GitLab => "merge request",
         }
     }
 
-    /// The remote ref holding a proposal's head commit. Both forges publish
-    /// one, which is what makes reviewing without a fork remote possible.
+    /// The remote ref holding a proposal's head commit. GitHub publishes one
+    /// per pull request, which is what makes reviewing without a fork remote
+    /// possible.
     pub fn head_ref(self, number: u32) -> String {
         match self {
             Kind::GitHub => format!("refs/pull/{number}/head"),
-            Kind::GitLab => format!("refs/merge-requests/{number}/head"),
         }
     }
 
@@ -70,7 +63,6 @@ impl Kind {
     pub fn local_bookmark(self, number: u32) -> String {
         match self {
             Kind::GitHub => format!("jjdiff-pr-{number}"),
-            Kind::GitLab => format!("jjdiff-mr-{number}"),
         }
     }
 }
@@ -244,10 +236,6 @@ impl Client {
                 let raw = self.run(&["pr", "view", &number_arg, "--json", FIELDS])?;
                 github::parse_pull_request(&raw)
             }
-            Kind::GitLab => {
-                let raw = self.run(&["mr", "view", &number_arg, "--output", "json"])?;
-                gitlab::parse_pull_request(&raw)
-            }
         }
     }
 
@@ -265,11 +253,28 @@ impl Client {
                 ])?;
                 github::parse_list(&raw)
             }
-            Kind::GitLab => {
-                let raw = self.run(&["mr", "list", "--per-page", &limit, "--output", "json"])?;
-                gitlab::parse_list(&raw)
-            }
         }
+    }
+
+    /// The whole conversation on a proposal, oldest first.
+    ///
+    /// Two calls, because GitHub does not expose these together: `pr view`
+    /// carries issue comments and reviews, while comments anchored to a line
+    /// only come from the REST endpoint. The inline call is allowed to fail on
+    /// its own — a proposal whose discussion loads but whose line comments do
+    /// not is far better than no conversation at all.
+    pub fn activity(&self, number: u32) -> Result<Vec<Activity>, String> {
+        let number_arg = number.to_string();
+        let raw = self.run(&["pr", "view", &number_arg, "--json", "comments,reviews"])?;
+        let mut entries = github::parse_activity(&raw)?;
+
+        let endpoint = format!("repos/{{owner}}/{{repo}}/pulls/{number_arg}/comments");
+        if let Ok(raw) = self.run(&["api", "--paginate", &endpoint]) {
+            entries.extend(github::parse_inline_comments(&raw).unwrap_or_default());
+        }
+
+        entries.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(entries)
     }
 
     /// Like [`Self::run`], but feeds `stdin` — `gh api --input -` wants its
@@ -353,28 +358,31 @@ impl Client {
                 self.run(&args)?;
                 Ok(Submitted { inline: 0, fell_back: None })
             }
-            Kind::GitLab => {
-                // glab has no review verb: approval and commentary are separate
-                // calls, so the verdict maps onto approve/unapprove plus a note.
-                // Inline positions need the discussions API and a full set of
-                // diff refs, so comments go into the note body here.
-                match verdict {
-                    Verdict::Approve => {
-                        self.run(&["mr", "approve", &number_arg])?;
-                    }
-                    Verdict::RequestChanges => {
-                        self.run(&["mr", "unapprove", &number_arg])?;
-                    }
-                    Verdict::Comment => {}
-                }
-                let merged = merge_comments_into_body(body, comments);
-                if !merged.trim().is_empty() {
-                    self.run(&["mr", "note", &number_arg, "--message", &merged])?;
-                }
-                Ok(Submitted { inline: 0, fell_back: None })
-            }
         }
     }
+}
+
+/// One entry in a proposal's conversation.
+///
+/// GitHub keeps these in three places that have to be merged to read as one
+/// thread: issue comments (the discussion at the bottom), reviews (a verdict
+/// with an optional body) and review comments (anchored to a file and line).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    /// `comment`, `review` or `inline` — which of the three it came from.
+    pub kind: &'static str,
+    pub author: String,
+    pub body: String,
+    /// RFC 3339, and the only thing that puts the three sources in order.
+    pub created_at: String,
+    /// Review verdict (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`); empty
+    /// for anything that is not a review.
+    pub state: String,
+    /// Inline only: where the comment hangs.
+    pub path: String,
+    pub line: u32,
+    pub url: String,
 }
 
 /// What a submitted review actually did, so the UI can be honest about it.
@@ -415,8 +423,129 @@ fn merge_comments_into_body(body: &str, comments: &[ReviewComment]) -> String {
 }
 
 mod github {
-    use super::{Check, PullRequest, Reviewer, Summary};
+    use super::{Activity, Check, PullRequest, Reviewer, Summary};
     use serde::Deserialize;
+
+    /// `gh pr view --json comments,reviews`.
+    #[derive(Deserialize)]
+    struct Conversation {
+        #[serde(default)]
+        comments: Vec<IssueComment>,
+        #[serde(default)]
+        reviews: Vec<Review>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct IssueComment {
+        author: Actor,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        created_at: String,
+        #[serde(default)]
+        url: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Review {
+        author: Actor,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        state: String,
+        #[serde(default)]
+        submitted_at: String,
+        #[serde(default)]
+        url: String,
+    }
+
+    /// REST shape from `pulls/N/comments` — snake_case, unlike the `pr view`
+    /// JSON above, because it is the raw API rather than gh's own projection.
+    #[derive(Deserialize)]
+    struct InlineComment {
+        user: RestUser,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        path: String,
+        /// Null once the line it anchored to is gone from the diff; GitHub then
+        /// only remembers where it *was*.
+        #[serde(default)]
+        line: Option<u32>,
+        #[serde(default)]
+        original_line: Option<u32>,
+        #[serde(default)]
+        created_at: String,
+        #[serde(default)]
+        html_url: String,
+    }
+
+    #[derive(Deserialize)]
+    struct RestUser {
+        #[serde(default)]
+        login: String,
+    }
+
+    pub fn parse_activity(raw: &str) -> Result<Vec<Activity>, String> {
+        let parsed: Conversation = serde_json::from_str(raw)
+            .map_err(|error| format!("cannot read gh conversation: {error}"))?;
+        let mut entries: Vec<Activity> = parsed
+            .comments
+            .into_iter()
+            .map(|comment| Activity {
+                kind: "comment",
+                author: comment.author.display(),
+                body: comment.body,
+                created_at: comment.created_at,
+                state: String::new(),
+                path: String::new(),
+                line: 0,
+                url: comment.url,
+            })
+            .collect();
+        entries.extend(
+            parsed
+                .reviews
+                .into_iter()
+                // Submitting inline comments creates a review row to hang them
+                // on, with no verdict and no body. Rendering those would put a
+                // blank entry in the thread above the comments they contain.
+                .filter(|review| !review.body.trim().is_empty() || review.state != "COMMENTED")
+                .map(|review| Activity {
+                    kind: "review",
+                    author: review.author.display(),
+                    body: review.body,
+                    created_at: review.submitted_at,
+                    state: review.state,
+                    path: String::new(),
+                    line: 0,
+                    url: review.url,
+                }),
+        );
+        Ok(entries)
+    }
+
+    pub fn parse_inline_comments(raw: &str) -> Result<Vec<Activity>, String> {
+        let parsed: Vec<InlineComment> = serde_json::from_str(raw)
+            .map_err(|error| format!("cannot read gh review comments: {error}"))?;
+        Ok(parsed
+            .into_iter()
+            .map(|comment| Activity {
+                kind: "inline",
+                author: comment.user.login,
+                body: comment.body,
+                created_at: comment.created_at,
+                state: String::new(),
+                // Fall back to where it was anchored: an outdated comment still
+                // belongs to a file, and dropping to line 0 would say it does not.
+                line: comment.line.or(comment.original_line).unwrap_or(0),
+                path: comment.path,
+                url: comment.html_url,
+            })
+            .collect())
+    }
 
     #[derive(Deserialize)]
     struct Actor {
@@ -600,130 +729,6 @@ mod github {
     }
 }
 
-mod gitlab {
-    //! `glab`'s JSON is the GitLab API object verbatim: snake_case, `iid` for
-    //! the human-facing number, and no checks in the MR payload.
-    //!
-    //! Unverified against a live instance — see the module header.
-    use super::{PullRequest, Reviewer, Summary};
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    struct User {
-        #[serde(default)]
-        username: String,
-        #[serde(default)]
-        name: String,
-    }
-
-    impl User {
-        fn display(&self) -> String {
-            if self.name.is_empty() { self.username.clone() } else { self.name.clone() }
-        }
-    }
-
-    #[derive(Deserialize, Default)]
-    struct DiffRefs {
-        #[serde(default)]
-        base_sha: String,
-        #[serde(default)]
-        head_sha: String,
-    }
-
-    #[derive(Deserialize)]
-    struct RawMr {
-        iid: u32,
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        description: String,
-        #[serde(default)]
-        author: Option<User>,
-        #[serde(default)]
-        target_branch: String,
-        #[serde(default)]
-        source_branch: String,
-        /// GitLab's equivalent of gh's base/head OIDs.
-        #[serde(default)]
-        diff_refs: Option<DiffRefs>,
-        #[serde(default)]
-        state: String,
-        #[serde(default)]
-        draft: bool,
-        #[serde(default)]
-        detailed_merge_status: String,
-        #[serde(default)]
-        web_url: String,
-        #[serde(default)]
-        reviewers: Vec<User>,
-    }
-
-    pub fn parse_pull_request(raw: &str) -> Result<PullRequest, String> {
-        let mr: RawMr = serde_json::from_str(raw)
-            .map_err(|error| format!("cannot read glab output: {error}"))?;
-        Ok(PullRequest {
-            number: mr.iid,
-            title: mr.title,
-            body: mr.description,
-            author: mr.author.as_ref().map(User::display).unwrap_or_default(),
-            base: mr.target_branch,
-            head: mr.source_branch,
-            base_oid: mr.diff_refs.as_ref().map(|r| r.base_sha.clone()).unwrap_or_default(),
-            head_oid: mr.diff_refs.as_ref().map(|r| r.head_sha.clone()).unwrap_or_default(),
-            // GitLab says "opened"/"merged"/"closed"; uppercase so the UI has
-            // one vocabulary across forges.
-            state: mr.state.to_ascii_uppercase(),
-            draft: mr.draft,
-            mergeable: mr.detailed_merge_status.to_ascii_uppercase(),
-            url: mr.web_url,
-            // Not in the MR payload; a pipeline lookup is a separate call.
-            additions: 0,
-            deletions: 0,
-            changed_files: 0,
-            reviewers: mr
-                .reviewers
-                .iter()
-                .map(|user| Reviewer { name: user.display(), state: "REQUESTED".into() })
-                .collect(),
-            checks: Vec::new(),
-        })
-    }
-
-    #[derive(Deserialize)]
-    struct RawSummary {
-        iid: u32,
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        author: Option<User>,
-        #[serde(default)]
-        state: String,
-        #[serde(default)]
-        draft: bool,
-        #[serde(default)]
-        source_branch: String,
-        #[serde(default)]
-        updated_at: String,
-    }
-
-    pub fn parse_list(raw: &str) -> Result<Vec<Summary>, String> {
-        let rows: Vec<RawSummary> = serde_json::from_str(raw)
-            .map_err(|error| format!("cannot read glab output: {error}"))?;
-        Ok(rows
-            .into_iter()
-            .map(|row| Summary {
-                number: row.iid,
-                title: row.title,
-                author: row.author.as_ref().map(User::display).unwrap_or_default(),
-                state: row.state.to_ascii_uppercase(),
-                draft: row.draft,
-                head: row.source_branch,
-                updated_at: row.updated_at,
-            })
-            .collect())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -737,21 +742,21 @@ mod tests {
         ] {
             assert_eq!(Kind::from_remote(url), Some(Kind::GitHub), "{url}");
         }
+        // A GitLab remote is now unplaceable, like any other host: jjdiff hides
+        // the forge affordances rather than offering ones that cannot work.
         for url in ["git@gitlab.com:group/proj.git", "https://gitlab.example.org/group/proj"] {
-            assert_eq!(Kind::from_remote(url), Some(Kind::GitLab), "{url}");
+            assert_eq!(Kind::from_remote(url), None, "{url}");
         }
         // A host we cannot place must not be guessed at — tangled, sourcehut,
-        // Gitea and friends have no gh/glab equivalent here.
+        // Gitea and friends have no CLI jjdiff knows how to drive.
         assert_eq!(Kind::from_remote("git@tangled.org:valpinkman/jjdiff"), None);
         assert_eq!(Kind::from_remote("https://git.sr.ht/~user/repo"), None);
     }
 
     #[test]
-    fn head_refs_differ_per_forge() {
+    fn head_refs_and_bookmarks_are_namespaced() {
         assert_eq!(Kind::GitHub.head_ref(75), "refs/pull/75/head");
-        assert_eq!(Kind::GitLab.head_ref(23), "refs/merge-requests/23/head");
         assert_eq!(Kind::GitHub.local_bookmark(75), "jjdiff-pr-75");
-        assert_eq!(Kind::GitLab.local_bookmark(23), "jjdiff-mr-23");
     }
 
     /// Captured verbatim from `gh pr view 4 --json …` against this repository,
@@ -792,20 +797,6 @@ mod tests {
         assert_eq!(pr.head_oid, "70c32eeb155a5142074d34d860691ea9756b4522");
     }
 
-    #[test]
-    fn gitlab_reads_the_merge_base_out_of_diff_refs() {
-        let raw = r#"{"iid": 5, "state": "opened",
-          "diff_refs": {"base_sha": "aaa111", "head_sha": "bbb222", "start_sha": "aaa111"}}"#;
-        let mr = gitlab::parse_pull_request(raw).unwrap();
-        assert_eq!(mr.base_oid, "aaa111");
-        assert_eq!(mr.head_oid, "bbb222");
-
-        // Older payloads omit diff_refs entirely; that must degrade to the
-        // branch-name revset, not fail to parse.
-        let bare = r#"{"iid": 5, "state": "opened", "target_branch": "main"}"#;
-        let mr = gitlab::parse_pull_request(bare).unwrap();
-        assert!(mr.base_oid.is_empty());
-    }
 
     #[test]
     fn reviewers_merge_requests_and_verdicts_without_duplicating() {
@@ -831,6 +822,38 @@ mod tests {
     fn falls_back_to_login_when_the_display_name_is_absent() {
         let raw = r#"{"number": 1, "author": {"login": "octocat"}, "statusCheckRollup": []}"#;
         assert_eq!(github::parse_pull_request(raw).unwrap().author, "octocat");
+    }
+
+    // Captured verbatim from `gh pr view 5 --json comments,reviews` on this repo.
+    const CONVERSATION: &str = r###"{"comments":[],"reviews":[{"id":"PRR_kwDOTkumRc8AAAABHdJwSA","author":{"login":"valpinkman"},"authorAssociation":"OWNER","body":"## `CLAUDE.md`\n\n**line 1 — you**\n\nNice","submittedAt":"2026-07-28T08:24:07Z","includesCreatedEdit":false,"reactionGroups":[],"state":"COMMENTED","commit":{"oid":"fcd8eafcd540753f11109e2dac0f0766c4c3ac49"}},{"id":"PRR_kwDOTkumRc8AAAABHdNQLA","author":{"login":"valpinkman"},"authorAssociation":"OWNER","body":"","submittedAt":"2026-07-28T08:31:33Z","includesCreatedEdit":false,"reactionGroups":[],"state":"COMMENTED","commit":{"oid":"fcd8eafcd540753f11109e2dac0f0766c4c3ac49"}}]}"###;
+
+    // Captured verbatim from `gh api repos/…/pulls/5/comments`.
+    const INLINE: &str = r#"[{"body":"Cool","created_at":"2026-07-28T08:31:33Z","html_url":"https://github.com/valpinkman/jjdiff/pull/5#discussion_r3664008714","line":1,"original_line":1,"path":"CLAUDE.md","user":{"login":"valpinkman"}},{"body":"Outdated one","created_at":"2026-07-28T08:57:17Z","html_url":"https://github.com/valpinkman/jjdiff/pull/5#discussion_r3664163234","line":null,"original_line":42,"path":"CLAUDE.md","user":{"login":"valpinkman"}}]"#;
+
+    #[test]
+    fn parses_a_real_conversation_and_drops_empty_review_containers() {
+        let entries = github::parse_activity(CONVERSATION).unwrap();
+        // Two reviews came back, but the second is the empty container GitHub
+        // creates to hang inline comments on — rendering it would put a blank
+        // entry in the thread.
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].kind, "review");
+        assert_eq!(entries[0].author, "valpinkman");
+        assert_eq!(entries[0].state, "COMMENTED");
+        assert!(entries[0].body.starts_with("## `CLAUDE.md`"));
+        assert_eq!(entries[0].created_at, "2026-07-28T08:24:07Z");
+    }
+
+    #[test]
+    fn inline_comments_keep_their_anchor_even_when_outdated() {
+        let entries = github::parse_inline_comments(INLINE).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|entry| entry.kind == "inline"));
+        assert_eq!((entries[0].path.as_str(), entries[0].line), ("CLAUDE.md", 1));
+        // `line` is null once the anchor drops out of the diff; falling through
+        // to `original_line` keeps the comment attached to a real place.
+        assert_eq!(entries[1].line, 42, "outdated comment falls back to original_line");
+        assert!(entries[1].url.contains("#discussion_r"));
     }
 
     #[test]
@@ -892,18 +915,4 @@ mod tests {
         assert_eq!(first_line(stderr), "gh: Unprocessable Entity (HTTP 422)");
     }
 
-    #[test]
-    fn parses_glab_merge_request() {
-        let raw = r#"{"iid": 23, "title": "Add retry", "description": "why",
-          "author": {"username": "ada", "name": "Ada L"}, "target_branch": "main",
-          "source_branch": "topic", "state": "opened", "draft": false,
-          "detailed_merge_status": "mergeable", "web_url": "https://gitlab.com/x/y/-/merge_requests/23",
-          "reviewers": [{"username": "grace", "name": "Grace H"}]}"#;
-        let mr = gitlab::parse_pull_request(raw).unwrap();
-        assert_eq!(mr.number, 23, "iid, not id");
-        assert_eq!(mr.author, "Ada L");
-        assert_eq!(mr.state, "OPENED", "state vocabulary is normalised across forges");
-        assert_eq!(mr.mergeable, "MERGEABLE");
-        assert_eq!(mr.reviewers.len(), 1);
-    }
 }
