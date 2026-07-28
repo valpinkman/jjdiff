@@ -52,8 +52,15 @@ furniture stopped shouting.
   else. A row that is both selected and bookmarked shows both, and they don't collide.
 - **Diff fills are alpha-tinted, not flat.** Added/removed backgrounds sit at 8–10% over
   the card, so a long diff doesn't read as stripes of solid colour.
-- **Banned:** a third accent, gradients, coloured shadows, using green/red for anything
-  that isn't diff semantics.
+- **Added/removed also carry *outcome*, and only outcome.** The green/red pair means one
+  thing — this succeeded, this did not — and forge review is the second place that axis
+  exists: a check that passed or failed, a proposal that merged or was closed, a reviewer
+  who approved or requested changes. Reusing the pair keeps the palette at two hues where
+  GitHub would reach for a third (its purple "merged" is exactly the banned case). Anything
+  that is *not* a binary outcome — open, draft, queued, in progress — stays neutral, which
+  is what makes the coloured states worth noticing.
+- **Banned:** a third accent, gradients, coloured shadows, using green/red for decoration
+  or for anything that is neither diff nor outcome.
 
 ## 3. Typography Rules
 

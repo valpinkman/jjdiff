@@ -40,7 +40,23 @@ import {
   installTerminalHelper,
   markReviewed,
   newChange,
+  getForgeInfo,
+  getPullRequest,
+  listPullRequests,
+  onMenuCommand,
   onRepoChanged,
+  openInEditor,
+  openPullRequest,
+  openUrl,
+  setEditorCommand,
+  openRepoWindow,
+  setMenu,
+  submitReview,
+  type ForgeInfo,
+  type MenuGroup,
+  type PullRequest,
+  type PullRequestSummary,
+  type ReviewVerdict,
   onSecondInstance,
   openRepository,
   pickRepository,
@@ -63,10 +79,13 @@ import {
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
+import type { FileMenuRequest } from './file-tree.js';
 import { iconAbsorb, iconFetch, iconSplit, iconUndo, iconUnified } from './icons.js';
-import { matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
+import { formatShortcut, matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
+import { askConfirm, askText } from './prompt.js';
 import './patch-view.js';
 import type { PatchView } from './patch-view.js';
+import './shortcuts-help.js';
 import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
@@ -176,32 +195,111 @@ export class App extends LitElement {
   @state() private markdownPreviews: ReadonlyMap<string, string> = new Map();
   /** Sidebar width in px (resizable via drag handle). */
   @state() private sidebarWidth = 292;
+  /** Open file-tree context menu, anchored at viewport coordinates. */
+  @state() private fileMenu: FileMenuRequest | null = null;
+  /** The `?` shortcut sheet. */
+  @state() private shortcutsOpen = false;
+  /** Which forge this repo is on, or null when it is on none we can drive. */
+  @state() private forge: ForgeInfo | null = null;
+  /** The proposal under review, when one is open. */
+  @state() private pullRequest: PullRequest | null = null;
+  /**
+   * Set only while the diff pane is showing the *whole* proposal rather than
+   * the selected change. Null is the normal state — the banner is context on a
+   * change you are already looking at, not a mode.
+   */
+  @state() private prRevset: string | null = null;
+  /** Open proposals indexed by head branch, for matching against bookmarks. */
+  @state() private proposalsByBranch: ReadonlyMap<string, PullRequestSummary> = new Map();
+  /** Review composer state; null when closed. */
+  @state() private reviewDraft: { verdict: ReviewVerdict; body: string } | null = null;
+  /**
+   * When set, the command bar shows these instead of the app commands — the
+   * proposal picker borrows the palette rather than duplicating its filtering
+   * and keyboard handling. Cleared when the bar closes.
+   */
+  @state() private proposalPicker: Command[] | null = null;
 
   private unlisten: (() => void) | null = null;
+  private unlistenMenu: (() => void) | null = null;
+  /** Serialized shape of the last menu pushed, so identical renders are free. */
+  private menuSignature = '';
   /** The change id the description editor was last seeded from. */
   private seededFor: string | null = null;
   private commandBarShortcut: Shortcut = parseShortcut('Mod+k');
+  /** The raw binding string, for display in the shortcut sheet and palette hints. */
+  @state() private commandBarBinding = 'Mod+k';
 
   override connectedCallback() {
     super.connectedCallback();
     void this.start();
     window.addEventListener('keydown', this.onGlobalKey);
     window.addEventListener('click', this.onWindowClick);
+    window.addEventListener('focus', this.onWindowFocus);
+    void onMenuCommand(this.onMenuCommand).then((stop) => (this.unlistenMenu = stop));
   }
 
   override disconnectedCallback() {
     this.unlisten?.();
+    this.unlistenMenu?.();
     window.removeEventListener('keydown', this.onGlobalKey);
     window.removeEventListener('click', this.onWindowClick);
+    window.removeEventListener('focus', this.onWindowFocus);
     super.disconnectedCallback();
   }
 
-  /** Close the repo menu on any click outside it. */
+  /**
+   * The menu bar is app-global on macOS, so it must follow focus: whichever
+   * window the user is in re-pushes its own commands on the way in.
+   */
+  private onWindowFocus = () => {
+    this.menuSignature = '';
+    this.syncMenu();
+  };
+
+  /** Run a command the native menu dispatched — unless another window owns focus. */
+  private onMenuCommand = (id: string) => {
+    if (!document.hasFocus()) return;
+    this.commands.find((command) => command.id === id)?.run();
+  };
+
+  /**
+   * Push the command list to the native menu whenever it changes shape. The
+   * palette is the single source of truth; this only reshapes it into groups.
+   * Diffed by signature because `updated()` runs on every render and rebuilding
+   * a native menu per keystroke would be absurd.
+   */
+  private syncMenu() {
+    const groups: MenuGroup[] = [];
+    for (const command of this.commands) {
+      const title = command.group ?? 'Commands';
+      const last = groups[groups.length - 1];
+      const group = last?.title === title ? last : (groups.push({ title, items: [] }), groups[groups.length - 1]!);
+      group.items.push({ id: command.id, label: command.label });
+    }
+    const signature = JSON.stringify(groups);
+    if (signature === this.menuSignature) return;
+    this.menuSignature = signature;
+    void setMenu(groups).catch(() => {
+      // A menu that fails to build must not take the window down with it.
+      this.menuSignature = '';
+    });
+  }
+
+  protected override updated() {
+    if (document.hasFocus()) this.syncMenu();
+  }
+
+  /** Close the repo menu and the file context menu on any click outside them. */
   private onWindowClick = (event: MouseEvent) => {
-    if (!this.repoMenuOpen) return;
     const path = event.composedPath();
-    if (!path.some((node) => node instanceof HTMLElement && node.classList?.contains('repo-menu-root'))) {
+    const inside = (className: string) =>
+      path.some((node) => node instanceof HTMLElement && node.classList?.contains(className));
+    if (this.repoMenuOpen && !inside('repo-menu-root')) {
       this.repoMenuOpen = false;
+    }
+    if (this.fileMenu && !inside('file-menu')) {
+      this.fileMenu = null;
     }
   };
 
@@ -238,20 +336,23 @@ export class App extends LitElement {
     }
   }
 
+  /** Same picker, but the repo lands in its own window (or focuses its existing one). */
+  private async openFolderInNewWindow() {
+    this.repoMenuOpen = false;
+    const picked = await pickRepository();
+    if (!picked) return;
+    await this.run(() => openRepoWindow(picked));
+  }
+
   /**
-   * `jjdiff` launched again while the app is running: open the repo in the
-   * existing window. If the second invocation pointed at the same repo, a
-   * plain refresh keeps it simple; otherwise we switch as `openFolder` does.
-   * Revset/walkthrough flags reapply through the same launch-options path.
+   * `jjdiff` launched again while the app is running. The backend routes this:
+   * a repo with no window gets a fresh one, and only the window already bound
+   * to that repo receives the event — so by the time we see it, this window is
+   * the right one and all that is left is to reload and apply the flags.
    */
   private async handleSecondInstance(args: SecondInstanceArgs) {
     if (args.repoPath) {
-      const current = this.repo?.root;
-      if (current && current !== args.repoPath) {
-        await this.switchRepo(args.repoPath);
-      } else {
-        await this.refresh();
-      }
+      await this.refresh();
     }
     if (args.revset) {
       const target = this.repo?.graph.find(
@@ -279,6 +380,296 @@ export class App extends LitElement {
     } catch (error) {
       this.actionError = String(error);
       this.lastOutcome = null;
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /**
+   * Open a file in the configured editor. With no explicit path, uses the diff
+   * cursor (so `o` works mid-review), falling back to the focused file.
+   */
+  private async openFileInEditor(path?: string, line?: number) {
+    const target =
+      path !== undefined
+        ? { path, line }
+        : this.patchView?.cursorLocation() ??
+          (this.focusPath ? { path: this.focusPath, line: undefined } : null);
+    if (!target) {
+      this.actionError = 'No file selected — move the cursor to a file first (j/k).';
+      return;
+    }
+    this.fileMenu = null;
+    try {
+      await openInEditor(target.path, target.line);
+      this.actionError = null;
+    } catch (error) {
+      // An unconfigured editor is a setup step, not a failure — offer the
+      // setting rather than printing the config key and leaving them to it.
+      if (String(error).includes('no editor configured')) {
+        await this.configureEditor();
+        return;
+      }
+      this.actionError = String(error);
+    }
+  }
+
+  /** Set `[editor] command`, seeded with whatever is configured now. */
+  private async configureEditor() {
+    const current = await getConfig()
+      .then((config) => config.editor.command)
+      .catch(() => '');
+    const command = await askText({
+      heading: 'Editor command',
+      detail:
+        'Placeholders: {file} (absolute path), {line}, {repo}.\n' +
+        'Split on spaces and run directly — no shell.\n\n' +
+        'Examples:  zed {file}:{line}   ·   code -g {file}:{line}   ·   idea --line {line} {file}',
+      value: current,
+      placeholder: 'zed {file}:{line}',
+      confirmLabel: 'Save',
+    });
+    if (command === null) return;
+    try {
+      const path = await setEditorCommand(command);
+      this.lastOutcome = {
+        message: command.trim() ? `Editor saved to ${path}.` : `Editor cleared in ${path}.`,
+        operation: '',
+      };
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
+
+  // ---- Forge review ----
+
+  /**
+   * Index the open proposals by their head branch, so a change that carries a
+   * matching bookmark can show its proposal without being asked to.
+   *
+   * One `gh pr list` per repo, not per selection — it is a network call. Failure
+   * is silent: no forge, no auth or no network simply means no banner.
+   */
+  private async loadProposalIndex() {
+    if (!this.forge) return;
+    try {
+      const proposals = await listPullRequests();
+      const index = new Map<string, PullRequestSummary>();
+      for (const proposal of proposals) {
+        index.set(proposal.head, proposal);
+        // A proposal fetched by number lands on its own namespaced bookmark
+        // rather than the author's branch name; match that too, so the explicit
+        // and automatic paths converge on the same banner.
+        index.set(`jjdiff-pr-${proposal.number}`, proposal);
+        index.set(`jjdiff-mr-${proposal.number}`, proposal);
+      }
+      this.proposalsByBranch = index;
+    } catch {
+      this.proposalsByBranch = new Map();
+    }
+  }
+
+  /** The open proposal for the selected change, matched on its bookmarks. */
+  private get matchedProposal(): PullRequestSummary | null {
+    const change = this.selectedChange;
+    if (!change || this.proposalsByBranch.size === 0) return null;
+    for (const bookmark of change.bookmarks) {
+      const found = this.proposalsByBranch.get(bookmark);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * Load the full proposal (checks, reviewers, merge state) for whatever the
+   * selection matched. The list call carries none of that, so this fills it in
+   * once per number and is skipped when it is already loaded.
+   */
+  private async syncMatchedProposal() {
+    const matched = this.matchedProposal;
+    if (!matched) {
+      // Only clear a banner we inferred; an explicitly opened proposal owns the
+      // view until it is closed.
+      if (!this.prRevset) this.pullRequest = null;
+      return;
+    }
+    if (this.pullRequest?.number === matched.number) return;
+    try {
+      this.pullRequest = await getPullRequest(matched.number);
+    } catch {
+      this.pullRequest = null;
+    }
+  }
+
+  /**
+   * Fetch a proposal by number — for one whose branch is not local, which is
+   * the case whenever you are reviewing someone else's work. Afterwards its
+   * head is an ordinary bookmark, so the banner arrives through the same path
+   * as a proposal that was already there.
+   */
+  private async openProposal(number: number) {
+    this.busy = 'pull-request';
+    try {
+      const opened = await openPullRequest(number);
+      this.pullRequest = opened;
+      this.focusPath = null;
+      this.viewMode = 'full';
+      await this.refresh();
+      // Select the fetched head so the change, its diff and the banner agree.
+      const head = this.repo?.graph.find((change) =>
+        change.bookmarks.includes(opened.bookmark),
+      );
+      if (head) {
+        this.selected = head.changeId;
+      }
+      // Someone else's proposal is usually several commits, so default to the
+      // whole thing rather than whichever commit happens to be the tip.
+      this.prRevset = opened.revset;
+      await this.loadDiff();
+      void this.loadProposalIndex();
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
+      this.pullRequest = null;
+      this.prRevset = null;
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  /** Toggle between the whole proposal's diff and the selected change's own. */
+  private async toggleProposalDiff() {
+    const pr = this.pullRequest;
+    if (!pr) return;
+    // The forge's own view of the proposal, not base..selection — selecting a
+    // commit in the middle of a stack must still diff the whole thing.
+    this.prRevset = this.prRevset
+      ? null
+      : `${pr.baseOid || pr.base}..${pr.headOid || pr.head}`;
+    this.focusPath = null;
+    await this.loadDiff();
+  }
+
+  /** Hand a URL to the system browser; the WebView has nowhere to open it. */
+  private async openExternal(url: string) {
+    try {
+      await openUrl(url);
+      this.actionError = null;
+    } catch (error) {
+      this.actionError = String(error);
+    }
+  }
+
+  /**
+   * Pick from the open proposals. Uses the command bar rather than a bespoke
+   * list: it already does filtering, keyboard selection and grouping, and a
+   * proposal is just another thing to run.
+   */
+  private async showProposalList() {
+    this.busy = 'pull-request';
+    try {
+      const proposals = await listPullRequests();
+      this.actionError = null;
+      if (proposals.length === 0) {
+        this.lastOutcome = { message: `No open ${this.forge?.noun ?? 'pull request'}s.`, operation: '' };
+        return;
+      }
+      this.proposalPicker = proposals.map((proposal) => ({
+        id: `pr-${proposal.number}`,
+        label: `#${proposal.number} ${proposal.title}`,
+        hint: `${proposal.author}${proposal.draft ? ' · draft' : ''}`,
+        group: 'Open for review',
+        run: () => void this.openProposal(proposal.number),
+      }));
+      this.barOpen = true;
+    } catch (error) {
+      this.actionError = String(error);
+    } finally {
+      this.busy = null;
+    }
+  }
+
+  private async promptForProposal() {
+    const noun = this.forge?.noun ?? 'pull request';
+    const answer = await askText({
+      heading: `Review which ${noun}?`,
+      detail: 'Its number on the forge.',
+      placeholder: '75',
+      confirmLabel: 'Open',
+    });
+    const number = Number(answer?.trim());
+    if (!answer || !Number.isInteger(number) || number <= 0) return;
+    await this.openProposal(number);
+  }
+
+  /** Seed the composer from the pending inline comments, if any. */
+  private async openReviewComposer() {
+    const change = this.selectedChange;
+    let body = '';
+    if (change) {
+      try {
+        body = this.pendingComments.length ? await exportReviewMarkdown(change.changeId) : '';
+      } catch {
+        // A comment store that will not export must not block a plain review.
+        body = '';
+      }
+    }
+    this.reviewDraft = { verdict: 'comment', body };
+  }
+
+  /**
+   * Submit the review. Outward-facing and effectively irreversible, so it
+   * confirms first, naming the verdict and the proposal.
+   */
+  private async sendReview() {
+    const draft = this.reviewDraft;
+    const pr = this.pullRequest;
+    if (!draft || !pr) return;
+    const verdictLabel = {
+      approve: 'Approve',
+      requestChanges: 'Request changes on',
+      comment: 'Comment on',
+    }[draft.verdict];
+    const noun = this.forge?.noun ?? 'pull request';
+    const ok = await askConfirm({
+      heading: `${verdictLabel} ${noun} #${pr.number}?`,
+      detail: 'This is posted publicly on the forge.',
+      confirmLabel: verdictLabel.split(' ')[0],
+      danger: draft.verdict === 'requestChanges',
+    });
+    if (!ok) return;
+    this.busy = 'submit-review';
+    try {
+      // Outdated comments have no line on the current diff, so the forge would
+      // reject the whole review. They ride along in the body instead — the
+      // backend does the same for anything else it cannot anchor.
+      const anchored = this.pendingComments.filter((comment) => !comment.outdated);
+      const result = await submitReview(
+        pr.number,
+        draft.verdict,
+        draft.body,
+        anchored.map((comment) => ({
+          path: comment.path,
+          line: comment.line,
+          side: comment.side,
+          body: comment.body,
+        })),
+      );
+      this.reviewDraft = null;
+      this.lastOutcome = {
+        message: result.fellBack
+          ? `Review submitted on #${pr.number}, but the comments went into the body: ${result.fellBack}`
+          : result.inline
+            ? `Review submitted on #${pr.number} with ${result.inline} inline comment${result.inline === 1 ? '' : 's'}.`
+            : `Review submitted on #${pr.number}.`,
+        operation: '',
+      };
+      this.actionError = null;
+      // Reviewer state and merge status just changed.
+      this.pullRequest = await getPullRequest(pr.number);
+    } catch (error) {
+      this.actionError = String(error);
     } finally {
       this.busy = null;
     }
@@ -357,6 +748,7 @@ export class App extends LitElement {
         this.applyTheme(config.ui.theme);
       }
       this.commandBarShortcut = parseShortcut(config.keymap.commandBar);
+      this.commandBarBinding = config.keymap.commandBar;
     } catch {
       // Config is best-effort; defaults are fine.
     }
@@ -368,8 +760,20 @@ export class App extends LitElement {
     // running forwards its parsed argv here. Open the repo in the existing
     // window rather than starting a rival process.
     void onSecondInstance((args) => void this.handleSecondInstance(args));
+    // Which forge this repo is on, if any. Best-effort: forge affordances are
+    // simply absent on a repo we cannot drive, never broken.
+    void getForgeInfo()
+      .then((info) => {
+        this.forge = info;
+        return this.loadProposalIndex();
+      })
+      .catch(() => (this.forge = null));
     try {
       const launch = await getLaunchOptions();
+      if (launch.pullRequest !== null) {
+        // `jjdiff pr 75` — straight into reviewing the proposal.
+        await this.openProposal(launch.pullRequest);
+      }
       if (launch.revset) {
         // `jjdiff <revset>`: open on that change when it is in the loaded history.
         const target = this.repo?.graph.find(
@@ -468,6 +872,8 @@ export class App extends LitElement {
   private onGlobalKey = (event: KeyboardEvent) => {
     if (matchesShortcut(event, this.commandBarShortcut)) {
       event.preventDefault();
+      // Always the command palette, never a stale proposal picker.
+      this.proposalPicker = null;
       this.barOpen = !this.barOpen;
       return;
     }
@@ -491,6 +897,14 @@ export class App extends LitElement {
       }
     }
     if (event.key === 'Escape' && !typing) {
+      if (this.shortcutsOpen) {
+        this.shortcutsOpen = false;
+        return;
+      }
+      if (this.fileMenu) {
+        this.fileMenu = null;
+        return;
+      }
       if (this.searchOpen) {
         this.closeSearch();
         return;
@@ -522,6 +936,14 @@ export class App extends LitElement {
       case 'v':
         event.preventDefault();
         this.patchView?.toggleViewedAtCursor();
+        break;
+      case 'o':
+        event.preventDefault();
+        void this.openFileInEditor();
+        break;
+      case '?':
+        event.preventDefault();
+        this.shortcutsOpen = !this.shortcutsOpen;
         break;
     }
   };
@@ -614,6 +1036,7 @@ export class App extends LitElement {
         this.loadConflicts(),
         this.loadWalkthrough(),
         this.loadComments(),
+        this.syncMatchedProposal(),
       ]);
     } catch (error) {
       this.error = String(error);
@@ -628,6 +1051,11 @@ export class App extends LitElement {
           this.ignoreWhitespace,
         );
         this.files = interdiff.files;
+      } else if (this.prRevset) {
+        // Reviewing a proposal: the revset is the forge's own comparison
+        // (merge base .. head), not a change the local repo selected.
+        this.viewMode = 'full';
+        this.files = await getDiff(this.prRevset, this.ignoreWhitespace);
       } else {
         this.viewMode = 'full';
         this.files = await getDiff(
@@ -720,10 +1148,14 @@ export class App extends LitElement {
     // so a stack-only lookup silently blanked their description.
     this.description = change.description;
     this.seededFor = change.changeId;
+    // Selecting a change leaves whole-proposal mode: the diff should follow
+    // what was clicked.
+    this.prRevset = null;
     void this.loadDiff();
     void this.loadReview();
     void this.loadConflicts();
     void this.loadWalkthrough();
+    void this.syncMatchedProposal();
   }
 
   private async loadWalkthrough() {
@@ -986,11 +1418,17 @@ export class App extends LitElement {
     });
   }
 
-  private abandonSelected() {
+  private async abandonSelected() {
     const change = this.selectedChange;
     if (!change || change.immutable) return;
     const label = change.description.split('\n')[0] || change.changeId.slice(0, 8);
-    if (!confirm(`Abandon "${label}"?\n\nUndoable from the Ops tab.`)) return;
+    const ok = await askConfirm({
+      heading: `Abandon "${label}"?`,
+      detail: 'Undoable from the Ops tab.',
+      confirmLabel: 'Abandon',
+      danger: true,
+    });
+    if (!ok) return;
     void this.command('abandon', async () => {
       const outcome = await abandonChange(change.changeId);
       this.selected = null;
@@ -1011,14 +1449,16 @@ export class App extends LitElement {
     void this.command('backout', () => backoutChange(change.changeId));
   }
 
-  private rebaseSelected() {
+  private async rebaseSelected() {
     const change = this.selectedChange;
     if (!change || change.immutable || !this.repo) return;
-    const destination = prompt(
-      'Rebase onto which revision?\n\nA change id, bookmark, or revset (e.g. main, @-).',
-      'main',
-    );
-    if (!destination) return;
+    const destination = await askText({
+      heading: 'Rebase onto which revision?',
+      detail: 'A change id, bookmark, or revset (e.g. main, @-).',
+      value: 'main',
+      confirmLabel: 'Rebase',
+    });
+    if (!destination?.trim()) return;
     void this.command('rebase', () =>
       rebaseChange('source', change.changeId, destination.trim()),
     );
@@ -1036,24 +1476,35 @@ export class App extends LitElement {
     void this.command('split', () => splitPaths(change.changeId, paths));
   }
 
-  private restoreSelectedFile() {
+  private async restoreSelectedFile() {
     if (!this.isWorkingCopySelected) return;
     const paths = this.focusPath ? [this.focusPath] : [];
-    const what = paths.length ? paths[0] : 'ALL working-copy changes';
-    if (!confirm(`Discard ${what}?\n\nUndoable from the Ops tab.`)) return;
+    const what = paths.length ? paths[0] : 'all working-copy changes';
+    const ok = await askConfirm({
+      heading: `Discard ${what}?`,
+      detail: 'Undoable from the Ops tab.',
+      confirmLabel: 'Discard',
+      danger: true,
+    });
+    if (!ok) return;
     void this.command('restore', () => restorePaths(paths));
   }
 
-  private createBookmark() {
+  private async createBookmark() {
     const change = this.selectedChange;
     if (!change) return;
-    const name = prompt('Bookmark name:');
+    const name = await askText({ heading: 'Bookmark name', confirmLabel: 'Create' });
     if (!name?.trim()) return;
     void this.command('bookmark', () => setBookmark(name.trim(), change.changeId));
   }
 
-  private removeBookmark(name: string) {
-    if (!confirm(`Delete bookmark "${name}"?`)) return;
+  private async removeBookmark(name: string) {
+    const ok = await askConfirm({
+      heading: `Delete bookmark "${name}"?`,
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
     void this.command('bookmark', () => deleteBookmark(name));
   }
 
@@ -1079,15 +1530,14 @@ export class App extends LitElement {
     void this.command('undo', () => undo());
   }
 
-  private restoreTo(operation: Operation) {
-    if (
-      !confirm(
-        `Restore the repository to just after:\n\n${operation.description}\n\n` +
-          'This rewrites the working copy. It is itself undoable.',
-      )
-    ) {
-      return;
-    }
+  private async restoreTo(operation: Operation) {
+    const ok = await askConfirm({
+      heading: 'Restore the repository?',
+      detail: `Back to just after:\n${operation.description}\n\nThis rewrites the working copy. It is itself undoable.`,
+      confirmLabel: 'Restore',
+      danger: true,
+    });
+    if (!ok) return;
     void this.command('op restore', () => restoreOperation(operation.id));
   }
 
@@ -1205,7 +1655,30 @@ export class App extends LitElement {
     ]);
 
     add('Review', [
-      { id: 'find', label: 'Find in Diffs', hint: 'Mod+F', run: () => this.openSearch() },
+      {
+        id: 'find',
+        label: 'Find in Diffs',
+        hint: formatShortcut('Mod+f'),
+        run: () => this.openSearch(),
+      },
+      {
+        id: 'open-in-editor',
+        label: 'Open File in Editor',
+        hint: 'o',
+        run: () => void this.openFileInEditor(),
+      },
+      {
+        id: 'shortcuts',
+        label: 'Keyboard Shortcuts',
+        hint: '?',
+        run: () => (this.shortcutsOpen = true),
+      },
+      {
+        id: 'set-editor',
+        label: 'Set Editor Command…',
+        hint: 'for o',
+        run: () => void this.configureEditor(),
+      },
       this.walkthrough
         ? {
             id: 'walkthrough',
@@ -1259,24 +1732,36 @@ export class App extends LitElement {
       mutable && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
       { id: 'jj-new', label: 'New Change on Top (jj new)', run: () => this.newOnSelected() },
       isWc && { id: 'jj-absorb', label: 'Absorb Into Ancestors (jj absorb)', run: () => this.runAbsorb() },
-      mutable && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => this.rebaseSelected() },
+      mutable && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => void this.rebaseSelected() },
       mutable && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
       { id: 'jj-duplicate', label: 'Duplicate Change (jj duplicate)', run: () => this.duplicateSelected() },
       { id: 'jj-backout', label: 'Back Out Change (jj backout)', run: () => this.backoutSelected() },
-      mutable && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => this.abandonSelected() },
+      mutable && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => void this.abandonSelected() },
       isWc && {
         id: 'jj-restore',
         label: 'Discard Working-Copy Changes (jj restore)',
-        run: () => this.restoreSelectedFile(),
+        run: () => void this.restoreSelectedFile(),
       },
     ]);
 
     add('Repository', [
       { id: 'jj-fetch', label: 'Fetch (jj git fetch)', run: () => this.runFetch() },
       { id: 'jj-push', label: 'Push (jj git push)', run: () => this.runPush() },
-      { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => this.createBookmark() },
-      { id: 'refresh', label: 'Reload Repository', run: () => void this.refresh() },
+      { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => void this.createBookmark() },
+      {
+        id: 'refresh',
+        label: 'Reload Repository',
+        run: () => {
+          void this.refresh();
+          void this.loadProposalIndex();
+        },
+      },
       { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
+      {
+        id: 'open-repo-window',
+        label: 'Open Repository in New Window…',
+        run: () => void this.openFolderInNewWindow(),
+      },
       {
         id: 'install-terminal-helper',
         label: 'Install Terminal Helper…',
@@ -1284,6 +1769,36 @@ export class App extends LitElement {
         run: () => void this.runInstallTerminalHelper(),
       },
     ]);
+
+    // Only on a forge we can actually drive — an affordance that always fails
+    // is worse than one that is absent.
+    if (this.forge) {
+      const noun = this.forge.noun;
+      const Noun = noun.replace(/\b\w/g, (c) => c.toUpperCase());
+      add('Forge', [
+        {
+          id: 'pr-open',
+          label: `Review ${Noun}…`,
+          hint: 'by number',
+          run: () => void this.promptForProposal(),
+        },
+        {
+          id: 'pr-list',
+          label: `List Open ${Noun}s`,
+          run: () => void this.showProposalList(),
+        },
+        !!this.pullRequest && {
+          id: 'pr-review',
+          label: 'Submit Review…',
+          run: () => void this.openReviewComposer(),
+        },
+        !!this.pullRequest && {
+          id: 'pr-whole',
+          label: this.prRevset ? `Diff This Change Only` : `Diff Whole ${Noun}`,
+          run: () => void this.toggleProposalDiff(),
+        },
+      ]);
+    }
 
     add('History', [
       { id: 'jj-undo', label: 'Undo Last Operation (jj undo)', run: () => this.runUndo() },
@@ -1493,6 +2008,9 @@ export class App extends LitElement {
                       @file-selected=${(event: CustomEvent<string | null>) => {
                         this.focusPath = event.detail;
                       }}
+                      @file-menu=${(event: CustomEvent<FileMenuRequest>) => {
+                        this.fileMenu = event.detail;
+                      }}
                     ></jj-file-tree>`}
               </div>
             `}
@@ -1541,7 +2059,7 @@ export class App extends LitElement {
                             ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
                             : html`<button
                                 class="tool"
-                                @click=${() => this.restoreTo(operation)}
+                                @click=${() => void this.restoreTo(operation)}
                               >
                                 Restore here
                               </button>`}
@@ -1571,7 +2089,7 @@ export class App extends LitElement {
                       title="Delete bookmark"
                       @click=${(event: Event) => {
                         event.stopPropagation();
-                        this.removeBookmark(bookmark);
+                        void this.removeBookmark(bookmark);
                       }}
                     >
                       ×
@@ -1785,6 +2303,7 @@ export class App extends LitElement {
               <button class="tool" @click=${this.markCurrentReviewed}>Mark Reviewed</button>
             </div>`
           : nothing}
+        ${this.renderPullRequestBanner()}
         ${this.walkActive && this.walkthrough
           ? html`<div class="walk-banner">
               ${keyed(
@@ -1905,10 +2424,242 @@ export class App extends LitElement {
       </main>
       ${this.barOpen
         ? html`<jj-command-bar
-            .commands=${this.commands}
-            @close=${() => (this.barOpen = false)}
+            .commands=${this.proposalPicker ?? this.commands}
+            @close=${() => {
+              this.barOpen = false;
+              this.proposalPicker = null;
+            }}
           ></jj-command-bar>`
         : nothing}
+      ${this.shortcutsOpen
+        ? html`<jj-shortcuts-help
+            .commandBar=${this.commandBarBinding}
+            @close=${() => (this.shortcutsOpen = false)}
+          ></jj-shortcuts-help>`
+        : nothing}
+      ${this.renderFileMenu()}
+    `;
+  }
+
+  /**
+   * The proposal the selected change belongs to: identity, merge state, checks
+   * and reviewers, above the diff it describes.
+   *
+   * This is *context*, not a mode. It appears because a bookmark on the change
+   * matched an open proposal, so working on your own branch shows its CI and
+   * reviewers without asking. Reviewing the whole proposal rather than the one
+   * commit is a toggle, not a different screen.
+   *
+   * Colour follows DESIGN.md — no new hue. Check and review outcomes reuse the
+   * added/removed semantics (they are pass/fail), everything else is neutral.
+   */
+  private renderPullRequestBanner() {
+    const pr = this.pullRequest;
+    if (!pr) return nothing;
+    const whole = this.prRevset !== null;
+    const conflicting = pr.mergeable === 'CONFLICTING';
+    return html`
+      <div class="pr-banner">
+        <div class="pr-head">
+          ${proposalState(pr)}
+          <button
+            class="pr-open"
+            title=${`Open #${pr.number} on the forge`}
+            @click=${() => void this.openExternal(pr.url)}
+          >
+            <span class="pr-number">#${pr.number}</span>
+            <strong class="pr-title">${pr.title}</strong>
+          </button>
+          <span class="spacer"></span>
+          ${whole
+            ? html`<span class="pr-scope">whole ${this.forge?.noun ?? 'PR'}</span>`
+            : nothing}
+          <button class="tool" @click=${() => void this.toggleProposalDiff()}>
+            ${whole ? 'This change only' : `Diff whole ${this.forge?.kind === 'gitlab' ? 'MR' : 'PR'}`}
+          </button>
+          <button class="tool" @click=${() => void this.openReviewComposer()}>Review…</button>
+        </div>
+        <div class="pr-meta">
+          <span>${pr.author}</span>
+          <span class="pr-branches">
+            <code>${pr.base}</code> ← <code>${pr.head}</code>
+          </span>
+          ${pr.additions || pr.deletions
+            ? html`<span class="pr-stat">
+                <span class="plus">+${pr.additions}</span>
+                <span class="minus">−${pr.deletions}</span>
+              </span>`
+            : nothing}
+          ${conflicting
+            ? html`<span class="pr-conflict" title="This ${this.forge?.noun ?? 'pull request'} has conflicts with its base branch"
+                >⚠ conflicts</span
+              >`
+            : nothing}
+          ${this.renderChecks(pr)}
+          ${pr.reviewers.length
+            ? html`<span class="pr-reviewers">
+                ${pr.reviewers.map(
+                  (reviewer) => html`<span
+                    class="tag muted ${reviewer.state === 'APPROVED'
+                      ? 'approved'
+                      : reviewer.state === 'CHANGES_REQUESTED'
+                        ? 'changes'
+                        : ''}"
+                    title=${reviewerTitle(reviewer.state)}
+                    >${reviewer.state === 'APPROVED'
+                      ? '✓ '
+                      : reviewer.state === 'CHANGES_REQUESTED'
+                        ? '✕ '
+                        : ''}${reviewer.name}</span
+                  >`,
+                )}
+              </span>`
+            : nothing}
+        </div>
+      </div>
+      ${this.reviewDraft ? this.renderReviewComposer(pr) : nothing}
+    `;
+  }
+
+  /**
+   * CI summary. Reads as one verdict, not a row of counters: what a reviewer
+   * needs is "can I trust this build", and only the failures are worth naming.
+   * Failed checks are clickable — a red name with no way to reach the log is
+   * an invitation to go hunting in a browser.
+   */
+  private renderChecks(pr: PullRequest) {
+    if (pr.checks.length === 0) return nothing;
+    const failed = pr.checks.filter((check) => check.conclusion === 'FAILURE');
+    const running = pr.checks.filter((check) => check.status !== 'COMPLETED');
+    const passed = pr.checks.filter((check) => check.conclusion === 'SUCCESS');
+    if (failed.length) {
+      return html`<span class="pr-checks bad">
+        <span>✕ ${failed.length} of ${pr.checks.length} failed</span>
+        ${failed.map(
+          (check) => html`<button
+            class="pr-check-name"
+            title="Open ${check.name} on the forge"
+            @click=${() => void this.openExternal(check.url)}
+          >
+            ${check.name}
+          </button>`,
+        )}
+      </span>`;
+    }
+    if (running.length) {
+      // Neutral, and pulsing rather than spinning (DESIGN.md §6): in progress
+      // is not an outcome, so it must not read as one.
+      return html`<span class="pr-checks pending">
+        <span class="dot"></span>
+        ${running.length} check${running.length === 1 ? '' : 's'} running
+      </span>`;
+    }
+    if (passed.length) {
+      return html`<span class="pr-checks ok"
+        >✓ ${passed.length} check${passed.length === 1 ? '' : 's'} passed</span
+      >`;
+    }
+    return nothing;
+  }
+
+  /** Review composer, seeded from the change's pending inline comments. */
+  private renderReviewComposer(pr: PullRequest) {
+    const draft = this.reviewDraft!;
+    const verdicts: { id: ReviewVerdict; label: string }[] = [
+      { id: 'comment', label: 'Comment' },
+      { id: 'approve', label: 'Approve' },
+      { id: 'requestChanges', label: 'Request changes' },
+    ];
+    return html`
+      <div class="pr-review">
+        <div class="pr-review-head">
+          <span class="section-label">Submit review</span>
+          ${this.pendingComments.length
+            ? html`<span class="pr-review-hint"
+                >seeded from ${this.pendingComments.length} pending comment${this.pendingComments
+                  .length === 1
+                  ? ''
+                  : 's'}</span
+              >`
+            : nothing}
+          <span class="spacer"></span>
+          ${verdicts.map(
+            (verdict) => html`<button
+              class="tool ${draft.verdict === verdict.id ? 'primary' : ''}"
+              @click=${() => (this.reviewDraft = { ...draft, verdict: verdict.id })}
+            >
+              ${verdict.label}
+            </button>`,
+          )}
+        </div>
+        <textarea
+          class="pr-review-body"
+          placeholder="Leave a comment…"
+          .value=${draft.body}
+          @input=${(event: Event) =>
+            (this.reviewDraft = {
+              ...draft,
+              body: (event.target as HTMLTextAreaElement).value,
+            })}
+        ></textarea>
+        <div class="pr-review-actions">
+          <span class="pr-review-hint">Posted publicly on #${pr.number}.</span>
+          <span class="spacer"></span>
+          <button class="tool" @click=${() => (this.reviewDraft = null)}>Cancel</button>
+          <button
+            class="tool primary"
+            ?disabled=${this.busy === 'submit-review'}
+            @click=${() => void this.sendReview()}
+          >
+            ${this.busy === 'submit-review' ? 'Submitting…' : 'Submit'}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * File-tree context menu. Rendered at the app root rather than inside the
+   * tree so the sidebar's `overflow` cannot clip it; positioned from the click
+   * and nudged back inside the viewport when it would overhang.
+   */
+  private renderFileMenu() {
+    const menu = this.fileMenu;
+    if (!menu) return nothing;
+    const WIDTH = 210;
+    const HEIGHT = 116;
+    const left = Math.min(menu.x, window.innerWidth - WIDTH - 8);
+    const top = Math.min(menu.y, window.innerHeight - HEIGHT - 8);
+    const isViewed = this.viewedPaths.has(menu.path);
+    const close = () => (this.fileMenu = null);
+    return html`
+      <div class="file-menu" style="left:${left}px; top:${top}px; width:${WIDTH}px">
+        <button @click=${() => void this.openFileInEditor(menu.path)}>Open in Editor</button>
+        <button
+          @click=${() => {
+            this.focusPath = this.focusPath === menu.path ? null : menu.path;
+            close();
+          }}
+        >
+          ${this.focusPath === menu.path ? 'Clear File Focus' : 'Focus on This File'}
+        </button>
+        <button
+          @click=${() => {
+            this.setPathViewed(menu.path, !isViewed);
+            close();
+          }}
+        >
+          ${isViewed ? 'Mark as Not Viewed' : 'Mark as Viewed'}
+        </button>
+        <button
+          @click=${() => {
+            void navigator.clipboard.writeText(menu.path);
+            close();
+          }}
+        >
+          Copy Path
+        </button>
+      </div>
     `;
   }
 
@@ -1970,17 +2721,44 @@ export class App extends LitElement {
   };
 
   private onToggleViewed = (event: CustomEvent<{ path: string; viewed: boolean }>) => {
+    this.setPathViewed(event.detail.path, event.detail.viewed);
+  };
+
+  /** Optimistic update; persistence follows, and a failure reloads the truth. */
+  private setPathViewed(path: string, viewed: boolean) {
     const change = this.selectedChange;
     if (!change) return;
-    const { path, viewed } = event.detail;
-    // Optimistic update; persistence follows.
     const next = new Set(this.viewedPaths);
     if (viewed) next.add(path);
     else next.delete(path);
     this.viewedPaths = next;
     void setViewed(change.changeId, path, viewed).catch(() => void this.loadReview());
-  };
+  }
 }
+
+/**
+ * The proposal's state as a glyph + word.
+ *
+ * Only *outcomes* take colour (DESIGN.md §2): merged succeeded, closed did not.
+ * Open and draft are neutral, because they are a status rather than a verdict —
+ * which is what leaves the coloured ones worth noticing. GitHub's purple for
+ * merged would be a third hue, so it stays out.
+ */
+function proposalState(pr: PullRequest) {
+  const state = pr.draft ? 'draft' : pr.state.toLowerCase();
+  const glyph = { merged: '✓', closed: '✕', draft: '◌', open: '●' }[state] ?? '●';
+  return html`<span class="pr-state ${state}" title=${`${state} · ${pr.mergeable.toLowerCase()}`}>
+    <span class="pr-state-glyph">${glyph}</span>${state}
+  </span>`;
+}
+
+const reviewerTitle = (state: string) =>
+  ({
+    APPROVED: 'approved',
+    CHANGES_REQUESTED: 'requested changes',
+    COMMENTED: 'commented',
+    REQUESTED: 'review requested',
+  })[state] ?? state.toLowerCase().replace(/_/g, ' ');
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;
 const dirname = (path: string) => {

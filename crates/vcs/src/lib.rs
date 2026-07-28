@@ -353,6 +353,13 @@ impl Repo {
 
     // -- Remote --
 
+    /// Fetch one bookmark. Reviewing a proposal needs the base branch present
+    /// locally — the forge's merge-base commit is an ancestor of it, and
+    /// without it the review revset cannot resolve.
+    pub fn git_fetch_branch(&self, remote: &str, branch: &str) -> Result<Outcome> {
+        self.mutate(&["git", "fetch", "--remote", remote, "--branch", branch])
+    }
+
     pub fn git_fetch(&self, remote: Option<&str>) -> Result<Outcome> {
         let mut args = vec!["git", "fetch"];
         if let Some(remote) = remote {
@@ -381,11 +388,58 @@ impl Repo {
         self.mutate(&args)
     }
 
+    /// Fetch a forge proposal's head into a local bookmark, returning it.
+    ///
+    /// This is the one place jjdiff shells out to **git** rather than jj, and
+    /// the reason is structural: proposal heads live outside `refs/heads/*`
+    /// (`refs/pull/N/head`, `refs/merge-requests/N/head`) and `jj git fetch`
+    /// takes bookmark globs, not refspecs. Safe because [`Repo::discover`]
+    /// guarantees the repo is colocated — the `.git` directory is right there.
+    ///
+    /// The head lands on a namespaced bookmark so jj can address it as an
+    /// ordinary revset, the user can see where it came from, and deleting it is
+    /// `jj bookmark delete`. The refspec is forced so re-fetching an updated
+    /// proposal moves the bookmark instead of failing on a non-fast-forward.
+    pub fn fetch_forge_ref(&self, remote: &str, remote_ref: &str, bookmark: &str) -> Result<String> {
+        let refspec = format!("+{remote_ref}:refs/heads/{bookmark}");
+        let output = std::process::Command::new("git")
+            .args(["fetch", remote, &refspec])
+            .current_dir(&self.root)
+            .output()
+            .map_err(VcsError::Io)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(VcsError::CommandFailed {
+                args: vec!["git".into(), "fetch".into(), remote.into(), refspec],
+                stderr,
+            });
+        }
+        // Colocated repos import on the next jj command anyway, but doing it
+        // here means the bookmark is addressable the moment this returns.
+        self.runner.mutate(&["git", "import"])?;
+        Ok(bookmark.to_string())
+    }
+
     pub fn remotes(&self) -> Result<Vec<String>> {
         let out = self.runner.read(&["git", "remote", "list"])?;
         Ok(out
             .lines()
             .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+            .collect())
+    }
+
+    /// Remotes as `(name, url)`. `jj git remote list` prints them space
+    /// separated; the URL is everything after the first field, so a URL
+    /// containing spaces survives.
+    pub fn remote_urls(&self) -> Result<Vec<(String, String)>> {
+        let out = self.runner.read(&["git", "remote", "list"])?;
+        Ok(out
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| {
+                let (name, url) = line.split_once(char::is_whitespace)?;
+                Some((name.to_string(), url.trim().to_string()))
+            })
             .collect())
     }
 
@@ -542,6 +596,73 @@ mod tests {
         let oldest = &evolog[evolog.len() - 1];
         let patch = repo.interdiff(&oldest.commit_id, &wc.commit_id, false).unwrap();
         assert!(patch.contains("work.txt"), "interdiff should mention work.txt: {patch}");
+    }
+
+    #[test]
+    fn fetch_forge_ref_lands_a_pull_head_on_an_addressable_bookmark() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+
+        // Stand in for a forge: publish the initial commit under the same
+        // `refs/pull/N/head` namespace GitHub uses, then fetch from ourselves.
+        let head = repo.log("@-").unwrap()[0].commit_id.clone();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(tmp.path())
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["update-ref", "refs/pull/7/head", &head]);
+
+        let bookmark = repo.fetch_forge_ref(".", "refs/pull/7/head", "jjdiff-pr-7").unwrap();
+        assert_eq!(bookmark, "jjdiff-pr-7");
+
+        // The point of the exercise: the head is now an ordinary revset.
+        let fetched = repo.log("jjdiff-pr-7").unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].commit_id, head);
+
+        // Re-fetching an updated proposal must move the bookmark, not fail on
+        // a non-fast-forward — hence the forced refspec.
+        std::fs::write(tmp.path().join("hello.txt"), "moved\n").unwrap();
+        Command::new("jj")
+            .args(["--config", "signing.behavior=drop", "commit", "-m", "pr update"])
+            .current_dir(tmp.path())
+            .env("JJ_USER", "Test")
+            .env("JJ_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        let moved = repo.log("@-").unwrap()[0].commit_id.clone();
+        git(&["update-ref", "refs/pull/7/head", &moved]);
+        repo.fetch_forge_ref(".", "refs/pull/7/head", "jjdiff-pr-7").unwrap();
+        assert_eq!(repo.log("jjdiff-pr-7").unwrap()[0].commit_id, moved);
+    }
+
+    #[test]
+    fn fetch_forge_ref_reports_a_missing_ref() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+        // A proposal number that does not exist must surface git's own words,
+        // not a silent empty bookmark.
+        let error = repo.fetch_forge_ref(".", "refs/pull/999/head", "jjdiff-pr-999").unwrap_err();
+        assert!(
+            matches!(error, VcsError::CommandFailed { .. }),
+            "expected CommandFailed, got {error:?}"
+        );
     }
 
     #[test]

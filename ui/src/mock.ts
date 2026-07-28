@@ -4,7 +4,11 @@ import type {
   Change,
   Config,
   FilePatch,
+  ForgeInfo,
   Interdiff,
+  OpenedPullRequest,
+  PullRequest,
+  PullRequestSummary,
   RepoState,
   ReviewStatus,
   Walkthrough,
@@ -164,7 +168,65 @@ export const mockFiles: FilePatch[] = [
 export const mockConfig: Config = {
   ui: { diffStyle: 'split', codeFontSize: 12.5, ignoreWhitespace: false, theme: 'system', wordWrap: false },
   keymap: { commandBar: 'Mod+k' },
+  editor: { command: 'zed {file}:{line}' },
 };
+
+export const mockForgeInfo: ForgeInfo = { kind: 'github', noun: 'pull request' };
+
+export const mockPullRequest: PullRequest = {
+  number: 75,
+  title: 'Add retry-with-backoff to the sync engine',
+  body: 'Transient failures no longer abort a sync.',
+  author: 'Ada Example',
+  base: 'main',
+  head: 'sync-retries',
+  baseOid: 'b26222343117d49d65ee7a9222c924c702b7ed64',
+  headOid: '70c32eeb155a5142074d34d860691ea9756b4522',
+  state: 'OPEN',
+  draft: false,
+  mergeable: 'MERGEABLE',
+  url: 'https://example.test/owner/repo/pull/75',
+  additions: 8,
+  deletions: 2,
+  changedFiles: 2,
+  reviewers: [
+    { name: 'Grace Example', state: 'REQUESTED' },
+    { name: 'Alan Example', state: 'APPROVED' },
+  ],
+  // One of each state, so the pills can be eyeballed in `pnpm dev`.
+  checks: [
+    { name: 'app', status: 'COMPLETED', conclusion: 'SUCCESS', url: 'https://example.test/1' },
+    { name: 'crates', status: 'COMPLETED', conclusion: 'FAILURE', url: 'https://example.test/2' },
+    { name: 'lint', status: 'IN_PROGRESS', conclusion: '', url: 'https://example.test/3' },
+  ],
+};
+
+export const mockOpenedPullRequest: OpenedPullRequest = {
+  ...mockPullRequest,
+  bookmark: 'jjdiff-pr-75',
+  revset: 'b26222343117d49d65ee7a9222c924c702b7ed64..jjdiff-pr-75',
+};
+
+export const mockPullRequestList: PullRequestSummary[] = [
+  {
+    number: 75,
+    title: 'Add retry-with-backoff to the sync engine',
+    author: 'Ada Example',
+    state: 'OPEN',
+    draft: false,
+    head: 'sync-retries',
+    updatedAt: '2026-07-27T10:00:00Z',
+  },
+  {
+    number: 74,
+    title: 'Experiment: streaming pulls',
+    author: 'Grace Example',
+    state: 'OPEN',
+    draft: true,
+    head: 'streaming',
+    updatedAt: '2026-07-26T09:00:00Z',
+  },
+];
 
 export const mockReviewStatus = (changeId: string): ReviewStatus =>
   changeId === 'qpalzmwoskxn12345678'

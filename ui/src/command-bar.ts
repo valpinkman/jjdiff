@@ -1,4 +1,4 @@
-import { css, html, LitElement, nothing } from 'lit';
+import { css, html, LitElement, nothing, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 
 export interface Command {
@@ -100,8 +100,42 @@ export class CommandBar extends LitElement {
 
   @query('input') private input!: HTMLInputElement;
 
+  /**
+   * Last real pointer position. Scrolling the list under a stationary cursor
+   * can emit a `mousemove` whose coordinates never changed, which would drag
+   * the cursor back to whatever the pointer happens to be over and fight the
+   * arrow keys. Hover only wins when the mouse actually moved.
+   */
+  private pointer: { x: number; y: number } | null = null;
+
+  private onHover(index: number, event: MouseEvent) {
+    if (this.pointer?.x === event.clientX && this.pointer?.y === event.clientY) return;
+    this.pointer = { x: event.clientX, y: event.clientY };
+    this.active = index;
+  }
+
   override firstUpdated() {
     this.input.focus();
+  }
+
+  protected override updated(changed: PropertyValues) {
+    // The list scrolls, so moving the cursor has to bring it along — arrowing
+    // past the fold otherwise selects something you cannot see.
+    if (changed.has('active')) {
+      const item = this.renderRoot.querySelector('.item.active');
+      // When the cursor lands on the first entry of a group, scroll its header
+      // in too; the label is what tells you where you now are.
+      const header =
+        item?.previousElementSibling?.classList.contains('group') === true
+          ? item.previousElementSibling
+          : item;
+      header?.scrollIntoView({ block: 'nearest' });
+    }
+    // A new filter means a new list — start it at the top rather than wherever
+    // the previous one happened to be scrolled to.
+    if (changed.has('filter')) {
+      this.renderRoot.querySelector('.list')?.scrollTo({ top: 0 });
+    }
   }
 
   private get filtered(): Command[] {
@@ -164,7 +198,7 @@ export class CommandBar extends LitElement {
                   <div
                     class="item ${index === active ? 'active' : ''}"
                     @click=${() => this.pick(command)}
-                    @mousemove=${() => (this.active = index)}
+                    @mousemove=${(event: MouseEvent) => this.onHover(index, event)}
                   >
                     <span>${command.label}</span>
                     ${command.hint ? html`<span class="hint">${command.hint}</span>` : ''}

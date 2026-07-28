@@ -73,6 +73,8 @@ export interface LaunchOptions {
   walkthrough: boolean;
   /** `--walkthrough-file`: import an agent-authored walkthrough instead of generating. */
   walkthroughFile: string | null;
+  /** `jjdiff pr 75`: open this forge proposal for review on launch. */
+  pullRequest: number | null;
 }
 
 export interface WalkthroughStep {
@@ -135,6 +137,10 @@ export interface Config {
     /** E.g. "Mod+Shift+p" — Mod is Cmd on macOS, Ctrl elsewhere. */
     commandBar: string;
   };
+  editor: {
+    /** Template with {file}, {line}, {repo}; empty = no editor configured. */
+    command: string;
+  };
 }
 
 /** What a mutation did, plus the operation to undo it. */
@@ -184,6 +190,7 @@ export const getLaunchOptions = (): Promise<LaunchOptions> =>
         revset: null,
         walkthrough: false,
         walkthroughFile: null,
+        pullRequest: null,
       });
 export const getWalkthrough = (
   changeId: string,
@@ -414,6 +421,168 @@ export const getRecentRepos = (): Promise<string[]> =>
 export const installTerminalHelper = (): Promise<string> =>
   IN_TAURI ? invoke<string>('install_terminal_helper') : Promise.resolve('(mock) would install jjdiff on PATH');
 
+// -- Forge review (gh / glab) --
+
+export interface Reviewer {
+  name: string;
+  /** REQUESTED / APPROVED / CHANGES_REQUESTED / COMMENTED. */
+  state: string;
+}
+
+export interface Check {
+  name: string;
+  /** QUEUED / IN_PROGRESS / COMPLETED. */
+  status: string;
+  /** SUCCESS / FAILURE / SKIPPED / …; empty while still running. */
+  conclusion: string;
+  url: string;
+}
+
+export interface PullRequest {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+  base: string;
+  head: string;
+  /** The forge's own merge base — what a merged proposal must be diffed from. */
+  baseOid: string;
+  headOid: string;
+  /** OPEN / MERGED / CLOSED. */
+  state: string;
+  draft: boolean;
+  mergeable: string;
+  url: string;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  reviewers: Reviewer[];
+  checks: Check[];
+}
+
+export interface PullRequestSummary {
+  number: number;
+  title: string;
+  author: string;
+  state: string;
+  draft: boolean;
+  head: string;
+  updatedAt: string;
+}
+
+/** A fetched proposal plus the revsets that make it reviewable. */
+export interface OpenedPullRequest extends PullRequest {
+  /** Local bookmark the head landed on. */
+  bookmark: string;
+  /** Revset for the proposal's own commits. */
+  revset: string;
+}
+
+export interface ForgeInfo {
+  kind: 'github' | 'gitlab';
+  /** "pull request" / "merge request". */
+  noun: string;
+}
+
+export type ReviewVerdict = 'approve' | 'requestChanges' | 'comment';
+
+/** One inline comment to post against a line of the proposal's diff. */
+export interface ReviewComment {
+  path: string;
+  line: number;
+  side: CommentSide;
+  body: string;
+}
+
+/** What a submitted review actually did. */
+export interface Submitted {
+  /** How many comments landed as real inline comments. */
+  inline: number;
+  /** Set when inline posting failed and they went into the body instead. */
+  fellBack: string | null;
+}
+
+/** Null when the repo is on no forge jjdiff can drive — not an error. */
+export const getForgeInfo = (): Promise<ForgeInfo | null> =>
+  IN_TAURI ? invoke<ForgeInfo | null>('forge_info') : mock((m) => m.mockForgeInfo);
+
+export const listPullRequests = (limit = 30): Promise<PullRequestSummary[]> =>
+  IN_TAURI
+    ? invoke<PullRequestSummary[]>('list_pull_requests', { limit })
+    : mock((m) => m.mockPullRequestList);
+
+export const getPullRequest = (number: number): Promise<PullRequest> =>
+  IN_TAURI ? invoke<PullRequest>('pull_request', { number }) : mock((m) => m.mockPullRequest);
+
+/** Fetch the proposal's head so it can be reviewed as an ordinary revset. */
+export const openPullRequest = (number: number): Promise<OpenedPullRequest> =>
+  IN_TAURI
+    ? invoke<OpenedPullRequest>('open_pull_request', { number })
+    : mock((m) => m.mockOpenedPullRequest);
+
+/**
+ * Outward-facing and effectively irreversible — confirm before calling.
+ * `comments` land as real inline comments where the forge allows it.
+ */
+export const submitReview = (
+  number: number,
+  verdict: ReviewVerdict,
+  body: string,
+  comments: ReviewComment[] = [],
+): Promise<Submitted> =>
+  IN_TAURI
+    ? invoke<Submitted>('submit_review', { number, verdict, body, comments })
+    : Promise.resolve({ inline: comments.length, fellBack: null });
+
+/**
+ * Open a URL in the system browser. The WebView has no tabs, so `target=_blank`
+ * silently does nothing — every outbound link has to go through the host OS.
+ */
+export const openUrl = (url: string): Promise<void> =>
+  IN_TAURI ? invoke<void>('open_url', { url }) : Promise.resolve(void window.open(url, '_blank'));
+
+/** One native submenu, mirroring a command-palette group. */
+export interface MenuGroup {
+  title: string;
+  items: { id: string; label: string; enabled?: boolean }[];
+}
+
+/**
+ * Rebuild the native menu bar. The backend ignores pushes from unfocused
+ * windows — on macOS the menu bar is app-global.
+ */
+export const setMenu = (groups: MenuGroup[]): Promise<void> =>
+  IN_TAURI ? invoke<void>('set_menu', { groups }) : Promise.resolve();
+
+/** A native menu item was clicked; the payload is the palette command id. */
+export const onMenuCommand = (callback: (id: string) => void): Promise<UnlistenFn> =>
+  IN_TAURI ? listen<string>('menu-command', (event) => callback(event.payload)) : Promise.resolve(() => {});
+
+/**
+ * Open a repository in its own window, or focus the window already showing it.
+ * Windows own their repo, so this is how you get two repos side by side.
+ */
+export const openRepoWindow = (path: string): Promise<void> =>
+  IN_TAURI ? invoke<void>('open_repo_window', { path }) : Promise.resolve();
+
+/**
+ * Persist `[editor] command`, resolving to the config path written. Only that
+ * one value is touched — comments and other settings survive.
+ */
+export const setEditorCommand = (command: string): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('set_editor_command', { command })
+    : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
+
+/**
+ * Open a repo-relative path in the configured editor. Rejects with a message
+ * naming the config key when `[editor] command` is unset.
+ */
+export const openInEditor = (path: string, line?: number): Promise<void> =>
+  IN_TAURI
+    ? invoke<void>('open_in_editor', { path, line: line ?? null })
+    : Promise.reject(new Error('(mock) no editor in the browser'));
+
 /**
  * Second-instance event: emitted by `tauri-plugin-single-instance` when
  * `jjdiff` is launched again while the app is running. The payload is the
@@ -425,6 +594,7 @@ export interface SecondInstanceArgs {
   revset: string | null;
   walkthrough: boolean;
   walkthroughFile: string | null;
+  pullRequest: number | null;
 }
 export const onSecondInstance = (callback: (args: SecondInstanceArgs) => void): Promise<UnlistenFn> =>
   IN_TAURI ? listen<SecondInstanceArgs>('second-instance', (event) => callback(event.payload)) : Promise.resolve(() => {});

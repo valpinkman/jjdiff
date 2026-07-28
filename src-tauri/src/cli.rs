@@ -35,6 +35,10 @@ pub struct Args {
     pub revset: Option<String>,
     pub walkthrough: bool,
     pub walkthrough_file: Option<PathBuf>,
+    /// `jjdiff pr 75` / `jjdiff mr 23` — open a forge proposal for review.
+    /// The forge is inferred from the remote, so both spellings are accepted
+    /// on either forge and only the number matters here.
+    pub pull_request: Option<u32>,
     /// A headless command selected on argv. `None` means "launch the GUI".
     pub headless: Option<Headless>,
 }
@@ -65,6 +69,7 @@ impl Args {
         let mut revset: Option<String> = None;
         let mut walkthrough = false;
         let mut walkthrough_file: Option<PathBuf> = None;
+        let mut pull_request: Option<u32> = None;
         let mut headless: Option<Headless> = None;
 
         // Helper: read the next value for a flag that takes one.
@@ -111,12 +116,21 @@ impl Args {
                         }
                     }
                 }
+                // `pr`/`mr` are only a subcommand when a number follows. A
+                // revset genuinely called `pr` stays reachable, and `jjdiff pr`
+                // with no number falls through to being treated as one.
+                "pr" | "mr"
+                    if pull_request.is_none()
+                        && peekable.peek().is_some_and(|next| next.parse::<u32>().is_ok()) =>
+                {
+                    pull_request = peekable.next().and_then(|value| value.parse().ok());
+                }
                 positional if revset.is_none() => revset = Some(positional.to_string()),
                 positional => return Err(ParseError::UnexpectedPositional(positional.to_string())),
             }
         }
 
-        Ok(Args { repo_path, revset, walkthrough, walkthrough_file, headless })
+        Ok(Args { repo_path, revset, walkthrough, walkthrough_file, pull_request, headless })
     }
 
     /// Consume an optional positional value following a headless flag
@@ -162,6 +176,8 @@ jjdiff — a fast, minimal diff viewer for Jujutsu colocated repos.
 USAGE:
     jjdiff [revset]                Open a repo (defaults to cwd)
     jjdiff -R <path> [revset]      Open an explicit repo
+    jjdiff pr <number>             Review a GitHub pull request
+    jjdiff mr <number>             Review a GitLab merge request
     jjdiff -w [revset]             Open and generate a walkthrough
     jjdiff --walkthrough-file <f>  Open an agent-authored walkthrough
     jjdiff --walkthrough-guide     Print the walkthrough authoring guide
@@ -174,6 +190,9 @@ USAGE:
 
 A revset of `@` (the working copy) is used when none is given. Headless
 commands write to stdout and exit without opening a window.
+
+Reviewing a proposal needs the forge's own CLI on PATH (`gh` for GitHub,
+`glab` for GitLab), already authenticated — jjdiff never handles tokens.
 
 Repository:  https://tangled.sh/valpinkman.tngl.sh/jjdiff
 ";
@@ -453,6 +472,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_pr_and_mr_subcommands() {
+        let pr = Args::parse(&argv("pr 75")).unwrap();
+        assert_eq!(pr.pull_request, Some(75));
+        assert_eq!(pr.revset, None, "the number is not a revset");
+        // Both spellings work on either forge — the remote decides which it is.
+        assert_eq!(Args::parse(&argv("mr 23")).unwrap().pull_request, Some(23));
+        // Combines with -R, like every other launch form.
+        let scoped = Args::parse(&argv("-R /code/repo pr 9")).unwrap();
+        assert_eq!(scoped.repo_path.as_deref(), Some(std::path::Path::new("/code/repo")));
+        assert_eq!(scoped.pull_request, Some(9));
+    }
+
+    #[test]
+    fn pr_without_a_number_stays_a_revset() {
+        // `pr` is only a subcommand when a number follows it, so a bookmark or
+        // revset genuinely named `pr` is still reachable.
+        let args = Args::parse(&argv("pr")).unwrap();
+        assert_eq!(args.pull_request, None);
+        assert_eq!(args.revset.as_deref(), Some("pr"));
+
+        // Same when what follows is plainly not a proposal number.
+        let branchy = Args::parse(&argv("pr::@")).unwrap();
+        assert_eq!(branchy.pull_request, None);
+        assert_eq!(branchy.revset.as_deref(), Some("pr::@"));
+    }
+
+    #[test]
     fn parses_repo_and_revset() {
         let args = Args::parse(&argv("-R /code/repo trunk()..@")).unwrap();
         assert_eq!(args.repo_path.as_deref(), Some(std::path::Path::new("/code/repo")));
@@ -567,6 +613,10 @@ mod tests {
             "--version",
         ] {
             assert!(HELP.contains(flag), "HELP is missing {flag}");
+        }
+        // Subcommands, not flags — equally undiscoverable if unlisted.
+        for subcommand in ["jjdiff pr <number>", "jjdiff mr <number>"] {
+            assert!(HELP.contains(subcommand), "HELP is missing {subcommand}");
         }
     }
 
