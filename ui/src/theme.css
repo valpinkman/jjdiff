@@ -1172,6 +1172,17 @@ jj-app .pr-drift {
   font-variant-numeric: tabular-nums;
 }
 
+/* The one command that closes the drift, sat right against the warning that
+   names it. Compact: it shares a row with the checks and the reviewers, and a
+   full-size button there would outweigh the verdict it is a footnote to. */
+jj-app .pr-sync {
+  margin-left: var(--jj-s-2);
+  padding: 1px 9px;
+  font-size: var(--jj-text-xs);
+  border-color: color-mix(in srgb, var(--jj-removed-fg) 34%, var(--jj-border));
+  color: var(--jj-removed-fg);
+}
+
 /* Checks read as one verdict. Pass/fail reuse the diff hues; running is neutral
    because it is not an outcome yet. */
 jj-app .pr-checks {
@@ -3539,8 +3550,27 @@ jj-patch-view .file-header.stuck.closing {
 }
 
 /* Keyboard cursor + search hits. */
+
+/* A straight bar, drawn as a child rather than as an inset shadow.
+   `box-shadow: inset` is clipped by the element's own `border-radius`, so on a
+   file header — the one row with rounded corners — the marker bowed around the
+   curve and read as part of the card's edge rather than as a cursor sitting in
+   the gutter. A positioned child is not clipped (the row sets no `overflow`),
+   so it stays vertical whatever the row it marks. Absolute, so it is neither a
+   flex nor a grid item in the rows that are one. */
 .kbd-cursor {
-  box-shadow: inset 3px 0 0 var(--jj-accent) !important;
+  position: relative;
+}
+
+.kbd-cursor::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--jj-accent);
+  z-index: 1;
 }
 
 .search-match {
@@ -3948,4 +3978,12 @@ jj-patch-view .file-header.stuck.closing {
 .file-action.md-toggle:hover {
   color: var(--jj-accent);
   border-color: var(--jj-accent-line);
+}
+
+/* A walkthrough built from the diff's outline rather than its content. Neutral,
+   not a warning: it is a real walkthrough, just a shallower one, and the reader
+   needs to know which they are holding before trusting a narrative. */
+jj-app .outline-note {
+  margin: var(--jj-s-3) var(--jj-s-4) 0;
+  color: var(--jj-fg-muted);
 }

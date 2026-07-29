@@ -740,13 +740,33 @@ export class App extends LitElement {
     this.prActivityBodies = bodies;
   }
 
-  /** The open proposal for the selected change, matched on its bookmarks. */
-  private get matchedProposal(): PullRequestSummary | null {
+  /**
+   * The proposal number for the selected change, from its bookmarks.
+   *
+   * Two routes, and the second is not a fallback so much as the exact answer.
+   * The index covers the common case — your own branch happens to have a
+   * proposal open — but it is built from `gh pr list`, which returns only the
+   * *open* proposals and only the most recent page of them. On a busy repo the
+   * proposal you explicitly fetched is routinely outside that window, and a
+   * merged one never appears at all.
+   *
+   * A `jjdiff-pr-<N>` bookmark, though, is one jjdiff wrote itself when
+   * fetching that proposal by number: it names its own answer, so it is read
+   * rather than looked up. Without this, `jjdiff pr 42231` on a repo with more
+   * than a page of open proposals showed its banner once — from the explicit
+   * fetch — and then lost it on the first background refresh, which is exactly
+   * a banner that blinks and never comes back.
+   */
+  private get matchedProposalNumber(): number | null {
     const change = this.selectedChange;
-    if (!change || this.proposalsByBranch.size === 0) return null;
+    if (!change) return null;
     for (const bookmark of change.bookmarks) {
       const found = this.proposalsByBranch.get(bookmark);
-      if (found) return found;
+      if (found) return found.number;
+    }
+    for (const bookmark of change.bookmarks) {
+      const fetched = /^jjdiff-(?:pr|mr)-(\d+)$/.exec(bookmark);
+      if (fetched) return Number(fetched[1]);
     }
     return null;
   }
@@ -757,11 +777,16 @@ export class App extends LitElement {
    * once per number and is skipped when it is already loaded.
    */
   private async syncMatchedProposal(refetch = false) {
-    const matched = this.matchedProposal;
-    if (!matched) {
+    const matched = this.matchedProposalNumber;
+    if (matched === null) {
       // Only clear a banner we inferred; an explicitly opened proposal owns the
-      // view until it is closed.
-      if (!this.prRevset) {
+      // view until it is closed. So does one you are *reading*: this runs on
+      // every window focus, and alt-tabbing to the forge and back is exactly
+      // when a refresh lands — pulling the proposal out from under someone
+      // mid-read made the section blink and vanish, and because `viewMode`
+      // stayed `'pr'` what it left behind was an empty pane rather than the
+      // diff.
+      if (!this.prRevset && this.viewMode !== 'pr') {
         this.pullRequest = null;
         this.prDetailsFor = null;
         this.prBody = null;
@@ -772,14 +797,14 @@ export class App extends LitElement {
     // `refetch` is for the case where the number has not changed but its
     // contents have — after a push, the head moved and the checks it reports
     // are about the previous one.
-    if (!refetch && this.pullRequest?.number === matched.number) return;
+    if (!refetch && this.pullRequest?.number === matched) return;
     const previous = this.pullRequest;
     try {
-      this.pullRequest = await getPullRequest(matched.number);
+      this.pullRequest = await getPullRequest(matched);
     } catch {
       // A failed refresh must not take a banner that is already on screen down
       // with it; only a first load has nothing to fall back to.
-      this.pullRequest = previous?.number === matched.number ? previous : null;
+      this.pullRequest = previous?.number === matched ? previous : null;
     }
   }
 
@@ -829,7 +854,13 @@ export class App extends LitElement {
       ? null
       : `${pr.baseOid || pr.base}..${pr.headOid || pr.head}`;
     this.focusPath = null;
-    await this.loadDiff();
+    // The walkthrough is about the diff on screen, and this changes which diff
+    // that is — a different target, and a different stored walkthrough. Guided
+    // review stops rather than carrying steps across: they index hunks of the
+    // scope being left.
+    this.walkActive = false;
+    this.walkStep = -1;
+    await Promise.all([this.loadDiff(), this.loadWalkthrough()]);
   }
 
   /** Hand a URL to the system browser; the WebView has nowhere to open it. */
@@ -886,11 +917,11 @@ export class App extends LitElement {
 
   /** Seed the composer from the pending inline comments, if any. */
   private async openReviewComposer() {
-    const change = this.selectedChange;
+    const target = this.reviewTarget;
     let body = '';
-    if (change) {
+    if (target) {
       try {
-        body = this.pendingComments.length ? await exportReviewMarkdown(change.changeId) : '';
+        body = this.pendingComments.length ? await exportReviewMarkdown(target.key) : '';
       } catch {
         // A comment store that will not export must not block a plain review.
         body = '';
@@ -961,17 +992,17 @@ export class App extends LitElement {
   private async onAddComment(
     detail: { path: string; side: CommentSide; line: number; lineText: string; body: string; parentId: number | null },
   ) {
-    const change = this.selectedChange;
-    if (!change || !detail.body.trim()) return;
+    const target = this.reviewTarget;
+    if (!target || !detail.body.trim()) return;
     try {
       await addComment(
-        change.changeId,
+        target.key,
         detail.path,
-        `${detail.path}#0`, // hunk id is approximate; the store keys by change+path+line anyway
+        `${detail.path}#0`, // hunk id is approximate; the store keys by target+path+line anyway
         detail.side,
         detail.line,
         detail.lineText,
-        change.commitId,
+        target.commitId,
         'you',
         detail.body,
         detail.parentId,
@@ -1003,10 +1034,10 @@ export class App extends LitElement {
 
   /** Copy pending comments as a Markdown review to the clipboard. */
   private async copyReviewMarkdown() {
-    const change = this.selectedChange;
-    if (!change) return;
+    const target = this.reviewTarget;
+    if (!target) return;
     try {
-      const md = await exportReviewMarkdown(change.changeId);
+      const md = await exportReviewMarkdown(target.key);
       await navigator.clipboard.writeText(md);
       this.lastOutcome = { message: 'Copied review as Markdown to clipboard.', operation: '' };
       this.actionError = null;
@@ -1208,25 +1239,36 @@ export class App extends LitElement {
       // passing even though nothing here knows how much is left.
       return html`<div class="walkthrough-working beam">
         <jj-orbs .size=${52} label="Generating walkthrough"></jj-orbs>
-        <p class="working-title">Reading the change</p>
+        <p class="working-title">Reading the ${this.reviewTargetNoun}</p>
         <p class="working-hint">
           An agent is working through the diff. This usually takes under a minute.
         </p>
       </div>`;
     }
-    if (!change) {
+    if (!this.reviewTarget) {
       return html`<div class="walkthrough-empty">Select a change to generate a walkthrough.</div>`;
     }
     if (!this.walkthrough) {
       return html`<div class="walkthrough-generate">
-        <p>No walkthrough for this change yet.</p>
+        <p>No walkthrough for this ${this.reviewTargetNoun} yet.</p>
         <button class="tool primary" ?disabled=${this.files.length === 0} @click=${() => this.runGenerateWalkthrough()}>
           Generate Walkthrough
         </button>
-        ${this.walkStale ? html`<p class="stale-note">The change has evolved — regenerate to update.</p>` : nothing}
+        ${this.walkStale
+          ? html`<p class="stale-note">
+              The ${this.reviewTargetNoun} has evolved — regenerate to update.
+            </p>`
+          : nothing}
       </div>`;
     }
-    return html`<jj-walkthrough-panel
+    return html`${this.walkthrough.outline
+      ? html`<p class="stale-note outline-note">
+          The diff was too large to send, so this was built from its structure —
+          every file and hunk, but not the code. The order is the point here;
+          the narratives are shallower than usual.
+        </p>`
+      : nothing}
+    <jj-walkthrough-panel
       .walkthrough=${this.walkthrough}
       .files=${this.files}
       .viewed=${this.viewedPaths}
@@ -1241,7 +1283,9 @@ export class App extends LitElement {
          under it. -->
     <div class="pane-footer">
       ${this.walkStale
-        ? html`<p class="stale-note">The change has evolved since this was generated.</p>`
+        ? html`<p class="stale-note">
+            The ${this.reviewTargetNoun} has evolved since this was generated.
+          </p>`
         : nothing}
       <button class="tool block" @click=${() => this.runGenerateWalkthrough()}>
         Refresh Walkthrough
@@ -1383,11 +1427,13 @@ export class App extends LitElement {
 
   /** True when the selected change moved since it was last marked reviewed. */
   private get changedSinceReview(): boolean {
-    const change = this.selectedChange;
+    // Against the review target's commit, not the selection's: reviewing a
+    // whole proposal, what may have moved since you last read it is its head.
+    const target = this.reviewTarget;
     return (
-      change !== null &&
+      target !== null &&
       this.reviewedCommit !== null &&
-      this.reviewedCommit !== change.commitId
+      this.reviewedCommit !== target.commitId
     );
   }
 
@@ -1533,10 +1579,10 @@ export class App extends LitElement {
   }
 
   private async loadReview() {
-    const change = this.selectedChange;
-    if (!change) return;
+    const target = this.reviewTarget;
+    if (!target) return;
     try {
-      const status = await getReviewStatus(change.changeId);
+      const status = await getReviewStatus(target.key);
       this.viewedPaths = new Set(status.viewed);
       this.reviewedCommit = status.reviewedCommit;
     } catch {
@@ -1547,21 +1593,22 @@ export class App extends LitElement {
 
   /** Load comments for the selected change + re-anchor against the current diff. */
   private async loadComments() {
-    const change = this.selectedChange;
-    if (!change) {
+    const target = this.reviewTarget;
+    if (!target) {
       this.comments = new Map();
       this.allComments = [];
       return;
     }
     try {
-      // Re-anchor if the change has evolved since comments were written.
+      // Re-anchor if what is being reviewed has evolved since the comments
+      // were written.
       await refreshCommentAnchors(
-        change.changeId,
-        change.commitId,
-        this.isWorkingCopySelected ? null : change.changeId,
+        target.key,
+        target.commitId,
+        target.revset,
         this.ignoreWhitespace,
       );
-      const list = await listComments(change.changeId);
+      const list = await listComments(target.key);
       this.allComments = list;
       // Index by `${path}:${side}:${line}` for the diff view.
       const map = new Map<string, Comment[]>();
@@ -1739,13 +1786,70 @@ export class App extends LitElement {
     void this.syncMatchedProposal();
   }
 
-  private async loadWalkthrough() {
+  /**
+   * The thing being reviewed: the diff on screen, not the selected change.
+   *
+   * Those are the same everywhere except one place — reviewing a whole
+   * proposal. There the pane shows `baseOid..head` across every commit in it,
+   * while the selection is still whichever change the log had highlighted.
+   * Every piece of review state hangs off this: viewed flags, "last reviewed",
+   * inline comments and walkthroughs. Keyed to the selection instead, all four
+   * file what you did to the proposal under one arbitrary commit of it — a file
+   * you ticked reading the whole thing comes back ticked on a change that never
+   * contained it, and a comment on line 400 of a file the selected change does
+   * not touch is anchored to it anyway.
+   *
+   * Walkthroughs are the case where it goes silently wrong rather than merely
+   * misfiled: hunk ids are `<path>#<index>` indexed within *their own* diff, so
+   * steps built from one scope and filtered against the other match the same
+   * shape with a different meaning, and show the wrong hunks.
+   *
+   * A proposal gets its own key. The review store keys on strings and does not
+   * care that this one is not a change id; what it has to be is stable across
+   * rewrites, and a proposal number is. `commitId` is what drift is measured
+   * against — the proposal's head, since that is what its diff is of.
+   */
+  private get reviewTarget():
+    | { key: string; revset: string | null; commitId: string; label: string }
+    | null {
+    const proposal = this.pullRequest;
+    if (this.prRevset && proposal) {
+      return {
+        key: `pull-request-${proposal.number}`,
+        revset: this.prRevset,
+        commitId: proposal.headOid || proposal.head,
+        label: `${this.forge?.noun ?? 'pull request'} #${proposal.number}: ${proposal.title}`,
+      };
+    }
     const change = this.selectedChange;
-    if (!change) return;
+    if (!change) return null;
+    return {
+      key: change.changeId,
+      revset: this.isWorkingCopySelected ? null : change.changeId,
+      commitId: change.commitId,
+      label: `change ${change.changeId.slice(0, 8)}: ${
+        change.description.split('\n')[0] || '(no description)'
+      }`,
+    };
+  }
+
+  /**
+   * What the review target is called in prose. Walkthrough copy used to say
+   * "this change" unconditionally, which reads as a bug while the pane is
+   * showing a whole proposal — the reader cannot tell whether the empty state
+   * means "none for the proposal" or "we forgot you were reviewing one".
+   */
+  private get reviewTargetNoun(): string {
+    return this.prRevset && this.pullRequest ? (this.forge?.noun ?? 'pull request') : 'change';
+  }
+
+  private async loadWalkthrough() {
+    const target = this.reviewTarget;
+    if (!target) return;
     try {
       const status = await getWalkthrough(
-        change.changeId,
-        this.isWorkingCopySelected ? null : change.changeId,
+        target.key,
+        target.revset,
         this.ignoreWhitespace,
       );
       this.walkthrough = status.walkthrough;
@@ -1854,16 +1958,15 @@ export class App extends LitElement {
   }
 
   private runGenerateWalkthrough() {
-    const change = this.selectedChange;
-    if (!change || this.generating) return;
+    const target = this.reviewTarget;
+    if (!target || this.generating) return;
     this.generating = true;
     void this.run(async () => {
-      const label = change.description.split('\n')[0] || '(no description)';
       this.walkthrough = await generateWalkthrough(
-        change.changeId,
-        this.isWorkingCopySelected ? null : change.changeId,
+        target.key,
+        target.revset,
         this.ignoreWhitespace,
-        `change ${change.changeId.slice(0, 8)}: ${label}`,
+        target.label,
       );
       this.walkStale = false;
       this.walkActive = true;
@@ -2371,11 +2474,11 @@ export class App extends LitElement {
   }
 
   private markCurrentReviewed() {
-    const change = this.selectedChange;
-    if (!change) return;
+    const target = this.reviewTarget;
+    if (!target) return;
     void this.run(async () => {
-      await markReviewed(change.changeId, change.commitId);
-      this.reviewedCommit = change.commitId;
+      await markReviewed(target.key, target.commitId);
+      this.reviewedCommit = target.commitId;
       this.viewMode = 'full';
       await this.loadDiff();
     });
@@ -3007,8 +3110,12 @@ export class App extends LitElement {
         class="sidebar-resize"
         @mousedown=${this.onSidebarResizeStart}
       ></div>
+      <!-- The showing-pr class hides every sibling, and the view itself only
+           renders with a proposal in hand. The class is keyed on both, or a
+           proposal that goes away while its view is open leaves a blank pane
+           behind instead of falling back to the diff. -->
       <main
-        class=${this.viewMode === 'pr'
+        class=${this.viewMode === 'pr' && this.pullRequest
           ? 'showing-pr'
           : this.viewMode === 'ops'
             ? 'showing-ops'
@@ -3309,7 +3416,10 @@ export class App extends LitElement {
         ${this.walkthrough && this.walkStale && !this.generating
           ? html`<div class="banner">
               <span class="chip">${iconInfo}</span>
-              <span>The walkthrough was generated for an older version of this change.</span>
+              <span
+                >The walkthrough was generated for an older version of this
+                ${this.reviewTargetNoun}.</span
+              >
               <span class="spacer"></span>
               <button class="tool" @click=${this.runGenerateWalkthrough}>Refresh Walkthrough</button>
             </div>`
@@ -3807,17 +3917,55 @@ export class App extends LitElement {
    * different code than the diff on screen — and a green "checks passed" next to
    * unpushed work reads as approval of what you are looking at.
    */
+  /**
+   * How far the proposal's head branch has drifted from its remote, and the one
+   * command that closes the gap.
+   *
+   * Drift in either direction makes everything beside it untrustworthy: the
+   * checks, reviews and merge state all describe the head *the forge has*. So
+   * the warning is not decoration, and neither is the button — being told your
+   * work is unpushed and then having to go and find the push command is the
+   * gap this closes.
+   *
+   * The verb follows the direction rather than being a single "sync": behind
+   * wins when both are true, because a push against a moved remote is rejected
+   * as a non-fast-forward, and doing both silently would rebase your work
+   * without asking.
+   */
   private renderHeadDrift(pr: PullRequest) {
-    const ahead = this.tracking(pr.head)?.ahead ?? 0;
-    if (!ahead) return nothing;
+    const tracking = this.tracking(pr.head);
+    const ahead = tracking?.ahead ?? 0;
+    const behind = tracking?.behind ?? 0;
+    if (!ahead && !behind) return nothing;
     const noun = this.forge?.noun ?? 'pull request';
+    const plural = (count: number) => (count === 1 ? '' : 's');
     return html`<span
-      class="pr-drift"
-      title=${`${ahead} local commit${ahead === 1 ? '' : 's'} on ${pr.head} ${
-        ahead === 1 ? 'has' : 'have'
-      } not been pushed. Everything this ${noun} reports — checks, reviews, merge state — is about the head the forge has, not the code shown here.`}
-      >⚠ ${ahead} unpushed</span
-    >`;
+        class="pr-drift"
+        title=${
+          behind
+            ? `${pr.head}@remote has ${behind} commit${plural(behind)} this repo does not. Everything this ${noun} reports is about that head, not the code shown here.`
+            : `${ahead} local commit${plural(ahead)} on ${pr.head} ${
+                ahead === 1 ? 'has' : 'have'
+              } not been pushed. Everything this ${noun} reports — checks, reviews, merge state — is about the head the forge has, not the code shown here.`
+        }
+        >⚠ ${behind ? `${behind} behind` : `${ahead} unpushed`}</span
+      >
+      <button
+        class="tool pr-sync"
+        title=${
+          behind
+            ? `jj git fetch — bring in the ${behind} commit${plural(behind)} the remote has. Integrate before pushing; a push over a moved remote is refused.`
+            : `jj git push -b ${pr.head} — send the ${ahead} unpushed commit${plural(ahead)} so the ${noun} describes the code you are looking at.`
+        }
+        @click=${(event: Event) => {
+          // The banner is itself a button into the proposal view.
+          event.stopPropagation();
+          if (behind) this.runFetch();
+          else void this.command('push', () => gitPush({ bookmark: pr.head }));
+        }}
+      >
+        ${behind ? 'Fetch' : 'Push'}
+      </button>`;
   }
 
   /**
@@ -4025,13 +4173,13 @@ export class App extends LitElement {
 
   /** Optimistic update; persistence follows, and a failure reloads the truth. */
   private setPathViewed(path: string, viewed: boolean) {
-    const change = this.selectedChange;
-    if (!change) return;
+    const target = this.reviewTarget;
+    if (!target) return;
     const next = new Set(this.viewedPaths);
     if (viewed) next.add(path);
     else next.delete(path);
     this.viewedPaths = next;
-    void setViewed(change.changeId, path, viewed).catch(() => void this.loadReview());
+    void setViewed(target.key, path, viewed).catch(() => void this.loadReview());
   }
 }
 

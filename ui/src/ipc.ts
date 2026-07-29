@@ -140,6 +140,12 @@ export interface Walkthrough {
   steps: WalkthroughStep[];
   /** Fingerprint of the diff this was generated against. */
   fingerprint: string;
+  /**
+   * True when the diff was too large to send and the agent was given its shape
+   * instead — every file and hunk with its position, but no code. The ordering
+   * still holds; the narratives are shallower, and saying so is the point.
+   */
+  outline: boolean;
 }
 
 export interface WalkthroughStatus {

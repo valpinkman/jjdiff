@@ -867,7 +867,9 @@ async fn import_walkthrough(
         let raw = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {path}: {error}"))?;
         let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
-        walkthrough::parse_response(&raw, &files)
+        // An agent-authored walkthrough was written against the diff itself,
+        // whatever the author chose to read of it — not jjdiff's outline.
+        walkthrough::parse_response(&raw, &files, false)
     })
     .await?;
     state

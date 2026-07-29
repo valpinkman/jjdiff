@@ -27,6 +27,11 @@ pub struct Walkthrough {
     pub steps: Vec<Step>,
     /// Fingerprint of the diff this walkthrough was generated against (staleness check).
     pub fingerprint: String,
+    /// True when the agent was shown the diff's shape rather than its content,
+    /// because the diff would not fit. The steps still order the review; the
+    /// narratives are necessarily shallower, and the UI says so.
+    #[serde(default)]
+    pub outline: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,34 +250,91 @@ ids that are not in the diff. HARD CONSTRAINT: all hunks of the same file must b
 into the same step — a file must never be split across steps (reviewers mark whole files as \
 viewed, so a split file would show as already seen in a later step).";
 
-/// Build the full generation prompt from a structured diff.
-pub fn build_prompt(files: &[FilePatch], context: &str, extra: &str) -> Result<String, String> {
-    let mut diff_text = String::new();
+/// Extra instruction when the agent is given the diff's shape instead of its
+/// content. Without it the narratives read as though the code had been examined.
+const OUTLINE_GUIDE: &str = "\
+IMPORTANT: this diff is too large to send in full, so what follows is its *outline* — every \
+file and hunk with its position and header line, but not the code. Order and group the files \
+into steps as usual, and title them from the paths and headers. Keep narratives to what the \
+outline actually supports (what area a step covers and why it is read at that point); do not \
+describe code you have not been shown, and do not guess at implementation detail.";
+
+/// The diff as the agent will read it: the whole thing when it fits, its shape
+/// when it does not.
+///
+/// Refusing outright was the previous behaviour, and it is right that a diff is
+/// never silently truncated — a walkthrough of half a change, presented as a
+/// walkthrough of the change, is worse than none. But "no" is a poor answer to
+/// a 1400-file proposal, which is exactly where being told what to read first
+/// is worth most. So past the cap the content is dropped and the *structure* is
+/// kept: every file and hunk, with counts and the `@@` header, which is what
+/// ordering and grouping need. It is a different, shallower artefact, and it
+/// says so — both to the agent, so the prose does not overreach, and in
+/// [`Walkthrough::outline`], so the reader knows.
+fn render_diff(files: &[FilePatch]) -> (String, bool) {
+    let mut full = String::new();
     for file in files {
         if file.hunks.is_empty() {
             continue;
         }
-        diff_text.push_str(&format!("=== {} ({:?})\n", file.path, file.status));
+        full.push_str(&format!("=== {} ({:?})\n", file.path, file.status));
         for hunk in &file.hunks {
-            diff_text.push_str(&format!("--- hunk id: {}\n", hunk.id));
+            full.push_str(&format!("--- hunk id: {}\n", hunk.id));
             for line in &hunk.lines {
                 let sign = match line.kind {
                     LineKind::Added => '+',
                     LineKind::Removed => '-',
                     LineKind::Context => ' ',
                 };
-                diff_text.push(sign);
-                diff_text.push_str(&line.text);
-                diff_text.push('\n');
+                full.push(sign);
+                full.push_str(&line.text);
+                full.push('\n');
             }
         }
     }
+    if full.len() <= MAX_PROMPT_CHARS {
+        return (full, false);
+    }
+
+    let mut outline = String::new();
+    for file in files {
+        if file.hunks.is_empty() {
+            continue;
+        }
+        outline.push_str(&format!(
+            "=== {} ({:?})  +{} −{}\n",
+            file.path, file.status, file.added, file.removed
+        ));
+        for hunk in &file.hunks {
+            // The `@@` header plus jj's context label is the one line that says
+            // *where* a hunk is without quoting any of it.
+            outline.push_str(&format!(
+                "  {}  @@ -{},{} +{},{} @@{}\n",
+                hunk.id,
+                hunk.old_start,
+                hunk.old_lines,
+                hunk.new_start,
+                hunk.new_lines,
+                if hunk.context.is_empty() { String::new() } else { format!(" {}", hunk.context) }
+            ));
+        }
+    }
+    (outline, true)
+}
+
+/// Build the full generation prompt from a structured diff.
+pub fn build_prompt(files: &[FilePatch], context: &str, extra: &str) -> Result<(String, bool), String> {
+    let (diff_text, outline) = render_diff(files);
     if diff_text.is_empty() {
         return Err("nothing to walk through — the diff has no reviewable hunks".into());
     }
+    // An outline that still will not fit means a diff with more hunks than an
+    // agent can order at all; there is nothing further to drop.
     if diff_text.len() > MAX_PROMPT_CHARS {
         return Err(format!(
-            "diff too large for a walkthrough ({} chars > {MAX_PROMPT_CHARS})",
+            "diff too large for a walkthrough even as an outline ({} files, {} chars > \
+             {MAX_PROMPT_CHARS}) — review it a change at a time",
+            files.len(),
             diff_text.len()
         ));
     }
@@ -282,16 +344,21 @@ pub fn build_prompt(files: &[FilePatch], context: &str, extra: &str) -> Result<S
     } else {
         format!("\nAdditional instructions from the user:\n{extra}\n")
     };
-    Ok(format!(
-        "{GUIDE}\n{extra_block}\nContext: {context}\n\nRespond with ONLY a JSON object, no \
-         markdown fences, matching exactly:\n{{\"summary\": \"one-paragraph overview\", \
-         \"steps\": [{{\"title\": \"...\", \"narrative\": \"...\", \"hunkIds\": [\"path#0\"]}}]}}\n\
-         \nThe diff:\n\n{diff_text}"
+    let outline_block = if outline { format!("\n{OUTLINE_GUIDE}\n") } else { String::new() };
+    let heading = if outline { "The diff outline:" } else { "The diff:" };
+    Ok((
+        format!(
+            "{GUIDE}\n{outline_block}{extra_block}\nContext: {context}\n\nRespond with ONLY a JSON \
+             object, no markdown fences, matching exactly:\n{{\"summary\": \"one-paragraph \
+             overview\", \"steps\": [{{\"title\": \"...\", \"narrative\": \"...\", \"hunkIds\": \
+             [\"path#0\"]}}]}}\n\n{heading}\n\n{diff_text}"
+        ),
+        outline,
     ))
 }
 
 /// Parse and validate the agent's reply against the actual diff.
-pub fn parse_response(reply: &str, files: &[FilePatch]) -> Result<Walkthrough, String> {
+pub fn parse_response(reply: &str, files: &[FilePatch], outline: bool) -> Result<Walkthrough, String> {
     let trimmed = reply.trim();
     // Tolerate fenced output despite instructions.
     let json = trimmed
@@ -334,6 +401,7 @@ pub fn parse_response(reply: &str, files: &[FilePatch]) -> Result<Walkthrough, S
         summary: parsed.summary,
         steps,
         fingerprint: jjdiff_diff::diff_fingerprint(files),
+        outline,
     })
 }
 
@@ -379,9 +447,9 @@ pub fn generate(
     context: &str,
     extra: &str,
 ) -> Result<Walkthrough, String> {
-    let prompt = build_prompt(files, context, extra)?;
+    let (prompt, outline) = build_prompt(files, context, extra)?;
     let reply = backend.run(&prompt)?;
-    parse_response(&reply, files)
+    parse_response(&reply, files, outline)
 }
 
 #[cfg(test)]
@@ -405,7 +473,8 @@ mod tests {
 
     #[test]
     fn prompt_contains_ids_and_content() {
-        let prompt = build_prompt(&files(), "change xyz: fix things", "").unwrap();
+        let (prompt, outline) = build_prompt(&files(), "change xyz: fix things", "").unwrap();
+        assert!(!outline, "a small diff goes in whole");
         assert!(prompt.contains("hunk id: a.rs#0"));
         assert!(prompt.contains("hunk id: b.rs#0"));
         assert!(prompt.contains("+new"));
@@ -425,7 +494,7 @@ mod tests {
             {"title":"Ghost","narrative":"...","hunkIds":["nope#0"]},
             {"title":"Second","narrative":"...","hunkIds":["b.rs#0"]}
         ]}"#;
-        let walkthrough = parse_response(reply, &files()).unwrap();
+        let walkthrough = parse_response(reply, &files(), false).unwrap();
         assert_eq!(walkthrough.steps.len(), 2, "ghost-only step dropped");
         assert_eq!(walkthrough.steps[0].hunk_ids, vec!["a.rs#0"]);
         assert!(!walkthrough.fingerprint.is_empty());
@@ -438,7 +507,7 @@ mod tests {
             {"title":"First","narrative":"...","hunkIds":["a.rs#0"]},
             {"title":"Second","narrative":"...","hunkIds":["b.rs#0","a.rs#1"]}
         ]}"#;
-        let walkthrough = parse_response(reply, &files()).unwrap();
+        let walkthrough = parse_response(reply, &files(), false).unwrap();
         assert_eq!(walkthrough.steps.len(), 2);
         // a.rs#1 moved into the step that owns a.rs; b.rs stays put.
         assert_eq!(walkthrough.steps[0].hunk_ids, vec!["a.rs#0", "a.rs#1"]);
@@ -451,7 +520,7 @@ mod tests {
             {"title":"Owns both","narrative":"...","hunkIds":["a.rs#0","b.rs#0"]},
             {"title":"Only strays","narrative":"...","hunkIds":["a.rs#1"]}
         ]}"#;
-        let walkthrough = parse_response(reply, &files()).unwrap();
+        let walkthrough = parse_response(reply, &files(), false).unwrap();
         assert_eq!(walkthrough.steps.len(), 1);
         assert_eq!(walkthrough.steps[0].hunk_ids, vec!["a.rs#0", "b.rs#0", "a.rs#1"]);
     }
@@ -496,13 +565,13 @@ mod tests {
     #[test]
     fn tolerates_markdown_fences() {
         let reply = "```json\n{\"summary\":\"s\",\"steps\":[{\"title\":\"t\",\"narrative\":\"n\",\"hunkIds\":[\"a.rs#0\"]}]}\n```";
-        assert!(parse_response(reply, &files()).is_ok());
+        assert!(parse_response(reply, &files(), false).is_ok());
     }
 
     #[test]
     fn garbage_response_is_an_error() {
-        assert!(parse_response("I cannot do that.", &files()).is_err());
-        assert!(parse_response(r#"{"summary":"s","steps":[]}"#, &files()).is_err());
+        assert!(parse_response("I cannot do that.", &files(), false).is_err());
+        assert!(parse_response(r#"{"summary":"s","steps":[]}"#, &files(), false).is_err());
     }
 
     /// Live test against the real Claude CLI — run explicitly:
@@ -519,6 +588,38 @@ mod tests {
             eprintln!("- {} → {:?}", step.title, step.hunk_ids);
         }
         assert!(!walkthrough.steps.is_empty());
+    }
+
+    /// Past the cap the diff's *content* is dropped and its shape kept, rather
+    /// than the whole thing being refused. The ids have to survive that — they
+    /// are what the agent's steps reference and what the UI filters on.
+    #[test]
+    fn an_oversized_diff_becomes_an_outline_rather_than_an_error() {
+        // One file, enough hunks of enough lines to blow the cap outright.
+        let mut patch = String::from("diff --git a/big.rs b/big.rs\n--- a/big.rs\n+++ b/big.rs\n");
+        for hunk in 0..400 {
+            patch.push_str(&format!("@@ -{},2 +{},2 @@ fn area_{hunk}()\n", hunk * 10 + 1, hunk * 10 + 1));
+            patch.push_str(&format!("-{}\n", "old ".repeat(200)));
+            patch.push_str(&format!("+{}\n", "new ".repeat(200)));
+        }
+        let files = parse_git_patch(&patch).unwrap();
+
+        let (prompt, outline) = build_prompt(&files, "big change", "").unwrap();
+        assert!(outline, "should degrade rather than refuse");
+        assert!(prompt.len() <= MAX_PROMPT_CHARS, "the outline itself must fit");
+
+        // Structure kept: every hunk id, and where it is.
+        assert!(prompt.contains("big.rs#0"));
+        assert!(prompt.contains("big.rs#399"));
+        assert!(prompt.contains("fn area_399()"), "the @@ context line locates a hunk");
+        // Content dropped, and the agent told not to invent it.
+        assert!(!prompt.contains(&"old ".repeat(200)));
+        assert!(prompt.contains("do not describe code you have not been shown"));
+
+        // The flag rides on the artefact so the reader knows what they have.
+        let reply = r#"{"summary":"s","steps":[{"title":"t","narrative":"n","hunkIds":["big.rs#0"]}]}"#;
+        assert!(parse_response(reply, &files, outline).unwrap().outline);
+        assert!(!parse_response(reply, &files, false).unwrap().outline);
     }
 
     #[test]

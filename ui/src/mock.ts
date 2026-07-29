@@ -350,6 +350,7 @@ export const mockWalkthrough: Walkthrough = {
     },
   ],
   fingerprint: 'mockfingerprint000',
+  outline: false,
 };
 
 const mockPoolWalkthrough: Walkthrough = {
@@ -367,6 +368,7 @@ const mockPoolWalkthrough: Walkthrough = {
     },
   ],
   fingerprint: 'mockfingerprint001',
+  outline: false,
 };
 
 /** Mirrors the real backend: generated walkthroughs persist for later fetches. */
