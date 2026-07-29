@@ -11,6 +11,7 @@ mod describe;
 mod editor;
 mod forge;
 mod menu;
+mod resolve;
 mod split;
 mod viewed;
 pub mod walkthrough;
@@ -580,13 +581,40 @@ async fn split_paths(
     run_mutation(&app, &state, repo, move |repo| repo.split_paths(&revset, &paths)).await
 }
 
-/// Hunk-level split: the selected hunks become their own change, the rest stay.
+/// The jjdiff binary, and the argv that makes it apply `plan` as jj's diff editor.
 ///
-/// The plan travels to a child process rather than being applied here, because
-/// the only seam jj offers for a partial selection is its diff editor — see
-/// [`split`] and [`Repo::split_with_diff_editor`]. The temp file holding it is
-/// moved into the blocking closure so it outlives the `jj` call and is deleted
-/// however that call ends.
+/// The plan travels to a child process rather than being applied in-process,
+/// because the only seam jj offers for a partial selection is its diff editor —
+/// see [`split`] and [`Repo::split_with_diff_editor`]. The temp file comes back
+/// to the caller so it can be moved into the blocking closure: it has to outlive
+/// the `jj` call and be deleted however that call ends.
+fn diff_editor_invocation(
+    plan: &split::SplitPlan,
+) -> Result<(std::path::PathBuf, tempfile::NamedTempFile, Vec<String>), String> {
+    let program = std::env::current_exe()
+        .map_err(|error| format!("cannot resolve the jjdiff binary to run as a diff editor: {error}"))?;
+
+    let mut file = tempfile::Builder::new()
+        .prefix("jjdiff-plan-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|error| format!("cannot write the plan: {error}"))?;
+    serde_json::to_writer(&mut file, plan)
+        .map_err(|error| format!("cannot write the plan: {error}"))?;
+    use std::io::Write;
+    file.flush().map_err(|error| format!("cannot write the plan: {error}"))?;
+
+    let edit_args = vec![
+        "--apply-split-plan".to_string(),
+        file.path().to_string_lossy().into_owned(),
+        // jj substitutes these with the two directories it checked out.
+        "$left".to_string(),
+        "$right".to_string(),
+    ];
+    Ok((program, file, edit_args))
+}
+
+/// Hunk-level split: the selected hunks become their own change, the rest stay.
 #[tauri::command]
 async fn split_hunks(
     app: AppHandle,
@@ -599,28 +627,36 @@ async fn split_hunks(
 ) -> Result<Outcome, String> {
     plan.divides()?;
     let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
-    let program = std::env::current_exe()
-        .map_err(|error| format!("cannot resolve the jjdiff binary to run as a diff editor: {error}"))?;
-
-    let mut file = tempfile::Builder::new()
-        .prefix("jjdiff-split-")
-        .suffix(".json")
-        .tempfile()
-        .map_err(|error| format!("cannot write the split plan: {error}"))?;
-    serde_json::to_writer(&mut file, &plan)
-        .map_err(|error| format!("cannot write the split plan: {error}"))?;
-    use std::io::Write;
-    file.flush().map_err(|error| format!("cannot write the split plan: {error}"))?;
-
-    let edit_args = vec![
-        "--apply-split-plan".to_string(),
-        file.path().to_string_lossy().into_owned(),
-        // jj substitutes these with the two directories it checked out.
-        "$left".to_string(),
-        "$right".to_string(),
-    ];
+    let (program, file, edit_args) = diff_editor_invocation(&plan)?;
     run_mutation(&app, &state, repo, move |repo| {
         let outcome = repo.split_with_diff_editor(&revset, &program, &edit_args, &message);
+        drop(file);
+        outcome
+    })
+    .await
+}
+
+/// Hunk-level squash: the selected hunks move into `into`, the rest stay in `from`.
+///
+/// The same plan and the same child process as [`split_hunks`] — `jj squash -i`
+/// lays out the source's own diff for its editor, which is the diff the plan was
+/// built from. What differs is the validation: a squash may legitimately take
+/// every hunk, where a split may not (see [`split::SplitPlan::moves`]).
+#[tauri::command]
+async fn squash_hunks(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    from: String,
+    into: String,
+    plan: split::SplitPlan,
+    allow_immutable: bool,
+) -> Result<Outcome, String> {
+    plan.moves()?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
+    let (program, file, edit_args) = diff_editor_invocation(&plan)?;
+    run_mutation(&app, &state, repo, move |repo| {
+        let outcome = repo.squash_with_diff_editor(&from, &into, &program, &edit_args);
         drop(file);
         outcome
     })
@@ -836,6 +872,73 @@ async fn conflicts(
 ) -> Result<Vec<ConflictedFile>, String> {
     let repo = repo_handle(&state, &window)?;
     blocking(move || vcs(repo.conflicts(&revset))).await
+}
+
+/// One conflicted file taken apart into its agreed text and its regions.
+///
+/// Read through `jj file show` rather than off disk even for the working copy:
+/// it is the one source that materializes the conflict the same way for every
+/// revision, and the on-disk file is whatever the user last saved over it.
+#[tauri::command]
+async fn conflict_content(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+    path: String,
+) -> Result<jjdiff_diff::ConflictedContent, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || {
+        let content = vcs(repo.file_content(&revset, &path))?;
+        Ok(jjdiff_diff::parse_conflicts(&content))
+    })
+    .await
+}
+
+/// Write a resolution for one conflicted path.
+///
+/// jjdiff plays jj's merge tool here for the same reason it plays its diff
+/// editor for a hunk-level split: `jj resolve` has no non-interactive form, but
+/// it does have a protocol. The resolved text is decided in the UI and this
+/// hands it over — see [`resolve::apply_resolution`], which refuses text that
+/// still holds fences.
+#[tauri::command]
+async fn resolve_conflict(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+    path: String,
+    content: String,
+    allow_immutable: bool,
+) -> Result<Outcome, String> {
+    if jjdiff_diff::has_conflict_markers(&content) {
+        return Err("this resolution still contains conflict markers — every region has to be settled before it can be written".into());
+    }
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
+    let program = std::env::current_exe()
+        .map_err(|error| format!("cannot resolve the jjdiff binary to run as a merge tool: {error}"))?;
+
+    let mut file = tempfile::Builder::new()
+        .prefix("jjdiff-resolution-")
+        .tempfile()
+        .map_err(|error| format!("cannot write the resolution: {error}"))?;
+    use std::io::Write;
+    file.write_all(content.as_bytes())
+        .and_then(|()| file.flush())
+        .map_err(|error| format!("cannot write the resolution: {error}"))?;
+
+    let merge_args = vec![
+        "--apply-resolution".to_string(),
+        file.path().to_string_lossy().into_owned(),
+        // jj substitutes this with the file it will read the resolution from.
+        "$output".to_string(),
+    ];
+    run_mutation(&app, &state, repo, move |repo| {
+        let outcome = repo.resolve_with_merge_tool(&revset, &path, &program, &merge_args);
+        drop(file);
+        outcome
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1652,6 +1755,8 @@ pub fn run(args: Args) {
             squash_paths,
             absorb,
             conflicts,
+            conflict_content,
+            resolve_conflict,
             review_status,
             set_viewed,
             mark_reviewed,
@@ -1678,6 +1783,7 @@ pub fn run(args: Args) {
             edit_change,
             split_paths,
             split_hunks,
+            squash_hunks,
             abandon_change,
             duplicate_change,
             backout_change,

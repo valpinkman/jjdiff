@@ -2680,6 +2680,35 @@ jj-app .conflict-chip.here {
   background: var(--jj-removed-bg);
 }
 
+/* The chip carries two jobs — go there, and settle it — so the buttons are
+   inside it rather than the chip being one. They stay visually one pill: the
+   divider is what says the right-hand half does something different. */
+jj-app .conflict-chip .jump,
+jj-app .conflict-chip .resolve {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--jj-s-2);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+jj-app .conflict-chip .resolve {
+  padding-left: var(--jj-s-2);
+  border-left: 1px solid color-mix(in srgb, var(--jj-removed-fg) 30%, transparent);
+  font-family: var(--jj-sans);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+jj-app .conflict-chip .resolve:hover {
+  text-decoration: underline;
+}
+
 jj-app .conflict-chip .name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2707,6 +2736,25 @@ jj-app .banner.split-banner {
   background: var(--jj-surface);
   border-color: color-mix(in srgb, var(--jj-accent) 34%, var(--jj-border));
   color: var(--jj-fg);
+}
+
+/* The squash destination sits inline in the sentence rather than off with the
+   buttons: it is part of what the bar is saying, not another thing to press. */
+jj-app .hunk-destination {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .hunk-destination select {
+  max-width: 22rem;
+  padding: var(--jj-s-1) var(--jj-s-2);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-bg-panel);
+  color: var(--jj-fg);
+  font: inherit;
 }
 
 /* An ordinary card. Tinting the whole block with the accent produced a muddy

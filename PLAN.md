@@ -89,9 +89,10 @@ to the user's repo. Phase 1 is **CLI-first**:
 
 Hunk-level (not file-level) squash/split is the one thing the CLI can't do
 non-interactively. Phase 1 ships file-level; the scripted diff-editor shim this predicted
-is what hunk-level split was eventually built on — jjdiff registers itself as jj's diff
-editor for one `jj split` and edits the directory jj hands it. `squash -i` speaks the same
-protocol and is the remaining half.
+is what both were eventually built on — jjdiff registers itself as jj's diff editor for
+one `jj split` or `jj squash` and edits the directory jj hands it. `jj resolve` takes a
+merge tool by the same arrangement, which is how conflict resolution stopped being
+terminal-only.
 
 ### Review-state model
 
@@ -134,7 +135,8 @@ light/dark/system theme, configurable command-bar keymap, repo name in the windo
 packaging config (app/dmg/deb/rpm targets, generated icon set).
 Deliberate cut: no in-app `jj resolve` launcher — interactive merge editors spawned from a
 GUI without a TTY hang more often than they work; the conflict banner points at the
-terminal instead.
+terminal instead. Still cut, and the reason still holds — but resolving no longer needs
+one, and now happens in-app without spawning anything (see *Still open after Phase 2*).
 
 **M5 — guided walkthroughs (Claude backend). ✅ DONE.** `jjdiff -w` and in-app generation:
 structured diff (stable hunk ids) → prompt with guide + JSON contract → Claude Code CLI
@@ -228,8 +230,8 @@ no remote, nothing to squash).
 | Group | Commands | Notes |
 |---|---|---|
 | Navigate | `new [rev]`, `edit <rev>` | "Work on this change" from the detail view |
-| Shape | `squash` (whole + per file ✅), `absorb` ✅, `split <paths>` ✅ + per hunk ✅, `duplicate`, `abandon` | Both splits ship: file-level is `jj split <paths>`, hunk-level drives jj's diff editor (see *Still open after Phase 2*). Hunk-level `squash` is the piece still missing |
-| History | `rebase -r/-s/-b -d <dest>`, `backout` | Destination picker over the graph; drag-to-rebase deliberately not first — misdrops are expensive, and every rebase is undoable but not free |
+| Shape | `squash` (whole + per file ✅ + per hunk ✅), `absorb` ✅, `split <paths>` ✅ + per hunk ✅, `duplicate`, `abandon` | Both verbs ship at both granularities: file-level is `jj split <paths>` / `jj squash -- <paths>`, hunk-level drives jj's diff editor with one plan for both (see *Still open after Phase 2*) |
+| History | `rebase -r/-s/-b -d <dest>`, `backout` | Destination picker over the graph, and drag-to-rebase ✅ — deliberately not *first*, since misdrops are expensive and every rebase is undoable but not free; the drop confirms rather than runs |
 | Describe | `describe` ✅, bulk-describe empty changes | |
 | Remote | `git fetch`, `git push -b/--change`, bookmark create/set/delete/track, **open pull request** | Push needs bookmarks; `--change` auto-names from the change id. Show ahead/behind per bookmark. See PR note below |
 | Files | `restore <paths>` | Discard changes — the one genuinely destructive op; confirm, and it is undoable |
@@ -306,17 +308,34 @@ is out of date before you push over it.
   choice rather than a hardcoded `-s`. Destinations that would form a cycle — the change
   and its descendants — are not offered at all, so jj's refusal arrives before the
   confirmation instead of after it. The free-form field stays, below the list: `trunk()`
-  and `main@origin` are real answers that no list of commits contains. Drag-to-rebase is
-  still deliberately not first; misdrops are undoable but not free.
-- **Conflict resolution** — resolving is still terminal-only, for the reason given in
-  M4, but the conflict is no longer a dead end. `jj resolve --list` gives every path
-  *and* jj's description of each ("2-sided conflict"), which is the only statement of a
-  conflict's arity outside the marker lines; the banner names them, clicking one jumps
-  to it, and `c`/`C` step between conflict **regions** rather than files, since one file
-  routinely holds several. The markers themselves are coloured by role — fence, side,
-  base — because jj, unlike git, already writes each side's commit and description into
-  the marker text, so the colour only has to say which kind of side you are looking at.
-  What remains deferred is the merge editor itself.
+  and `main@origin` are real answers that no list of commits contains.
+- ~~**Drag-to-rebase**~~ ✅ **DONE**, and deliberately last: it is the one route into
+  this app that can start a rebase by accident, every other being a menu item or a
+  picker someone had to fill in. So it is a gesture that *proposes* — the drop opens a
+  confirmation naming both ends, and only then does jj run. The same cycle exclusion as
+  the picker applies while the drag is in flight, and it is visible rather than merely
+  enforced: rows descended from the one being dragged dim and refuse the drop, so the
+  answer arrives under the pointer instead of in an error afterwards. The mode is fixed
+  at `-s` — the change and everything on top, which is what dragging a node on a graph
+  looks like — and the other two stay in the picker, since a drag cannot express them.
+- ~~**Conflict resolution**~~ ✅ **DONE.** Navigation shipped first and still stands:
+  `jj resolve --list` gives every path *and* jj's description of each ("2-sided
+  conflict"), the banner names them, and `c`/`C` step between conflict **regions**
+  rather than files, since one file routinely holds several. What has changed is that
+  the region is now something you can answer. M4 deferred resolving because a merge
+  editor spawned from a GUI without a TTY hangs more often than it works — a reason
+  about *spawning* one, which is why the answer was never to spawn one. jj materializes
+  a conflict as marker text; `crates/diff/src/conflict.rs` reads it back into sides
+  (diff, snapshot and git marker styles, with the fence length carried per region,
+  because jj lengthens its markers past anything conflict-shaped in the content and a
+  parser fixed at seven mis-reads exactly the files that were careful); the overlay
+  offers a side, the base, both or neither per region, each editable; and the result
+  goes back through `jj resolve` with jjdiff as the merge tool — the third use of the
+  seam the hunk-level split opened. The guard rail is that jj does **not** re-parse a
+  merge tool's output, so text that still holds fences would be written into the file
+  and called resolved: it is refused, twice, and the tool exits non-zero so jj leaves
+  the conflict alone. `jj resolve` in a terminal remains the way to use your own merge
+  editor, and the banner still says so.
 - ~~**`jj op diff`**~~ ✅ **DONE.** Every row in the operation log answers "what did that
   actually do": *What changed* narrates one operation against its parent, and pinning a row
   as *Compare from here* narrates a span of them — which is the case that matters, since
@@ -342,9 +361,12 @@ is out of date before you push over it.
 - **Evolog drawer** ✅ — we already fetched evolog for interdiffs; exposing "this change has
   6 versions, diff any two" was nearly free and has no git equivalent. Shipped; see *Still
   open after Phase 2* above.
-- **Conflict resolution** — still deferred (GUI-spawned merge editors without a TTY hang more
-  than they work), but M10 should at least offer `jj resolve --list` navigation and mark
-  which side is which.
+- **Conflict resolution** ✅ — this entry expected to settle for `jj resolve --list`
+  navigation and marking which side is which, on the grounds that GUI-spawned merge
+  editors without a TTY hang more than they work. Both shipped, and then so did
+  resolving, once it was clear the objection was to *spawning* an editor rather than to
+  resolving: jj's markers parse back into sides, and `jj resolve` takes a merge tool.
+  See *Still open after Phase 2* above.
 - **Command discoverability** — every command in the command bar with a keybinding, so the
   UI does not become a hunt for buttons.
 
@@ -512,8 +534,9 @@ Individually small, collectively the difference between "a window" and "a Mac ap
 - **App icon** ✅ — `src-tauri/icons/icon.svg` is the source; regenerate with `rsvg-convert`
   + `pnpm tauri icon`. Split-diff mark in the DESIGN.md dark-theme diff colours.
 
-Still open from the original list: **drag-to-rebase** was never part of C5, and per-window
-menu accelerators were skipped on purpose (see above).
+**Drag-to-rebase** was never part of C5 and has since shipped on its own terms (see
+*Still open after Phase 2*). Per-window menu accelerators were skipped on purpose
+(see above).
 
 ### C6 — Shared review links (deliberately last)
 
@@ -584,10 +607,18 @@ app scrolled sideways, carrying the toolbar off screen).
   unsigned bundle already builds (`pnpm tauri build`).
 - *Shared-review web service* — weeks of work (codiff's Cloudflare equivalent) and
   questionable value before there is a second user.
-- *Hunk-level **squash*** — the split shipped (see above) and `jj squash -i` speaks the
-  same diff-editor protocol, so the shim is already written; what is missing is only the
-  plan-building for a two-change selection. File-level `squash`/`absorb` covers most of
-  the need today.
+- ~~*Hunk-level **squash***~~ ✅ **DONE.** It turned out to need less than the
+  plan-building this entry predicted, because `jj squash -i` lays out the *source's
+  own* diff for its editor — parent on the left, source on the right — which is the
+  diff jjdiff was already showing and already building a plan from. So one plan, one
+  `--apply-split-plan` process, and a destination picked from a select in the banner.
+  Three things differ from the split and each is a rule rather than a detail: a squash
+  may take **every** hunk (that is an ordinary whole-change squash, where a split must
+  leave something behind), `--use-destination-message` is mandatory rather than
+  polite (jj's default combines the two descriptions through `$EDITOR`, which with no
+  terminal is a hang, and moving code into a change is not a reason to redescribe it),
+  and both ends are checked for immutability because a squash rewrites its destination
+  too.
 - *Full-file syntax highlighting* — expand-context lines are deliberately untokenized;
   proper highlighting wants the whole file through shiki, which needs a highlight cache
   rework.

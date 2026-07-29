@@ -92,6 +92,37 @@ export interface ConflictedFile {
   description: string;
 }
 
+/** One side of a conflict, under jj's own label for it. */
+export interface ConflictSide {
+  /** jj names each side after the commit it came from; git writes `HEAD`. */
+  label: string;
+  lines: string[];
+}
+
+/** One `<<<<<<<` … `>>>>>>>` region. */
+export interface ConflictRegion {
+  /** Position among the file's regions, 0-based. */
+  index: number;
+  label: string;
+  sides: ConflictSide[];
+  /** What both sides changed, when the markers stated it. */
+  base: ConflictSide | null;
+}
+
+/**
+ * A conflicted file as alternating agreed text and regions to choose between.
+ * The tagged union mirrors `crates/diff/src/conflict.rs`.
+ */
+export type ConflictPiece =
+  | { kind: 'text'; lines: string[] }
+  | ({ kind: 'conflict' } & ConflictRegion);
+
+export interface ConflictedContent {
+  pieces: ConflictPiece[];
+  /** Whether the file ended with a newline — reassembly has to preserve it. */
+  trailingNewline: boolean;
+}
+
 // -- Hunk-level split --
 
 /** One hunk of a split plan: enough to apply it, plus whether it was picked. */
@@ -424,6 +455,21 @@ export const splitHunks = (
   IN_TAURI
     ? invoke<Outcome>('split_hunks', { revset, plan, message, allowImmutable })
     : mockOutcome('Split by hunk.');
+/**
+ * Hunk-level squash: the ticked hunks move from `from` into `into`, the rest
+ * stay. Same plan and same mechanism as {@link splitHunks} — `jj squash -i`
+ * edits the source's own diff, which is the one the plan describes. `into`
+ * keeps its description.
+ */
+export const squashHunks = (
+  from: string,
+  into: string,
+  plan: SplitPlan,
+  allowImmutable = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('squash_hunks', { from, into, plan, allowImmutable })
+    : mockOutcome('Squashed by hunk.');
 export const abandonChange = (revset: string, allowImmutable = false): Promise<Outcome> =>
   IN_TAURI
     ? invoke<Outcome>('abandon_change', { revset, allowImmutable })
@@ -487,6 +533,25 @@ export const revertOperation = (operation: string): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('revert_operation', { operation }) : mockOutcome('Reverted.');
 export const getConflicts = (revset: string): Promise<ConflictedFile[]> =>
   IN_TAURI ? invoke<ConflictedFile[]>('conflicts', { revset }) : mock((m) => m.mockConflicts);
+/** One conflicted file taken apart into agreed text and regions to choose between. */
+export const getConflictContent = (revset: string, path: string): Promise<ConflictedContent> =>
+  IN_TAURI
+    ? invoke<ConflictedContent>('conflict_content', { revset, path })
+    : mock((m) => m.mockConflictContent(path));
+/**
+ * Write a resolution for one path. jjdiff plays jj's merge tool to do it — the
+ * same seam the hunk-level split uses, one verb over — so the text decided in
+ * the UI is what `jj resolve` commits.
+ */
+export const resolveConflict = (
+  revset: string,
+  path: string,
+  content: string,
+  allowImmutable = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('resolve_conflict', { revset, path, content, allowImmutable })
+    : mockOutcome('Resolved.');
 export const getReviewStatus = (changeId: string): Promise<ReviewStatus> =>
   IN_TAURI
     ? invoke<ReviewStatus>('review_status', { changeId })

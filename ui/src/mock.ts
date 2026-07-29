@@ -5,6 +5,7 @@ import type {
   Change,
   ChangeVersion,
   Config,
+  ConflictedContent,
   ConflictedFile,
   FilePatch,
   ForgeInfo,
@@ -510,6 +511,31 @@ export const mockFileContent = (path: string): string => {
  * for a change whose diff contains no markers to navigate to.
  */
 export const mockConflicts: ConflictedFile[] = [];
+
+/**
+ * A stand-in conflicted file, so the resolver can be worked on in the browser.
+ *
+ * Unreachable from the fixture repo — `mockConflicts` is empty, so nothing
+ * offers a Resolve button — and deliberately so: this exists for `pnpm dev` to
+ * render the overlay against, not to put a conflict in a diff that has none.
+ */
+export const mockConflictContent = (path: string): ConflictedContent => ({
+  trailingNewline: true,
+  pieces: [
+    { kind: 'text', lines: [`// ${path}`, 'const shared = true;'] },
+    {
+      kind: 'conflict',
+      index: 0,
+      label: 'Conflict 1 of 1',
+      sides: [
+        { label: 'Contents of side #1', lines: ['const answer = 42;'] },
+        { label: 'Contents of side #2', lines: ['const answer = 43;'] },
+      ],
+      base: { label: 'base', lines: ['const answer = 0;'] },
+    },
+    { kind: 'text', lines: ['export { shared, answer };'] },
+  ],
+});
 
 export const mockOperations: Operation[] = [
   {

@@ -55,10 +55,14 @@ pub enum Headless {
     PrintHunks(Option<String>),
     InstallTerminalHelper,
     /// `--apply-split-plan <plan> <left> <right>` — jjdiff acting as its own
-    /// diff editor during a hunk-level `jj split`. Not a user-facing command:
-    /// jj re-enters the binary with it, and the exit status is what decides
-    /// whether the split lands. See `split.rs`.
+    /// diff editor during a hunk-level `jj split` or `jj squash`. Not a
+    /// user-facing command: jj re-enters the binary with it, and the exit
+    /// status is what decides whether the split lands. See `split.rs`.
     ApplySplitPlan { plan: PathBuf, left: PathBuf, right: PathBuf },
+    /// `--apply-resolution <file> <output>` — jjdiff acting as its own merge
+    /// tool during `jj resolve`. The same arrangement as `ApplySplitPlan`, one
+    /// seam over: see `resolve.rs`.
+    ApplyResolution { resolution: PathBuf, output: PathBuf },
 }
 
 impl Args {
@@ -111,6 +115,12 @@ impl Args {
                         plan: PathBuf::from(want_value(&mut peekable, arg)?),
                         left: PathBuf::from(want_value(&mut peekable, arg)?),
                         right: PathBuf::from(want_value(&mut peekable, arg)?),
+                    });
+                }
+                "--apply-resolution" => {
+                    headless = Some(Headless::ApplyResolution {
+                        resolution: PathBuf::from(want_value(&mut peekable, arg)?),
+                        output: PathBuf::from(want_value(&mut peekable, arg)?),
                     });
                 }
                 // Tauri / `pnpm tauri dev` injects its own flags (e.g. `--no-watch`).
@@ -377,10 +387,13 @@ pub fn run_headless(headless: &Headless, args: &Args) -> Result<(), String> {
             print_hunks(&files);
             Ok(())
         }
-        // No output on success: jj is the caller here and reads the exit status,
-        // not stdout.
+        // No output on success: jj is the caller for both of these and reads
+        // the exit status, not stdout.
         Headless::ApplySplitPlan { plan, left, right } => {
             crate::split::apply_plan(plan, left, right)
+        }
+        Headless::ApplyResolution { resolution, output } => {
+            crate::resolve::apply_resolution(resolution, output)
         }
     }
 }
@@ -678,6 +691,21 @@ mod tests {
         );
         let short = Args::parse(&argv("--apply-split-plan /tmp/plan.json")).unwrap_err();
         assert!(matches!(short, ParseError::MissingValue(flag) if flag == "--apply-split-plan"));
+    }
+
+    /// The same arrangement for `jj resolve`, which passes `$output` alone.
+    #[test]
+    fn headless_apply_resolution_takes_two_paths() {
+        let args = Args::parse(&argv("--apply-resolution /tmp/res.txt /tmp/out.txt")).unwrap();
+        assert_eq!(
+            args.headless,
+            Some(Headless::ApplyResolution {
+                resolution: PathBuf::from("/tmp/res.txt"),
+                output: PathBuf::from("/tmp/out.txt"),
+            })
+        );
+        let short = Args::parse(&argv("--apply-resolution /tmp/res.txt")).unwrap_err();
+        assert!(matches!(short, ParseError::MissingValue(flag) if flag == "--apply-resolution"));
     }
 
     #[test]

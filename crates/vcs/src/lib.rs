@@ -389,6 +389,27 @@ impl Repo {
         self.mutate_rewriting(&args)
     }
 
+    /// Register `program` as a `merge-tools` entry for one invocation.
+    ///
+    /// Returns the two `--config` assignments to pass ahead of the subcommand.
+    /// They go through `--config` rather than into anyone's config file: the
+    /// tool is an implementation detail of a single command, and a `merge-tools`
+    /// entry left behind in `~/.jjconfig.toml` would outlive the app that
+    /// understands it.
+    ///
+    /// `args_key` is the only thing that varies between the two protocols jj
+    /// offers here — `edit-args` for a diff editor (`split`, `squash`),
+    /// `merge-args` for a merge tool (`resolve`).
+    fn tool_config(tool: &str, args_key: &str, program: &Path, args: &[String]) -> [String; 2] {
+        [
+            format!("merge-tools.{tool}.program={}", toml_string(&program.to_string_lossy())),
+            format!(
+                "merge-tools.{tool}.{args_key}=[{}]",
+                args.iter().map(|arg| toml_string(arg)).collect::<Vec<_>>().join(",")
+            ),
+        ]
+    }
+
     /// Hunk-level `jj split`, by *being* the diff editor.
     ///
     /// jj offers no way to select hunks on a command line: `jj split -i` writes
@@ -396,11 +417,6 @@ impl Repo {
     /// configured diff editor, and takes whatever the right-hand one holds
     /// afterwards. So the caller supplies a program that edits that directory
     /// without a human — jjdiff's own binary, running `--apply-split-plan`.
-    ///
-    /// The tool is registered through `--config` for this one invocation rather
-    /// than written into anyone's config file: it is an implementation detail of
-    /// one command, and a `merge-tools` entry left behind in `~/.jjconfig.toml`
-    /// would outlive the app that understands it.
     ///
     /// `message` describes the selected half. Passing it is what keeps the whole
     /// thing non-interactive — without `-m`, jj opens `$EDITOR` for a
@@ -413,18 +429,70 @@ impl Repo {
         message: &str,
     ) -> Result<Outcome> {
         const TOOL: &str = "jjdiff-split";
-        let program = format!(
-            "merge-tools.{TOOL}.program={}",
-            toml_string(&program.to_string_lossy())
-        );
-        let args = format!(
-            "merge-tools.{TOOL}.edit-args=[{}]",
-            edit_args.iter().map(|arg| toml_string(arg)).collect::<Vec<_>>().join(",")
-        );
+        let [program, args] = Self::tool_config(TOOL, "edit-args", program, edit_args);
         self.mutate_rewriting(&[
             "--config", &program,
             "--config", &args,
             "split", "-r", revset, "--tool", TOOL, "-m", message,
+        ])
+    }
+
+    /// Hunk-level `jj squash`, by the same trick as [`Self::split_with_diff_editor`].
+    ///
+    /// `jj squash -i` speaks the identical diff-editor protocol, and over the
+    /// identical pair of trees: it lays the *source's* own diff out — its parent
+    /// on the left, the source on the right — squashes whatever the right
+    /// directory holds into the destination, and leaves the remainder in the
+    /// source. That is exactly the diff jjdiff was already showing for the
+    /// source change, so one plan format serves both verbs and the same
+    /// `--apply-split-plan` process carries it out.
+    ///
+    /// The destination keeps its description (`--use-destination-message`).
+    /// jj's default is to combine the two, which opens `$EDITOR` when both are
+    /// non-empty — a hang with no terminal, and the wrong question anyway:
+    /// moving a few hunks into a change is not a reason to redescribe it.
+    pub fn squash_with_diff_editor(
+        &self,
+        from: &str,
+        into: &str,
+        program: &Path,
+        edit_args: &[String],
+    ) -> Result<Outcome> {
+        const TOOL: &str = "jjdiff-squash";
+        let [program, args] = Self::tool_config(TOOL, "edit-args", program, edit_args);
+        self.mutate_rewriting(&[
+            "--config", &program,
+            "--config", &args,
+            "squash", "--from", from, "--into", into,
+            "--use-destination-message", "--tool", TOOL,
+        ])
+    }
+
+    /// Resolve one conflicted path by *being* the merge tool.
+    ///
+    /// The third use of the same seam, and the one that makes a conflict
+    /// resolvable without a terminal. `jj resolve` materializes the conflict's
+    /// sides into files, runs the configured merge tool, and takes whatever is
+    /// at `$output`. jjdiff has already worked the resolved text out in the UI,
+    /// so the "tool" it registers does nothing but write that text where jj
+    /// will read it.
+    ///
+    /// `$output` is the only file named in `merge_args`: the sides are jj's
+    /// business, and asking for `$left`/`$right` here would be claiming to
+    /// merge them when the merging already happened.
+    pub fn resolve_with_merge_tool(
+        &self,
+        revset: &str,
+        path: &str,
+        program: &Path,
+        merge_args: &[String],
+    ) -> Result<Outcome> {
+        const TOOL: &str = "jjdiff-resolve";
+        let [program, args] = Self::tool_config(TOOL, "merge-args", program, merge_args);
+        self.mutate_rewriting(&[
+            "--config", &program,
+            "--config", &args,
+            "resolve", "-r", revset, "--tool", TOOL, "--", path,
         ])
     }
 
@@ -1060,6 +1128,69 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("f.txt")).unwrap(),
             "ONE\ntwo\nthree\nfour\nFIVE\n",
             "the working copy is unchanged by a split"
+        );
+    }
+
+    /// The squash half of the same protocol, end to end.
+    ///
+    /// Two things need proving that the split test cannot. First, that the pair
+    /// of trees jj hands a squash's editor is the *source's own* diff — that is
+    /// the assumption the frontend's plan rests on, and if jj laid out anything
+    /// else the ticked hunks would select the wrong lines. Second, that
+    /// `--use-destination-message` really keeps the destination's description:
+    /// without it jj combines the two and opens `$EDITOR`, which in a
+    /// GUI-spawned process is a hang rather than an error.
+    #[test]
+    fn squash_with_diff_editor_moves_only_what_the_editor_left_behind() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+
+        // A described destination, then a child holding two independent edits.
+        std::fs::write(tmp.path().join("f.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        repo.describe("@", "destination").unwrap();
+        repo.new_change(&[]).unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "ONE\ntwo\nthree\nfour\nFIVE\n").unwrap();
+        repo.describe("@", "source").unwrap(); // snapshots the edits
+
+        // The "diff editor": keeps the first edit, drops the second.
+        let editor = tmp.path().join("editor.sh");
+        std::fs::write(
+            &editor,
+            "#!/bin/sh\nprintf 'ONE\\ntwo\\nthree\\nfour\\nfive\\n' > \"$2/f.txt\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let args = vec!["$left".to_string(), "$right".to_string()];
+        repo.squash_with_diff_editor("@", "@-", &editor, &args).unwrap();
+
+        let destination = repo.log("@-").unwrap();
+        assert_eq!(
+            destination[0].first_line(),
+            "destination",
+            "the destination keeps its own description"
+        );
+        let moved = repo.patch_for("@-", false).unwrap();
+        assert!(moved.contains("+ONE"), "the first edit moved into the destination: {moved}");
+        assert!(!moved.contains("+FIVE"), "and the second did not: {moved}");
+
+        let rest = repo.patch_for("@", false).unwrap();
+        assert!(rest.contains("+FIVE"), "the source keeps the second edit: {rest}");
+        assert!(!rest.contains("+ONE"), "and no longer carries the first: {rest}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("f.txt")).unwrap(),
+            "ONE\ntwo\nthree\nfour\nFIVE\n",
+            "a squash moves history, not the working copy's contents"
         );
     }
 }

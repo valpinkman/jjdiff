@@ -7,6 +7,7 @@ import './command-bar.js';
 import './evolog-drawer.js';
 import './rebase-picker.js';
 import type { RebaseMode } from './rebase-picker.js';
+import './conflict-resolver.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
@@ -32,6 +33,7 @@ import {
   revertOperation,
   setBookmark,
   splitHunks,
+  squashHunks,
   splitPaths,
   undo,
   describeChange,
@@ -39,6 +41,8 @@ import {
   generateWalkthrough,
   getConfig,
   getConflicts,
+  getConflictContent,
+  resolveConflict,
   getDiff,
   getInterdiffSinceReviewed,
   getLaunchOptions,
@@ -84,6 +88,7 @@ import {
   type ChangeVersion,
   type Comment,
   type CommentSide,
+  type ConflictedContent,
   type ConflictedFile,
   deleteComment,
   exportReviewMarkdown,
@@ -465,17 +470,36 @@ export class App extends LitElement {
   /** The operation pinned as the older end of a comparison, if any. */
   @state() private opCompareFrom: Operation | null = null;
   /**
-   * Hunk-level split: the picked units, or null when not choosing.
+   * Hunk-level picking: the ticked units, or null when not choosing.
    *
    * Null, not an empty set — "no checkboxes on screen" and "none ticked yet"
-   * are different states, and every control that appears only while splitting
+   * are different states, and every control that appears only while picking
    * keys off the first.
    */
-  @state() private splitSelection: ReadonlySet<string> | null = null;
-  /** Shape of the diff the selection was made against — see `reconcileSplitSelection`. */
-  private splitShape = '';
+  @state() private hunkSelection: ReadonlySet<string> | null = null;
+  /**
+   * What the picked hunks are for. Both verbs pick from the same diff and build
+   * the same plan — `jj split -i` and `jj squash -i` speak one diff-editor
+   * protocol over one pair of trees — so the mode changes the wording, the
+   * validation and the destination, and nothing else.
+   */
+  @state() private hunkVerb: 'split' | 'squash' = 'split';
+  /** Squash destination: the change the ticked hunks move into. */
+  @state() private hunkInto: string | null = null;
+  /** Shape of the diff the selection was made against — see `reconcileHunkSelection`. */
+  private hunkShape = '';
   /** Rebase destination picker; null when closed. */
   @state() private rebasing: { change: Change } | null = null;
+  /**
+   * The conflicted file being resolved; null when the resolver is closed.
+   * `content` is null while it is being read, which is what the overlay shows
+   * "Reading the conflict…" for rather than opening empty.
+   */
+  @state() private resolving: {
+    path: string;
+    shape: string;
+    content: ConflictedContent | null;
+  } | null = null;
   /** Evolog drawer: every recorded version of the selected change. */
   @state() private versionsOpen = false;
   @state() private versions: ChangeVersion[] = [];
@@ -1499,9 +1523,21 @@ export class App extends LitElement {
             : 'jj split, hunk by hunk: tick the parts to pull out into their own change. jjdiff drives jj’s diff editor to do it without one.'
         }
         ?disabled=${this.viewMode !== 'full' || this.walkActive || !!this.prRevset}
-        @click=${pick(() => void this.beginHunkSplit())}
+        @click=${pick(() => void this.beginHunkPick('split'))}
       >
         Split by hunk…
+      </button>
+      <button
+        role="menuitem"
+        title=${
+          this.viewMode !== 'full' || this.walkActive || this.prRevset
+            ? 'jj squash -i — only available while the change is shown whole.'
+            : 'jj squash, hunk by hunk: tick the parts to move into another change. The same diff editor as the split, pointed at a destination.'
+        }
+        ?disabled=${this.viewMode !== 'full' || this.walkActive || !!this.prRevset}
+        @click=${pick(() => void this.beginHunkPick('squash'))}
+      >
+        Squash by hunk…
       </button>
       <button
         role="menuitem"
@@ -1698,8 +1734,8 @@ export class App extends LitElement {
         this.closeSearch();
         return;
       }
-      if (this.splitSelection) {
-        this.cancelHunkSplit();
+      if (this.hunkSelection) {
+        this.cancelHunkPick();
         return;
       }
       if (this.walkActive) {
@@ -1897,13 +1933,13 @@ export class App extends LitElement {
       if (this.focusPath && !this.files.some((f) => f.path === this.focusPath)) {
         this.focusPath = null;
       }
-      this.reconcileSplitSelection();
+      this.reconcileHunkSelection();
     } catch (error) {
       this.report(error);
     }
   }
 
-  /** A fingerprint of the diff's hunk layout — what a split selection is pinned to. */
+  /** A fingerprint of the diff's hunk layout — what a hunk selection is pinned to. */
   private diffShape(): string {
     return this.files
       .map((file) => `${file.path} ${file.hunks.map((h) => `${h.oldStart},${h.oldLines}`).join(';')}`)
@@ -1916,19 +1952,18 @@ export class App extends LitElement {
    * Hunk ids are positional (`<path>#<index>`), so an edit elsewhere in the
    * file renumbers them and the same tick now means a different hunk. The
    * backend refuses to apply a plan that no longer fits, so nothing would be
-   * mis-split either way — but a selection that quietly came to mean something
-   * else is worth saying out loud rather than letting it fail at the end.
+   * mis-applied either way — but a selection that quietly came to mean
+   * something else is worth saying out loud rather than letting it fail at the
+   * end.
    *
    * The comparison is on shape, not identity, so the working copy's watcher
    * firing on an unrelated save leaves the selection alone.
    */
-  private reconcileSplitSelection() {
-    if (!this.splitSelection) return;
-    if (this.diffShape() === this.splitShape) return;
-    this.splitSelection = null;
-    this.splitShape = '';
-    this.actionInfo = null;
-    this.actionError = 'The change moved while hunks were being picked — the split selection was cleared.';
+  private reconcileHunkSelection() {
+    if (!this.hunkSelection) return;
+    if (this.diffShape() === this.hunkShape) return;
+    this.cancelHunkPick();
+    this.actionError = 'The change moved while hunks were being picked — the selection was cleared.';
   }
 
   private async loadReview() {
@@ -2009,29 +2044,114 @@ export class App extends LitElement {
   }
 
   /**
-   * The split bar: the count, the two guard rails, and the way out.
+   * Open the resolver on one conflicted path.
    *
-   * Both ends of the range are disabled rather than left to fail, because jj's
-   * own refusal ("the given paths do not match any file") arrives after a
-   * description has been typed and names neither which half was empty nor why.
+   * The overlay opens before the content arrives rather than after: reading a
+   * conflict is a `jj file show`, and a button that does nothing visible until
+   * it returns reads as a button that does nothing.
    */
-  private renderSplitBanner(selection: ReadonlySet<string>) {
-    const total = this.splitUnits.length;
+  private async openResolver(path: string, shape: string) {
+    const revset = this.isWorkingCopySelected ? '@' : this.selected;
+    if (!revset) return;
+    this.resolving = { path, shape, content: null };
+    try {
+      const content = await getConflictContent(revset, path);
+      // The user may have closed it, or moved to another file, while jj ran.
+      if (this.resolving?.path === path) this.resolving = { path, shape, content };
+    } catch (error) {
+      this.resolving = null;
+      this.actionError = String(error);
+    }
+  }
+
+  /**
+   * Resolve whichever conflict the reviewer is nearest.
+   *
+   * The palette has no file to point at, so it takes the one under the cursor
+   * when that one is conflicted and the first otherwise — the same order the
+   * chips are in, so "Resolve Conflict…" twice in a row is not a coin toss.
+   */
+  private openResolverForFocus() {
+    const focused = this.focusPath;
+    const path = focused && this.conflicts.has(focused) ? focused : [...this.conflicts.keys()][0];
+    if (!path) return;
+    void this.openResolver(path, this.conflicts.get(path) ?? '');
+  }
+
+  /**
+   * Write the resolution the overlay assembled.
+   *
+   * Immutability is asked about here rather than when the resolver opens:
+   * reading a conflict changes nothing, and a dialog about force-pushing in
+   * front of a file someone only wanted to look at is a dialog people learn to
+   * dismiss unread.
+   */
+  private async applyResolution(content: string) {
+    const target = this.resolving;
+    const change = this.selectedChange;
+    if (!target || !change) return;
+    if (!(await this.confirmImmutableRewrite(change, 'Resolve'))) return;
+    const revset = this.isWorkingCopySelected ? '@' : this.selected;
+    if (!revset) return;
+    await this.command('resolve', () =>
+      resolveConflict(revset, target.path, content, change.immutable),
+    );
+    // Closed only on success: a refused resolution — a fence left in, a file
+    // that moved — should keep the work on screen to be fixed rather than
+    // asking for it again from the start.
+    if (!this.actionError) this.resolving = null;
+    void this.loadConflicts();
+  }
+
+  /**
+   * The hunk-picking banner, for whichever verb is picking.
+   *
+   * The one asymmetry worth reading twice is what counts as ready: a split has
+   * to leave something behind, a squash does not — taking every hunk is an
+   * ordinary whole-change squash. Same rule as `SplitPlan::divides` versus
+   * `SplitPlan::moves` in the backend, stated here so the button is disabled
+   * before jj has to refuse.
+   */
+  private renderHunkBanner(selection: ReadonlySet<string>) {
+    const squashing = this.hunkVerb === 'squash';
+    const total = this.hunkUnits.length;
     const picked = selection.size;
-    const ready = picked > 0 && picked < total;
+    const ready = squashing ? picked > 0 && !!this.hunkInto : picked > 0 && picked < total;
+    const summary = picked === 0
+      ? squashing
+        ? 'Tick the hunks to move into another change.'
+        : 'Tick the hunks to move into a change of their own.'
+      : `${picked} of ${total} selected — these move${squashing ? '' : ' out'}, the rest stay here.`;
     return html`<div class="banner split-banner">
       <span class="chip">${iconSplit}</span>
-      <span>
-        ${picked === 0
-          ? 'Tick the hunks to move into a change of their own.'
-          : `${picked} of ${total} selected — these move out, the rest stay here.`}
-      </span>
+      <span>${summary}</span>
+      ${squashing
+        ? html`<label class="hunk-destination">
+            into
+            <select
+              title="The change the ticked hunks move into"
+              .value=${this.hunkInto ?? ''}
+              @change=${(event: Event) => {
+                this.hunkInto = (event.target as HTMLSelectElement).value || null;
+              }}
+            >
+              ${this.hunkSquashTargets.map(
+                (target) => html`<option
+                  value=${target.changeId}
+                  ?selected=${target.changeId === this.hunkInto}
+                >
+                  ${this.changeLabel(target)}${target.immutable ? ' · immutable' : ''}
+                </option>`,
+              )}
+            </select>
+          </label>`
+        : nothing}
       <span class="spacer"></span>
       <button
         class="tool"
         ?disabled=${picked === total}
         title="Select every hunk in the diff"
-        @click=${() => this.toggleSplitUnits(this.splitUnits, true)}
+        @click=${() => this.toggleHunkUnits(this.hunkUnits, true)}
       >
         All
       </button>
@@ -2039,24 +2159,28 @@ export class App extends LitElement {
         class="tool"
         ?disabled=${picked === 0}
         title="Clear the selection"
-        @click=${() => this.toggleSplitUnits(this.splitUnits, false)}
+        @click=${() => this.toggleHunkUnits(this.hunkUnits, false)}
       >
         None
       </button>
-      <button class="tool" @click=${this.cancelHunkSplit}>Cancel</button>
+      <button class="tool" @click=${this.cancelHunkPick}>Cancel</button>
       <button
         class="tool primary"
         ?disabled=${!ready}
         title=${
           picked === 0
-            ? 'Nothing selected — there would be no change to split off.'
-            : picked === total
+            ? squashing
+              ? 'Nothing selected — there would be nothing to move.'
+              : 'Nothing selected — there would be no change to split off.'
+            : !squashing && picked === total
               ? 'Everything selected — a split needs something to leave behind.'
-              : 'jj split, hunk by hunk: the ticked hunks become a change below this one.'
+              : squashing
+                ? 'jj squash, hunk by hunk: the ticked hunks move into the destination change.'
+                : 'jj split, hunk by hunk: the ticked hunks become a change below this one.'
         }
-        @click=${() => void this.confirmHunkSplit()}
+        @click=${() => void (squashing ? this.confirmHunkSquash() : this.confirmHunkSplit())}
       >
-        Split…
+        ${squashing ? 'Squash…' : 'Split…'}
       </button>
     </div>`;
   }
@@ -2064,12 +2188,13 @@ export class App extends LitElement {
   /**
    * The conflict banner: how many, where, and how to get there.
    *
-   * It stays a pointer at the terminal for the resolving itself — a merge
-   * editor spawned from a GUI without a TTY hangs more often than it works
-   * (M4), and that has not changed. What it stopped being is a dead end:
-   * `jj resolve --list` knows every conflicted path and the shape of each
-   * conflict, so the banner names them, and stepping between the marker
-   * regions is a button rather than a scroll.
+   * Resolving is no longer terminal-only. M4's reason for deferring it was
+   * about *spawning* a merge editor — one started from a GUI with no TTY hangs
+   * more often than it works — and that is still true and still avoided:
+   * nothing is spawned. jj materializes a conflict as marker text, the backend
+   * reads that back into sides, and `jj resolve` takes the answer with jjdiff
+   * itself as the merge tool. `jj resolve` in a terminal remains the way to use
+   * your own merge editor, and the banner still says so.
    */
   private renderConflictBanner() {
     const files = [...this.conflicts];
@@ -2077,8 +2202,8 @@ export class App extends LitElement {
     return html`<div class="banner conflict">
       <span class="chip warn">${iconWarn}</span>
       <span>
-        ${count || '?'} file${count === 1 ? '' : 's'} with unresolved conflicts — resolve with
-        <code>jj resolve</code> in a terminal.
+        ${count || '?'} file${count === 1 ? '' : 's'} with unresolved conflicts — pick a file to
+        resolve it here, or use <code>jj resolve</code> for your own merge tool.
       </span>
       <span class="spacer"></span>
       ${this.conflictAt
@@ -2096,17 +2221,28 @@ export class App extends LitElement {
     ${count > 0
       ? html`<div class="banner conflict conflict-files">
           ${files.map(
-            ([path, description]) => html`<button
+            ([path, description]) => html`<span
               class="conflict-chip ${this.conflictAt?.path === path ? 'here' : ''}"
-              title=${`Jump to ${path}${description ? ` — ${description}` : ''}`}
-              @click=${() => {
-                this.focusPath = path;
-                this.patchView?.scrollToPath(path);
-              }}
             >
-              <span class="name">${path}</span>
-              ${description ? html`<span class="shape">${description}</span>` : nothing}
-            </button>`,
+              <button
+                class="jump"
+                title=${`Jump to ${path}${description ? ` — ${description}` : ''}`}
+                @click=${() => {
+                  this.focusPath = path;
+                  this.patchView?.scrollToPath(path);
+                }}
+              >
+                <span class="name">${path}</span>
+                ${description ? html`<span class="shape">${description}</span>` : nothing}
+              </button>
+              <button
+                class="resolve"
+                title=${`Resolve ${path} — choose a side per region, or edit the result`}
+                @click=${() => void this.openResolver(path, description)}
+              >
+                Resolve…
+              </button>
+            </span>`,
           )}
         </div>`
       : nothing}`;
@@ -2734,6 +2870,34 @@ export class App extends LitElement {
     );
   }
 
+  /**
+   * Rebase from a drag in the log graph.
+   *
+   * The gesture that was held back until last, and confirmed rather than run,
+   * because a drop is the one way into this app to start a rebase by accident:
+   * every other route is a menu item or a picker someone had to fill in. The
+   * dialog names both ends, so a misdrop is caught before it costs an undo
+   * rather than after.
+   *
+   * `-s` is the mode a drop means — the change and everything built on it,
+   * which is what "move this over there" looks like on a graph. The other two
+   * are not choices a drag can express, so the palette's Rebase… keeps them.
+   */
+  private async rebaseByDrop(source: Change, destination: Change) {
+    if (!(await this.confirmImmutableRewrite(source, 'Rebase'))) return;
+    const name = (change: Change) =>
+      change.description.split('\n')[0] || change.changeId.slice(0, 8);
+    const ok = await askConfirm({
+      heading: `Rebase "${name(source)}" onto "${name(destination)}"?`,
+      detail:
+        'The change and everything built on top of it move across (jj rebase -s). Conflicts are a normal outcome and are shown rather than refused.\n\n' +
+        'For the other modes — this change alone, or its whole branch — use Rebase… from the palette. Undoable from the Ops tab either way.',
+      confirmLabel: 'Rebase',
+    });
+    if (!ok) return;
+    this.runRebase(source, 'source', destination.changeId);
+  }
+
   private async splitSelectedFiles() {
     const change = this.selectedChange;
     if (!change) return;
@@ -2747,52 +2911,111 @@ export class App extends LitElement {
     void this.command('split', () => splitPaths(change.changeId, paths, change.immutable));
   }
 
-  // ---- Hunk-level split ----
+  // ---- Hunk-level split and squash ----
 
-  /** Every unit in the current diff that a split could move. */
-  private get splitUnits(): string[] {
+  /** Every unit in the current diff that a split or squash could move. */
+  private get hunkUnits(): string[] {
     return this.files.flatMap((file) => selectionUnits(file));
   }
 
   /**
-   * Enter hunk-picking mode.
+   * Changes the ticked hunks could be squashed into.
+   *
+   * The whole stack rather than [`squashTargets`]'s mutable subset: a squash
+   * rewrites its destination as well as its source, so an immutable one is not
+   * unavailable, it is the case `confirmImmutableRewrite` exists for. The
+   * source itself is excluded because jj rejects it, and the exclusion is here
+   * so the reason arrives before the attempt.
+   */
+  private get hunkSquashTargets(): Change[] {
+    const source = this.selectedChange?.changeId;
+    return (this.repo?.stack ?? []).filter((change) => change.changeId !== source);
+  }
+
+  /** The parent of `change` as the graph knows it, when it is on screen. */
+  private parentOf(change: Change): Change | null {
+    const parent = change.parents[0];
+    if (!parent) return null;
+    const known = [...(this.repo?.stack ?? []), ...(this.repo?.graph ?? [])];
+    return known.find((candidate) => candidate.commitId === parent) ?? null;
+  }
+
+  private changeLabel(change: Change): string {
+    return `${change.changeId.slice(0, 8)} ${
+      change.description.split('\n')[0] || '(no description)'
+    }`;
+  }
+
+  /**
+   * Enter hunk-picking mode, for either verb.
    *
    * The diff has to be showing the change whole: an interdiff, a walkthrough
    * step or a proposal-wide view all show a *subset* of hunks, and a plan built
-   * from one of those would describe a change that is not the one being split.
+   * from one of those would describe a change that is not the one being cut up.
+   *
+   * The immutability question is deliberately not asked here for a squash. The
+   * destination is picked from the banner and can still change, so the only
+   * honest time to name what is about to be rewritten is at the end.
    */
-  private async beginHunkSplit() {
+  private async beginHunkPick(verb: 'split' | 'squash') {
     const change = this.selectedChange;
     if (!change) return;
     if (this.viewMode !== 'full' || this.walkActive || this.prRevset) {
-      this.actionError = 'Show the change whole before splitting it by hunk.';
+      this.actionError = `Show the change whole before ${
+        verb === 'split' ? 'splitting' : 'squashing'
+      } it by hunk.`;
       return;
     }
-    if (this.splitUnits.length < 2) {
+    if (verb === 'split' && this.hunkUnits.length < 2) {
       this.actionError = 'There is only one thing here to split; nothing to divide.';
       return;
     }
-    if (!(await this.confirmImmutableRewrite(change, 'Split'))) return;
-    this.splitShape = this.diffShape();
-    this.splitSelection = new Set();
+    if (!this.hunkUnits.length) {
+      this.actionError = 'There is nothing in this diff to move.';
+      return;
+    }
+    if (verb === 'split' && !(await this.confirmImmutableRewrite(change, 'Split'))) return;
+
+    let into: string | null = null;
+    if (verb === 'squash') {
+      const targets = this.hunkSquashTargets;
+      if (!targets.length) {
+        this.actionError = 'There is no other change in the stack to squash into.';
+        return;
+      }
+      // The parent is nearly always the answer, so it is the default when it is
+      // on screen; the top of the stack is the fallback for a change whose
+      // parent the current revset does not include.
+      const parent = this.parentOf(change);
+      const inStack = parent && targets.some((target) => target.changeId === parent.changeId);
+      into = (inStack ? parent.changeId : targets[0]?.changeId) ?? null;
+    }
+
+    this.hunkVerb = verb;
+    this.hunkInto = into;
+    this.hunkShape = this.diffShape();
+    this.hunkSelection = new Set();
     this.actionInfo =
-      'Tick the hunks to move into their own change, then Split. Everything unticked stays here.';
+      verb === 'split'
+        ? 'Tick the hunks to move into their own change, then Split. Everything unticked stays here.'
+        : 'Tick the hunks to move into the destination change, then Squash. Everything unticked stays here.';
   }
 
-  private cancelHunkSplit() {
-    this.splitSelection = null;
-    this.splitShape = '';
+  private cancelHunkPick = () => {
+    this.hunkSelection = null;
+    this.hunkShape = '';
+    this.hunkInto = null;
     this.actionInfo = null;
-  }
+  };
 
-  private toggleSplitUnits(units: string[], selected: boolean) {
-    if (!this.splitSelection) return;
-    const next = new Set(this.splitSelection);
+  private toggleHunkUnits(units: string[], selected: boolean) {
+    if (!this.hunkSelection) return;
+    const next = new Set(this.hunkSelection);
     for (const unit of units) {
       if (selected) next.add(unit);
       else next.delete(unit);
     }
-    this.splitSelection = next;
+    this.hunkSelection = next;
   }
 
   /**
@@ -2803,8 +3026,12 @@ export class App extends LitElement {
    * writes anything (see `crates/diff/apply.rs`). The rest collapse to an
    * all-or-nothing verdict, which is the only thing a binary file or a rename
    * can express.
+   *
+   * One plan for both verbs, because jj hands both the same two directories:
+   * "selected" means "ends up in the right-hand side", which a split takes as
+   * the change to break off and a squash as the part to move.
    */
-  private buildSplitPlan(selection: ReadonlySet<string>): SplitPlan {
+  private buildHunkPlan(selection: ReadonlySet<string>): SplitPlan {
     return {
       files: this.files.map((file) => {
         if (!supportsHunkSelection(file)) {
@@ -2836,7 +3063,7 @@ export class App extends LitElement {
 
   private async confirmHunkSplit() {
     const change = this.selectedChange;
-    const selection = this.splitSelection;
+    const selection = this.hunkSelection;
     if (!change || !selection) return;
     const message = await askText({
       heading: 'Describe the split-off change',
@@ -2846,11 +3073,45 @@ export class App extends LitElement {
       confirmLabel: 'Split',
     });
     if (!message?.trim()) return;
-    const plan = this.buildSplitPlan(selection);
-    this.splitSelection = null;
-    this.actionInfo = null;
+    const plan = this.buildHunkPlan(selection);
+    this.cancelHunkPick();
     void this.command('split', () =>
       splitHunks(change.changeId, plan, message.trim(), change.immutable),
+    );
+  }
+
+  /**
+   * Move the ticked hunks into the chosen change.
+   *
+   * A squash rewrites both ends, so both are checked for immutability — the
+   * destination first, since that is the published thing whose commit id is
+   * about to change and the one a force-push would be about.
+   */
+  private async confirmHunkSquash() {
+    const change = this.selectedChange;
+    const selection = this.hunkSelection;
+    const into = this.hunkSquashTargets.find((target) => target.changeId === this.hunkInto);
+    if (!change || !selection || !into) return;
+
+    const immutable = [into, change].find((target) => target.immutable);
+    if (immutable && !(await this.confirmImmutableRewrite(immutable, 'Squash'))) return;
+
+    const everything = selection.size === this.hunkUnits.length;
+    const ok = await askConfirm({
+      heading: `Move ${everything ? 'every hunk' : `${selection.size} hunk${selection.size === 1 ? '' : 's'}`} into "${
+        into.description.split('\n')[0] || into.changeId.slice(0, 8)
+      }"?`,
+      detail: everything
+        ? 'Nothing is left behind, so this change empties and jj abandons it. The destination keeps its own description. Undoable from the Ops tab.'
+        : 'The unticked hunks stay where they are. The destination keeps its own description — squashing code into a change is not a reason to redescribe it. Undoable from the Ops tab.',
+      confirmLabel: 'Squash',
+    });
+    if (!ok) return;
+
+    const plan = this.buildHunkPlan(selection);
+    this.cancelHunkPick();
+    void this.command('squash', () =>
+      squashHunks(change.changeId, into.changeId, plan, change.immutable || into.immutable),
     );
   }
 
@@ -3192,11 +3453,33 @@ export class App extends LitElement {
       !!change && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
       !!change && {
         id: 'jj-split-hunks',
-        label: this.splitSelection ? 'Cancel Hunk Split' : 'Split by Hunk…  (jj split -i)',
-        run: () => (this.splitSelection ? this.cancelHunkSplit() : void this.beginHunkSplit()),
+        label:
+          this.hunkSelection && this.hunkVerb === 'split'
+            ? 'Cancel Hunk Split'
+            : 'Split by Hunk…  (jj split -i)',
+        run: () =>
+          this.hunkSelection && this.hunkVerb === 'split'
+            ? this.cancelHunkPick()
+            : void this.beginHunkPick('split'),
+      },
+      !!change && {
+        id: 'jj-squash-hunks',
+        label:
+          this.hunkSelection && this.hunkVerb === 'squash'
+            ? 'Cancel Hunk Squash'
+            : 'Squash by Hunk…  (jj squash -i)',
+        run: () =>
+          this.hunkSelection && this.hunkVerb === 'squash'
+            ? this.cancelHunkPick()
+            : void this.beginHunkPick('squash'),
       },
       { id: 'jj-duplicate', label: 'Duplicate Change (jj duplicate)', run: () => this.duplicateSelected() },
       { id: 'jj-backout', label: 'Back Out Change (jj backout)', run: () => this.backoutSelected() },
+      this.conflicts.size > 0 && {
+        id: 'jj-resolve',
+        label: 'Resolve Conflict…  (jj resolve)',
+        run: () => this.openResolverForFocus(),
+      },
       !!change && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => void this.abandonSelected() },
       isWc && {
         id: 'jj-restore',
@@ -3616,7 +3899,10 @@ export class App extends LitElement {
               <jj-log-graph
                 .changes=${this.filteredGraph}
                 .selected=${selectedId}
+                .canRebase=${!this.busy}
                 @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
+                @rebase-drop=${(event: CustomEvent<{ source: Change; destination: Change }>) =>
+                  void this.rebaseByDrop(event.detail.source, event.detail.destination)}
               ></jj-log-graph>
               </div>`
           : this.sidebarTab === 'review'
@@ -3976,7 +4262,7 @@ export class App extends LitElement {
                 ></textarea>
               </div>`
             : nothing}
-        ${this.splitSelection ? this.renderSplitBanner(this.splitSelection) : nothing}
+        ${this.hunkSelection ? this.renderHunkBanner(this.hunkSelection) : nothing}
         ${change?.conflict ? this.renderConflictBanner() : nothing}
         ${this.versionPair
           ? html`<div class="banner">
@@ -4149,9 +4435,10 @@ export class App extends LitElement {
               .canMarkViewed=${this.viewMode === 'full'}
               .squashTargets=${this.squashTargets}
               .conflicted=${this.conflicts}
-              .selection=${this.splitSelection}
+              .selection=${this.hunkSelection}
+              .selectionVerb=${this.hunkVerb}
               @select-units=${(e: CustomEvent<{ units: string[]; selected: boolean }>) =>
-                this.toggleSplitUnits(e.detail.units, e.detail.selected)}
+                this.toggleHunkUnits(e.detail.units, e.detail.selected)}
               .hunkFilter=${this.walkFilter}
               .searchQuery=${this.searchOpen ? this.searchQuery : null}
               .wordWrap=${this.wordWrap}
@@ -4237,6 +4524,17 @@ export class App extends LitElement {
             .caption=${this.diagram.caption}
             @close=${() => (this.diagram = null)}
           ></jj-diagram-view>`
+        : nothing}
+      ${this.resolving
+        ? html`<jj-conflict-resolver
+            .path=${this.resolving.path}
+            .shape=${this.resolving.shape}
+            .content=${this.resolving.content}
+            ?busy=${this.busy === 'resolve'}
+            @resolve-conflict=${(event: CustomEvent<{ content: string }>) =>
+              void this.applyResolution(event.detail.content)}
+            @close=${() => (this.resolving = null)}
+          ></jj-conflict-resolver>`
         : nothing}
       ${this.renderFileMenu()}
     `;

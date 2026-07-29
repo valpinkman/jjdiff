@@ -336,11 +336,19 @@ top edge — that is what reads as height on a dark page.
   shadow roots down — so `j`, `k`, `c` and `v` would scroll the diff behind the dialog
   while you filter it.
 - **A mode announces itself in a bar and can be left from there.** Picking hunks to split
-  puts checkboxes on rows that are otherwise read-only, which is exactly the kind of change
-  that needs a visible reason: an accented bar states what is selected, offers All/None,
-  and carries both Cancel and the action. Escape leaves it. Where the mode's action cannot
-  succeed — nothing picked, or everything — the button is disabled with the reason in its
-  title, rather than deferring to an error from jj that names neither.
+  or squash puts checkboxes on rows that are otherwise read-only, which is exactly the kind
+  of change that needs a visible reason: an accented bar states what is selected, offers
+  All/None, and carries both Cancel and the action. Escape leaves it. Where the mode's
+  action cannot succeed — nothing picked, or (for a split alone) everything — the button is
+  disabled with the reason in its title, rather than deferring to an error from jj that
+  names neither. One bar serves both verbs, and says which one it is in every label it
+  carries, down to the checkbox tooltips: the same tick means two different things.
+- **A gesture that rewrites history proposes, it does not act.** Dragging a change onto
+  another in the log is the one route in that can start a rebase by accident — everything
+  else is a menu item or a filled-in picker — so the drop opens a confirmation naming both
+  ends. While the drag is in flight the graph shows what it will not accept: rows that
+  would form a cycle dim and refuse it, so the answer arrives under the pointer rather
+  than as an error afterwards.
 - **Hierarchy beats completeness in a row of controls.** Four verbs stay out; the rest go
   behind one overflow, with anything destructive below a rule at the bottom. Nine
   buttons in a row is nine decisions of equal weight, and the one that erases a commit

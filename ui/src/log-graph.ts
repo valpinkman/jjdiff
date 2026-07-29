@@ -1,5 +1,5 @@
 import { css, html, LitElement, nothing, svg, type TemplateResult } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 
 import { layoutGraph, type GraphRow } from './graph.js';
 import type { Change } from './ipc.js';
@@ -199,14 +199,111 @@ export class LogGraph extends LitElement {
       font-size: 10.5px;
       color: var(--jj-fg-faint);
     }
+    /* Dragging: the row being moved recedes, the row under the pointer shows
+       where it would land. A line rather than a fill, because the destination
+       becomes the *parent* — the change lands under it, and a band across the
+       row would say it lands on it. */
+    /* WebKit does not start a drag from a button element on the draggable
+       attribute alone, and every row here is one. Scoped to the attribute so
+       turning dragging off actually turns it off. */
+    .row[draggable='true'] {
+      -webkit-user-drag: element;
+    }
+    .row.dragging {
+      opacity: 0.4;
+    }
+    .row.drop-target {
+      background: var(--jj-accent-soft);
+      box-shadow: inset 0 -2px 0 var(--jj-accent);
+    }
+    /* While a drag is in flight, every row that cannot take it says so — a
+       destination that silently does nothing on drop is worse than one that
+       looks unavailable. */
+    .row.barred {
+      opacity: 0.35;
+      cursor: no-drop;
+    }
   `;
 
   @property({ attribute: false }) changes: Change[] = [];
   @property() selected: string | null = null;
+  /**
+   * Whether rows can be dragged onto each other to rebase. Off while the graph
+   * is showing something a rebase makes no sense against.
+   */
+  @property({ type: Boolean }) canRebase = false;
+
+  /** The change id being dragged; null when no drag is in flight. */
+  @state() private draggingId: string | null = null;
+  /** The change id currently under the pointer, when it can accept the drop. */
+  @state() private overId: string | null = null;
 
   private pick(change: Change) {
     this.dispatchEvent(
       new CustomEvent<Change>('change-selected', { detail: change, bubbles: true, composed: true }),
+    );
+  }
+
+  /**
+   * Commit ids the dragged change cannot land on: itself and its descendants.
+   *
+   * The same exclusion the rebase picker makes, for the same reason — a commit
+   * cannot be its own ancestor — and found the same way, by walking the log
+   * backwards. jj's log order is reverse-topological, children before parents,
+   * so one pass backwards visits every parent before its children and reaches
+   * the whole descendant set.
+   */
+  private get barred(): Set<string> {
+    const source = this.changes.find((change) => change.changeId === this.draggingId);
+    if (!source) return new Set();
+    const barred = new Set<string>([source.commitId]);
+    for (let index = this.changes.length - 1; index >= 0; index--) {
+      const change = this.changes[index]!;
+      if (change.parents.some((parent) => barred.has(parent))) barred.add(change.commitId);
+    }
+    return barred;
+  }
+
+  private onDragStart(event: DragEvent, change: Change) {
+    if (!this.canRebase) return;
+    this.draggingId = change.changeId;
+    this.overId = null;
+    // WebKit will not start a drag at all without data on the transfer, and the
+    // id is the honest thing to carry: a jjdiff row dropped into a text field
+    // should paste the change it names.
+    event.dataTransfer?.setData('text/plain', change.changeId);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  private onDragEnd = () => {
+    this.draggingId = null;
+    this.overId = null;
+  };
+
+  private onDragOver(event: DragEvent, change: Change) {
+    if (!this.draggingId || this.barred.has(change.commitId)) return;
+    // Without this the drop never fires: the default action for dragover is to
+    // refuse the drop.
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    this.overId = change.changeId;
+  }
+
+  private onDrop(event: DragEvent, destination: Change) {
+    event.preventDefault();
+    const source = this.changes.find((change) => change.changeId === this.draggingId);
+    // Read the exclusions before clearing the drag: they are derived from it.
+    const barred = this.barred;
+    this.draggingId = null;
+    this.overId = null;
+    if (!source || source.changeId === destination.changeId) return;
+    if (barred.has(destination.commitId)) return;
+    this.dispatchEvent(
+      new CustomEvent('rebase-drop', {
+        detail: { source, destination },
+        bubbles: true,
+        composed: true,
+      }),
     );
   }
 
@@ -256,19 +353,40 @@ export class LogGraph extends LitElement {
         : change.immutable
           ? 'dot-immutable'
           : 'dot-mutable';
+    const dragging = this.draggingId !== null;
+    const barred = dragging && this.barred.has(change.commitId);
     const rowClass = [
       'row',
       change.changeId === this.selected ? 'selected' : '',
       change.workingCopy ? 'wc' : '',
       change.immutable ? 'immutable' : '',
+      change.changeId === this.draggingId ? 'dragging' : '',
+      change.changeId === this.overId ? 'drop-target' : '',
+      barred && change.changeId !== this.draggingId ? 'barred' : '',
     ].join(' ');
     const summary = change.description.split('\n')[0] ?? '';
 
     return html`
       <button
         class=${rowClass}
-        title="${change.changeId.slice(0, 12)} — ${summary || '(no description)'}"
+        draggable=${this.canRebase ? 'true' : 'false'}
+        title=${
+          dragging
+            ? barred
+              ? `${change.changeId.slice(0, 12)} — cannot hold this change; it is descended from it`
+              : `Drop here to rebase onto ${change.changeId.slice(0, 12)}`
+            : `${change.changeId.slice(0, 12)} — ${summary || '(no description)'}${
+                this.canRebase ? '\nDrag onto another change to rebase it there.' : ''
+              }`
+        }
         @click=${() => this.pick(change)}
+        @dragstart=${(event: DragEvent) => this.onDragStart(event, change)}
+        @dragend=${this.onDragEnd}
+        @dragover=${(event: DragEvent) => this.onDragOver(event, change)}
+        @dragleave=${() => {
+          if (this.overId === change.changeId) this.overId = null;
+        }}
+        @drop=${(event: DragEvent) => this.onDrop(event, change)}
       >
         <svg width=${gutter} height=${ROW_H}>
           ${rails}
@@ -302,5 +420,8 @@ const laneStroke = (lane: number) => `stroke: var(--jj-lane-${lane % LANE_COLOUR
 declare global {
   interface HTMLElementTagNameMap {
     'jj-log-graph': LogGraph;
+  }
+  interface HTMLElementEventMap {
+    'rebase-drop': CustomEvent<{ source: Change; destination: Change }>;
   }
 }

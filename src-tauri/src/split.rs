@@ -9,6 +9,11 @@
 //!
 //! [`Repo::split_with_diff_editor`]: jjdiff_vcs::Repo::split_with_diff_editor
 //!
+//! `jj squash -i` speaks the same protocol over the same pair of trees — the
+//! source's parent on the left, the source on the right — so a squash reuses
+//! this plan and this process verbatim; only the verb and the validation differ
+//! (see [`SplitPlan::moves`]).
+//!
 //! The plan is written by the frontend from the diff the reviewer was actually
 //! looking at, which is the point: the hunks applied here are the hunks on
 //! screen, not a fresh decomposition that might have cut them elsewhere.
@@ -60,10 +65,8 @@ pub struct SplitPlan {
 }
 
 impl SplitPlan {
-    /// Whether this plan actually divides the change. jj rejects a split whose
-    /// selected or remaining half is empty, and its error names neither, so the
-    /// question is answered here where the answer can say which end is empty.
-    pub fn divides(&self) -> Result<(), String> {
+    /// How many units the plan moves, and how many it leaves where they are.
+    fn tally(&self) -> (usize, usize) {
         let mut selected = 0usize;
         let mut left_behind = 0usize;
         for file in &self.files {
@@ -81,11 +84,32 @@ impl SplitPlan {
                 }
             }
         }
+        (selected, left_behind)
+    }
+
+    /// Whether this plan actually divides the change. jj rejects a split whose
+    /// selected or remaining half is empty, and its error names neither, so the
+    /// question is answered here where the answer can say which end is empty.
+    pub fn divides(&self) -> Result<(), String> {
+        let (selected, left_behind) = self.tally();
         if selected == 0 {
             return Err("nothing is selected — pick the hunks that should move into their own change".into());
         }
         if left_behind == 0 {
             return Err("everything is selected — a split needs something to leave behind".into());
+        }
+        Ok(())
+    }
+
+    /// The same question for a squash, which has only one bad answer.
+    ///
+    /// A split needs both halves to be non-empty; a squash does not. Selecting
+    /// every hunk is an ordinary whole-change squash — the source empties and jj
+    /// abandons it, which is what `jj squash` with no `-i` does anyway. Only the
+    /// empty selection is unanswerable.
+    pub fn moves(&self) -> Result<(), String> {
+        if self.tally().0 == 0 {
+            return Err("nothing is selected — pick the hunks that should move".into());
         }
         Ok(())
     }
@@ -380,5 +404,21 @@ mod tests {
             }],
         };
         mixed.divides().unwrap();
+    }
+
+    /// A squash may take the whole change — that is just a whole-change squash.
+    /// Only the empty selection is rejected, and it is rejected here rather than
+    /// by jj, whose "nothing changed" arrives after the tool has already run.
+    #[test]
+    fn a_squash_may_take_everything_but_not_nothing() {
+        let all = SplitPlan {
+            files: vec![SplitFile { path: "f".into(), old_path: None, select: Select::All, hunks: vec![] }],
+        };
+        all.moves().unwrap();
+
+        let none = SplitPlan {
+            files: vec![SplitFile { path: "f".into(), old_path: None, select: Select::None, hunks: vec![] }],
+        };
+        assert!(none.moves().unwrap_err().contains("nothing is selected"));
     }
 }

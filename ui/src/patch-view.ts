@@ -40,13 +40,19 @@ export class PatchView extends LitElement {
   /** Conflicted paths → jj's description of the conflict ("2-sided conflict"). */
   @property({ attribute: false }) conflicted: ReadonlyMap<string, string> = new Map();
   /**
-   * Split selection: the picked units, or null when not selecting.
+   * Hunk selection: the picked units, or null when not selecting.
    *
    * Null rather than an empty set, because "no checkboxes on screen" and "no
    * boxes ticked" are different states and the second is a legitimate place to
    * be while deciding.
    */
   @property({ attribute: false }) selection: ReadonlySet<string> | null = null;
+  /**
+   * What the selection is for. Split and squash pick from the same diff with
+   * the same checkboxes; only what the tick promises differs, and a checkbox
+   * that says "split" while a squash is in progress is worse than no tooltip.
+   */
+  @property() selectionVerb: 'split' | 'squash' = 'split';
   /** Active walkthrough step's hunk ids; null = show everything. */
   @property({ attribute: false }) hunkFilter: ReadonlySet<string> | null = null;
   /** Find-in-diffs query; null when search is closed. */
@@ -683,10 +689,10 @@ export class PatchView extends LitElement {
             type="checkbox"
             title=${
               supportsHunkSelection(file)
-                ? 'Include every hunk of this file in the split'
-                : 'Include this file in the split (it cannot be divided further)'
+                ? `Include every hunk of this file in the ${this.selectionVerb}`
+                : `Include this file in the ${this.selectionVerb} (it cannot be divided further)`
             }
-            aria-label=${`Include ${file.path} in the split`}
+            aria-label=${`Include ${file.path} in the ${this.selectionVerb}`}
             .checked=${selection.all}
             .indeterminate=${selection.some && !selection.all}
             @click=${(event: Event) => event.stopPropagation()}
@@ -776,8 +782,12 @@ export class PatchView extends LitElement {
             ? html`<input
                 class="split-check"
                 type="checkbox"
-                title="Move this hunk into the split-off change"
-                aria-label=${`Include hunk ${row.hunkId} in the split`}
+                title=${
+                  this.selectionVerb === 'squash'
+                    ? 'Move this hunk into the destination change'
+                    : 'Move this hunk into the split-off change'
+                }
+                aria-label=${`Include hunk ${row.hunkId} in the ${this.selectionVerb}`}
                 .checked=${this.selection!.has(row.hunkId)}
                 @change=${(event: Event) =>
                   this.emitSelect([row.hunkId], (event.target as HTMLInputElement).checked)}

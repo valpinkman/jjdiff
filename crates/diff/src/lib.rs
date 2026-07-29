@@ -12,11 +12,13 @@
 //! **UTF-16 code units** to match JavaScript string indexing.
 
 pub mod apply;
+pub mod conflict;
 mod parse;
 mod spans;
 pub mod worktree;
 
 pub use apply::{apply_selected_hunks, ApplyError, PlanHunk, PlanLine};
+pub use conflict::{has_conflict_markers, parse_conflicts, ConflictedContent};
 pub use parse::parse_git_patch;
 
 use serde::{Deserialize, Serialize};

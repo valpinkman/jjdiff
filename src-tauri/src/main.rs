@@ -33,7 +33,8 @@ fn main() {
             | Headless::Diff(_)
             | Headless::PrintHunks(_)
             | Headless::InstallTerminalHelper
-            | Headless::ApplySplitPlan { .. } => std::process::exit(0),
+            | Headless::ApplySplitPlan { .. }
+            | Headless::ApplyResolution { .. } => std::process::exit(0),
         }
     }
 

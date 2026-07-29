@@ -1,12 +1,12 @@
-//! The hunk-level split, end to end: a real `jj split` driven by the real
-//! jjdiff binary acting as its diff editor.
+//! Hunk-level split and squash, end to end: a real `jj split` and a real
+//! `jj squash` driven by the real jjdiff binary acting as their diff editor.
 //!
 //! Everything below the surface is unit-tested elsewhere — the arithmetic in
 //! `jjdiff-diff::apply`, the directory edits in `split.rs`, the argv in
 //! `cli.rs`. What none of those can show is that the three fit together
 //! through jj's diff-editor protocol, which is a contract with another program
-//! and cannot be checked by reading either side of it. So this one runs the
-//! whole loop: plan → `jj split --tool` → jj re-enters the binary → two commits.
+//! and cannot be checked by reading either side of it. So these run the whole
+//! loop: plan → `jj <verb> --tool` → jj re-enters the binary → the commits move.
 
 use std::path::Path;
 use std::process::Command;
@@ -181,6 +181,93 @@ fn a_crlf_file_keeps_its_terminators_through_a_split() {
     let remainder = diff(root, "@");
     assert!(remainder.contains("+FIVE\r\n"), "the remainder keeps the rest: {remainder:?}");
     assert!(!remainder.contains("+ONE"), "and not the part that left: {remainder:?}");
+}
+
+/// The same plan, the same protocol, the other verb.
+///
+/// What this proves that the split test cannot is the assumption the whole
+/// feature stands on: the two directories `jj squash -i` hands its editor are
+/// the *source's own* diff, parent on the left and source on the right. The
+/// frontend builds its plan from that diff as drawn on screen, so if jj laid
+/// out anything else here — the destination's tree, or a combined one — the
+/// ticked hunks would select the wrong lines and nothing in the unit tests
+/// would notice.
+#[test]
+fn a_selected_hunk_moves_into_the_destination_and_the_rest_stays() {
+    let _guard = JJ_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !jj_available() {
+        eprintln!("skipping: jj not installed");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    jj(root, &["git", "init", "--colocate", "."]);
+    std::fs::write(root.join("f.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+    jj(root, &["commit", "-m", "destination"]);
+    std::fs::write(root.join("f.txt"), "ONE\ntwo\nthree\nfour\nFIVE\n").unwrap();
+    jj(root, &["describe", "-m", "source"]);
+
+    let plan = serde_json::json!({
+        "files": [{
+            "path": "f.txt",
+            "oldPath": null,
+            "select": "hunks",
+            "hunks": [
+                { "selected": true, "oldStart": 1, "oldLines": 2, "lines": [
+                    { "kind": "removed", "text": "one" },
+                    { "kind": "added", "text": "ONE" },
+                    { "kind": "context", "text": "two" }
+                ]},
+                { "selected": false, "oldStart": 4, "oldLines": 2, "lines": [
+                    { "kind": "context", "text": "four" },
+                    { "kind": "removed", "text": "five" },
+                    { "kind": "added", "text": "FIVE" }
+                ]}
+            ]
+        }]
+    });
+    let plan_path = root.join("plan.json");
+    std::fs::write(&plan_path, plan.to_string()).unwrap();
+
+    // Exactly what `squash_hunks` builds, with the test binary in place of the
+    // bundle's.
+    let binary = env!("CARGO_BIN_EXE_jjdiff-app");
+    let program = format!("merge-tools.jjdiff-squash.program=\"{binary}\"");
+    let edit_args = format!(
+        "merge-tools.jjdiff-squash.edit-args=[\"--apply-split-plan\",\"{}\",\"$left\",\"$right\"]",
+        plan_path.display()
+    );
+    jj(
+        root,
+        &[
+            "--config", &program,
+            "--config", &edit_args,
+            "squash", "--from", "@", "--into", "@-",
+            "--use-destination-message", "--tool", "jjdiff-squash",
+        ],
+    );
+
+    let destination = diff(root, "@-");
+    assert!(destination.contains("+ONE"), "the selected hunk moved in: {destination}");
+    assert!(!destination.contains("+FIVE"), "the unselected one did not: {destination}");
+
+    let source = diff(root, "@");
+    assert!(source.contains("+FIVE"), "the source keeps the rest: {source}");
+    assert!(!source.contains("+ONE"), "and not the part that left: {source}");
+
+    // `--use-destination-message` is what keeps this non-interactive: without
+    // it jj combines the two descriptions through `$EDITOR`, which in a
+    // GUI-spawned process hangs rather than failing.
+    let description = String::from_utf8_lossy(
+        &Command::new("jj")
+            .args(["--ignore-working-copy", "log", "--no-graph", "-r", "@-", "-T", "description"])
+            .current_dir(root)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .into_owned();
+    assert_eq!(description.trim(), "destination");
 }
 
 /// A plan that no longer describes the change must take the split down with it.
