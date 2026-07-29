@@ -32,7 +32,7 @@ Four Rust crates plus a Lit frontend. Data flows one way: `jj` CLI → `jjdiff-v
 - **`crates/diff`** (`jjdiff-diff`) — two producers converge on `Vec<FilePatch>`: `parse_git_patch` (from `jj diff --git`) and `worktree::diff_worktree` (live fs vs base tree via gix, so viewing the working copy never snapshots and never writes an operation). Both call `assign_hunk_ids` + `spans::add_word_spans`.
 - **`crates/watch`** (`jjdiff-watch`) — `notify`-based watchers on `.jj/repo/op_heads/heads` and the working copy; both emit `repo-changed` to the frontend. Non-fatal: without them the app works, it just won't live-refresh.
 - **`src-tauri`** (`jjdiff-app`) — `lib.rs` holds every `#[tauri::command]`; `cli.rs` the headless CLI; `walkthrough.rs`, `comments.rs`, `viewed.rs`, `config.rs` the review state.
-- **`ui/src`** — `app.ts` is the shell and owns nearly all state; `patch-view.ts` renders the diff; `rows.ts` flattens files/hunks/lines into one `Row[]`; `ipc.ts` is the typed mirror of `lib.rs`.
+- **`ui/src`** — `app.ts` is the shell and owns nearly all state; `patch-view.ts` renders the diff; `rows.ts` flattens files/hunks/lines into one `Row[]`; `ipc.ts` is the typed mirror of `lib.rs`. `orbs.ts` is a pure-presentation leaf (the agent-thinking indicator) with no IPC and no state — DESIGN.md §7 says where it is allowed. `themes.ts` is the named-palette registry.
 
 ### Command shape (`src-tauri/src/lib.rs`)
 
@@ -84,9 +84,17 @@ Window labels are `main` plus `repo-N`. `capabilities/default.json` must cover t
 
 `ui/src/app.ts` owns the one command list, and which entries exist depends on the selected change. It pushes that list through `set_menu`; `menu.rs` turns each entry into a menu item carrying its command id, and a click emits `menu-command` for the frontend to run. Don't add commands to `menu.rs` — add them to the palette and they appear in both. The app/File/Edit/Window submenus are Tauri predefined items; **the Edit submenu is required**, not decoration, because a custom menu without it strips Cmd+C/Cmd+V from the WebView on macOS. Mirrored items carry no accelerators on purpose: the frontend dispatches shortcuts itself and a menu accelerator would shadow or double-fire them.
 
+## Themes are derived, not written
+
+`ui/src/themes.ts` seeds each named palette (Nord, Catppuccin, Ayu, Rosé Pine, …) from about a dozen colours and computes the rest of the `--jj-*` token set from them; only light/dark are hand-written, in `theme.css`. They are applied as **inline custom properties on `:root`**, which is how a named palette beats both the `:root` block and the `prefers-color-scheme` block in that file — `system` clears them and control returns to the media query.
+
+Two data attributes, answering different questions: `data-jj-theme` is the *mode* (all theme.css needs), `data-jj-palette` is the *identity* (what `highlight.ts` needs to pick a matching shiki theme). Every seed names a shiki theme, loaded on demand by `highlight.worker.ts`; a seed whose `shiki` has no entry in `THEME_LOADERS` silently falls back to `github-dark`, so adding a theme means touching both.
+
 ## Config
 
 `~/.config/jjdiff/config.toml` (`config.rs`). TOML keys are kebab-case via serde aliases while the JSON sent to the UI is camelCase. An unreadable config logs and falls back to defaults — it must never block startup. Walkthrough generation shells out to an agent CLI (`claude` by default; `codex`, `opencode`, `pi` selectable) with the prompt on stdin.
+
+Writes go through `config::set_value`, which uses `toml_edit` to touch exactly one key — the file is the user's, and round-tripping it through `Config` would delete their comments, key order and any setting a newer jjdiff added. `set_editor_command` and `set_ui_theme` are both one-line wrappers over it.
 
 `[editor] command` drives "Open in Editor" (`o`, or the file-tree context menu): a template with `{file}`, `{line}` and `{repo}`. It is split on whitespace *before* substitution and executed with no shell, so a path containing spaces stays one argument and nothing in a filename can inject another — keep that order if you touch `editor.rs`.
 

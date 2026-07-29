@@ -16,8 +16,10 @@
         "title": "jjdiff",
         "width": 1280,
         "height": 840,
-        "minWidth": 720,
-        "minHeight": 480
+        "minWidth": 1024,
+        "minHeight": 640,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
@@ -26,7 +28,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "deb", "rpm"],
+    "targets": [
+      "app",
+      "dmg",
+      "deb",
+      "rpm"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

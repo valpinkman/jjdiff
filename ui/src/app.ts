@@ -8,6 +8,7 @@ import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
 import { renderMarkdown } from './markdown.js';
+import './orbs.js';
 import {
   abandonChange,
   absorb,
@@ -52,6 +53,7 @@ import {
   openPullRequest,
   openUrl,
   setEditorCommand,
+  setUiTheme,
   openRepoWindow,
   setMenu,
   submitReview,
@@ -84,12 +86,29 @@ import {
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
 import type { FileMenuRequest } from './file-tree.js';
-import { iconAbsorb, iconFetch, iconSplit, iconUndo, iconUnified } from './icons.js';
+import {
+  iconAbsorb,
+  iconChevron,
+  iconCommit,
+  iconComment,
+  iconFetch,
+  iconFiles,
+  iconGraph,
+  iconInfo,
+  iconSearch,
+  iconSparkle,
+  iconSplit,
+  iconUndo,
+  iconUnified,
+  iconWarn,
+} from './icons.js';
 import { formatShortcut, matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import { askConfirm, askText } from './prompt.js';
 import './patch-view.js';
 import type { PatchView } from './patch-view.js';
 import './shortcuts-help.js';
+import './theme-picker.js';
+import { applyThemeTokens, isKnownTheme, THEMES } from './themes.js';
 import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
 
@@ -106,12 +125,15 @@ const REVSET_PRESETS: { label: string; revset: string }[] = [
   { label: 'Bookmarks', revset: 'ancestors(bookmarks(), 5)' },
 ];
 
-/** Split a jj description into subject + body, mail-client style. */
-function descriptionParts(description: string) {
-  const [subject = '', ...rest] = description.split('\n');
-  const body = rest.join('\n').trim();
-  return html`<span class="detail-subject">${subject || '(no description)'}</span
-    >${body ? html`<span class="detail-body">${body}</span>` : nothing}`;
+/**
+ * Everything after a jj description's subject line.
+ *
+ * The subject is the detail card's title, so rendering it again here would put
+ * the same sentence on screen twice, one line apart.
+ */
+function descriptionBody(description: string): string {
+  const [, ...rest] = description.split('\n');
+  return rest.join('\n').trim();
 }
 
 /** Compact relative age: now, 5m, 3h, 2d. */
@@ -167,7 +189,16 @@ export class App extends LitElement {
   @state() private description = '';
   @state() private barOpen = false;
   @state() private viewMode: ViewMode = 'full';
-  @state() private sidebarTab: 'stack' | 'files' | 'walkthrough' | 'review' = 'stack';
+  @state() private sidebarTab: SidebarTab = 'stack';
+  /**
+   * Whether the sidebar panel is folded away, leaving only the rail.
+   *
+   * The rail stays: it is how you get the panel back, and collapsing the pane
+   * switcher along with the pane would make the app look like it had lost a
+   * feature. Review and guided steps are the reason this exists — both are
+   * about reading the diff, and the sidebar is 292px the diff could have.
+   */
+  @state() private sidebarCollapsed = false;
   /** Description editing is opt-in. Reading a change is the common case, and a
    *  textarea permanently sitting there reads as an input to fill in rather
    *  than a message to read. */
@@ -184,7 +215,34 @@ export class App extends LitElement {
   @state() private generating = false;
   /** Guided review across the whole stack: changes ordered oldest → newest. */
   @state() private stackReview: Change[] | null = null;
+  /**
+   * Whether the guided-review narrative is showing in full.
+   *
+   * A step's narrative is prose of no fixed length, and the overview's is the
+   * longest of them — left unclamped it pushed the diff, which is the thing
+   * being reviewed, off the bottom of the window. It is clamped to three lines
+   * with a toggle, and the toggle is deliberately *not* reset per step: someone
+   * who wants the long form wants it for the whole walkthrough, not once.
+   */
+  @state() private walkExpanded = false;
+  /** Set from layout — see `measureNarrative`. */
+  @state() private walkOverflow = false;
+  @state() private scopeOpen = false;
   @state() private repoMenuOpen = false;
+  /**
+   * Where the change's More menu is anchored, or null when it is closed.
+   *
+   * Nine buttons in a row is nine decisions of equal weight, and the two people
+   * actually reach for — work on this, push — were the same size as the one
+   * that erases a commit. What stays out is what gets used; the rest is one
+   * click further away and the destructive verb is at the bottom, alone.
+   *
+   * Viewport coordinates, and the panel is `position: fixed`, because the card
+   * it opens from scrolls (`max-height: 44%`) and an absolutely-positioned menu
+   * is clipped by that — the last entry, which is Abandon, was the one cut off.
+   * Same arrangement as the file context menu.
+   */
+  @state() private moreAt: { x: number; y: number } | null = null;
   @state() private recentRepos: string[] = [];
   @state() private searchOpen = false;
   @state() private searchQuery = '';
@@ -199,10 +257,12 @@ export class App extends LitElement {
   @state() private graphRevset: string | null = null;
   @state() private revsetSearch = '';
   /** "system" | "light" | "dark" — runtime override of the config value. */
-  @state() private theme: 'system' | 'light' | 'dark' = 'system';
+  /** A `THEMES` id — 'system', 'light', 'dark' or a named palette. */
+  @state() private theme = 'system';
+  @state() private themePickerOpen = false;
   /** Bumped on theme change so the diff re-tokenizes (shiki tokens carry colours). */
   @state() private themeVersion = 0;
-  /** File the diff viewport is currently inside (sticky breadcrumb). */
+  /** File the diff viewport is currently inside; drives the pinned file header. */
   @state() private visibleFile: string | null = null;
   /** Full file text for context expansion, fetched on demand. */
   @state() private fileLines: ReadonlyMap<string, string[]> = new Map();
@@ -324,6 +384,28 @@ export class App extends LitElement {
 
   protected override updated() {
     if (document.hasFocus()) this.syncMenu();
+    this.measureNarrative();
+  }
+
+  /**
+   * Whether the guided-review narrative is longer than its clamp.
+   *
+   * The clamp is CSS, but "is there more to show" is only answerable after
+   * layout, so the toggle has to be driven by a measurement. Once expanded the
+   * element no longer overflows — it is showing everything — so the flag is
+   * held rather than recomputed, or the control that expanded it would vanish
+   * the moment it worked.
+   */
+  private measureNarrative() {
+    const narrative = this.querySelector<HTMLElement>('.walk-narrative');
+    if (!narrative) {
+      if (this.walkOverflow) this.walkOverflow = false;
+      return;
+    }
+    const overflows = this.walkExpanded
+      ? this.walkOverflow
+      : narrative.scrollHeight > narrative.clientHeight + 1;
+    if (overflows !== this.walkOverflow) this.walkOverflow = overflows;
   }
 
   /** Close the repo menu and the file context menu on any click outside them. */
@@ -333,6 +415,12 @@ export class App extends LitElement {
       path.some((node) => node instanceof HTMLElement && node.classList?.contains(className));
     if (this.repoMenuOpen && !inside('repo-menu-root')) {
       this.repoMenuOpen = false;
+    }
+    if (this.moreAt && !inside('more-root')) {
+      this.moreAt = null;
+    }
+    if (this.scopeOpen && !inside('scope-root')) {
+      this.scopeOpen = false;
     }
     if (this.fileMenu && !inside('file-menu')) {
       this.fileMenu = null;
@@ -889,9 +977,9 @@ export class App extends LitElement {
         `${config.ui.codeFontSize}px`,
       );
       this.wordWrap = config.ui.wordWrap;
-      if (config.ui.theme === 'light' || config.ui.theme === 'dark') {
-        this.applyTheme(config.ui.theme);
-      }
+      // An unknown theme name — a typo, or one removed since it was written —
+      // falls through to `system` rather than leaving the app unstyled.
+      if (isKnownTheme(config.ui.theme)) this.applyTheme(config.ui.theme);
       this.commandBarShortcut = parseShortcut(config.keymap.commandBar);
       this.commandBarBinding = config.keymap.commandBar;
     } catch {
@@ -964,11 +1052,98 @@ export class App extends LitElement {
     return this.querySelector('jj-patch-view');
   }
 
+  /**
+   * The change's less-used verbs.
+   *
+   * Ordered by how much of history they touch: rearrange, then copy, then the
+   * two that undo. Abandon sits below a rule and keeps its danger styling —
+   * it is the only entry here that can lose work, and distance is what stops a
+   * misaimed click from being the one that costs something.
+   */
+  private toggleMore = (event: MouseEvent) => {
+    if (this.moreAt) {
+      this.moreAt = null;
+      return;
+    }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    this.moreAt = { x: rect.left, y: rect.bottom + 6 };
+  };
+
+  private renderMoreMenu(change: Change, at: { x: number; y: number }) {
+    const pick = (run: () => void) => () => {
+      this.moreAt = null;
+      run();
+    };
+    return html`<div class="more-menu" role="menu" style="left: ${at.x}px; top: ${at.y}px">
+      <button
+        role="menuitem"
+        title=${
+          change.immutable
+            ? 'jj rebase -s --ignore-immutable — this change is immutable (at or below trunk); you will be asked to confirm first.'
+            : 'jj rebase -s — move this change and everything built on top of it onto a different parent. Conflicts are recorded, not fatal.'
+        }
+        @click=${pick(() => void this.rebaseSelected())}
+      >
+        Rebase…
+      </button>
+      <button
+        role="menuitem"
+        title=${
+          this.files.length < 2
+            ? 'jj split — needs at least two files; there is nothing to separate.'
+            : change.immutable
+              ? 'jj split --ignore-immutable — this change is immutable; you will be asked to confirm first.'
+              : 'jj split — pull the focused file out into its own change, leaving the rest here. File-level, no hunk picking.'
+        }
+        ?disabled=${this.files.length < 2}
+        @click=${pick(() => void this.splitSelectedFiles())}
+      >
+        Split file
+      </button>
+      <button
+        role="menuitem"
+        title="jj duplicate — copy this change to a second, independent change with the same content. The original stays put."
+        @click=${pick(() => void this.duplicateSelected())}
+      >
+        Duplicate
+      </button>
+      <button
+        role="menuitem"
+        title="jj backout — add a NEW change that undoes this one, keeping this one in history. Use for already-pushed work; use Abandon for work only you have."
+        @click=${pick(() => void this.backoutSelected())}
+      >
+        Back out
+      </button>
+      <button
+        class="danger"
+        role="menuitem"
+        title=${
+          change.immutable
+            ? 'jj abandon --ignore-immutable — this change is immutable; you will be asked to confirm first. Back out is usually what you want for published work.'
+            : 'jj abandon — remove this change from history entirely, as if it never existed. Undoable from the Ops tab. To reverse already-pushed work instead, use Back out.'
+        }
+        @click=${pick(() => void this.abandonSelected())}
+      >
+        Abandon
+      </button>
+    </div>`;
+  }
+
   /** The Walkthrough tab: shows the generate button or the walkthrough panel. */
   private renderWalkthroughTab() {
     const change = this.selectedChange;
     if (this.generating) {
-      return html`<div class="walkthrough-empty">Generating walkthrough…</div>`;
+      // An agent CLI is running and cannot report progress, so the indicator
+      // says "thinking" rather than pretending to a percentage. The beam on the
+      // card is the second half of that: it closes a lap, which reads as time
+      // passing even though nothing here knows how much is left.
+      return html`<div class="walkthrough-working beam">
+        <jj-orbs .size=${52} label="Generating walkthrough"></jj-orbs>
+        <p class="working-title">Reading the change</p>
+        <p class="working-hint">
+          An agent is working through the diff. This usually takes under a minute.
+        </p>
+      </div>`;
     }
     if (!change) {
       return html`<div class="walkthrough-empty">Select a change to generate a walkthrough.</div>`;
@@ -991,13 +1166,18 @@ export class App extends LitElement {
         this.walkStep = event.detail;
       }}
     ></jj-walkthrough-panel>
-    ${this.walkStale
-      ? html`<div class="walkthrough-stale">
-          <span>The change has evolved.</span>
-          <button class="tool" @click=${() => this.runGenerateWalkthrough()}>Regenerate</button>
-        </div>`
-      : nothing}
-    <button class="tool" @click=${() => this.runGenerateWalkthrough()}>Refresh Walkthrough</button>`;
+    <!-- One button. "Regenerate" and "Refresh Walkthrough" ran the same handler
+         and sat one line apart, so the stale warning came with a choice that
+         was not a choice. The warning is now a caption on the single action
+         under it. -->
+    <div class="pane-footer">
+      ${this.walkStale
+        ? html`<p class="stale-note">The change has evolved since this was generated.</p>`
+        : nothing}
+      <button class="tool block" @click=${() => this.runGenerateWalkthrough()}>
+        Refresh Walkthrough
+      </button>
+    </div>`;
   }
 
   private openSearch() {
@@ -1025,6 +1205,12 @@ export class App extends LitElement {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
       event.preventDefault();
       this.openSearch();
+      return;
+    }
+    // Mod+B, the convention every editor uses for this.
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === 'b') {
+      event.preventDefault();
+      this.toggleSidebar();
       return;
     }
     const typing = (event.target as HTMLElement | null)?.tagName === 'TEXTAREA'
@@ -1317,12 +1503,22 @@ export class App extends LitElement {
       );
       this.walkthrough = status.walkthrough;
       this.walkStale = status.stale;
-      // A cached walkthrough that still matches is shown immediately — no need
-      // to click "generate" again. Stale ones are shown too (with a regenerate
-      // prompt in the Walkthrough tab).
-      if (status.walkthrough) {
+      // Having a walkthrough is not the same as wanting to be *in* one.
+      //
+      // This used to switch guided review on for any change that happened to
+      // have one cached, so clicking down the log dropped you into a
+      // walkthrough you had not asked for — hiding the describe box and
+      // filtering the diff to one step. The mode belongs to the Steps pane
+      // (`selectTab`): entering review is a thing you do, not a thing a
+      // selection does to you.
+      //
+      // Staying on Steps while selecting another change *does* keep review on,
+      // because that pane is the mode, and it restarts at the overview since
+      // step 4 of the previous change means nothing here.
+      if (this.sidebarTab === 'walkthrough' && status.walkthrough) {
         this.walkActive = true;
-      } else {
+        this.walkStep = -1;
+      } else if (!status.walkthrough) {
         this.walkActive = false;
       }
     } catch {
@@ -1429,6 +1625,61 @@ export class App extends LitElement {
     }).finally(() => {
       this.generating = false;
     });
+  }
+
+  /**
+   * Switch sidebar pane, and let the Steps tab drive guided review.
+   *
+   * `startWalkthrough` already selected Steps when review began, so the tab and
+   * the mode were coupled in one direction only — you could enter review and
+   * land on Steps, but selecting Steps did nothing. Closing the loop makes the
+   * tab the visible switch for the mode.
+   *
+   * Leaving Steps deliberately does *not* exit: you often jump to Files or Log
+   * mid-review to check something, and losing your position for it would be a
+   * punishment for looking around. Exit is explicit, from the banner.
+   *
+   * Selecting Steps with no walkthrough yet does not start one either — that
+   * shells out to an agent, which is not what clicking a tab should do. The
+   * pane shows its Generate button instead.
+   */
+  /**
+   * The count on a rail icon, or nothing when there is nothing to count.
+   *
+   * A badge reading `0` is worse than no badge: it draws the eye to a pane to
+   * tell you it is empty.
+   */
+  private railBadge(pane: SidebarTab) {
+    const count =
+      pane === 'files'
+        ? this.files.length
+        : pane === 'walkthrough'
+          ? (this.walkthrough?.steps.length ?? 0)
+          : pane === 'review'
+            ? this.pendingComments.length
+            : 0;
+    return count > 0 ? html`<span class="rail-count">${count}</span>` : nothing;
+  }
+
+  private selectTab(tab: SidebarTab) {
+    // Clicking the pane you are already on folds the sidebar away; clicking any
+    // other one brings it back on that pane. One control, and no extra chevron
+    // hanging off the panel edge.
+    if (tab === this.sidebarTab && !this.sidebarCollapsed) {
+      this.sidebarCollapsed = true;
+      return;
+    }
+    this.sidebarCollapsed = false;
+    this.sidebarTab = tab;
+    if (tab === 'walkthrough' && this.walkthrough && !this.walkActive) {
+      this.walkActive = true;
+      this.walkStep = -1;
+    }
+  }
+
+  /** The keyboard/palette route, which does not care which pane is showing. */
+  private toggleSidebar() {
+    this.sidebarCollapsed = !this.sidebarCollapsed;
   }
 
   private startWalkthrough() {
@@ -1785,19 +2036,30 @@ export class App extends LitElement {
     this.layout = this.layout === 'split' ? 'unified' : 'split';
   }
 
-  /** Switch palette at runtime. Shiki tokens are theme-specific, so bump themeVersion
-   *  to force re-tokenization; CSS variables handle the rest. */
-  private applyTheme(theme: 'system' | 'light' | 'dark') {
+  /**
+   * Switch palette at runtime.
+   *
+   * Shiki tokens carry their theme's colours, so `themeVersion` is bumped to
+   * force re-tokenization; the CSS custom properties handle everything else.
+   * Preview and commit are separate: hovering a swatch calls this and nothing
+   * else, so nothing is written until a theme is actually chosen.
+   */
+  private applyTheme(theme: string) {
     this.theme = theme;
-    const root = document.documentElement;
-    if (theme === 'system') {
-      delete root.dataset['jjTheme'];
-      root.style.colorScheme = '';
-    } else {
-      root.dataset['jjTheme'] = theme;
-      root.style.colorScheme = theme;
-    }
+    applyThemeTokens(theme);
     this.themeVersion += 1;
+  }
+
+  /** Chosen for real — apply it and remember it. */
+  private async chooseTheme(theme: string) {
+    this.applyTheme(theme);
+    try {
+      await setUiTheme(theme);
+    } catch (error) {
+      // A theme that cannot be written is still a theme that works for this
+      // session; say so rather than reverting what the user just picked.
+      this.actionError = `Theme applied, but not saved: ${String(error)}`;
+    }
   }
 
   private toggleWordWrap() {
@@ -1807,6 +2069,12 @@ export class App extends LitElement {
   private toggleWhitespace() {
     this.ignoreWhitespace = !this.ignoreWhitespace;
     void this.loadDiff();
+  }
+
+  /** The preset the log is currently filtered by; falls back to the first ("All"). */
+  private get activeScope(): { label: string; revset: string } {
+    const current = this.graphRevset ?? '';
+    return REVSET_PRESETS.find((preset) => preset.revset === current) ?? REVSET_PRESETS[0]!;
   }
 
   /** Mutable non-@ stack changes a file can be squashed into. */
@@ -1833,70 +2101,49 @@ export class App extends LitElement {
       }
     };
 
-    add('Presentation', [
-      {
-        id: 'layout',
-        label: `Diff Layout: ${this.layout === 'split' ? 'Split' : 'Unified'}`,
-        hint: 'switch',
-        run: () => this.toggleLayout(),
+    // Ordered by how often a hand reaches for them. The view toggles used to be
+    // first and are the least-used thing here — five switches sitting above the
+    // verbs that actually do something. "Review" also used to hold both the
+    // review workflow *and* find/editor/shortcuts, which share nothing but the
+    // fact that nothing else fit; those are Tools now.
+
+    add('Change', [
+      !!change && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
+      { id: 'jj-new', label: 'New Change on Top (jj new)', run: () => this.newOnSelected() },
+      isWc && { id: 'jj-absorb', label: 'Absorb Into Ancestors (jj absorb)', run: () => this.runAbsorb() },
+      !!change && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => void this.rebaseSelected() },
+      !!change && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
+      { id: 'jj-duplicate', label: 'Duplicate Change (jj duplicate)', run: () => this.duplicateSelected() },
+      { id: 'jj-backout', label: 'Back Out Change (jj backout)', run: () => this.backoutSelected() },
+      !!change && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => void this.abandonSelected() },
+      isWc && {
+        id: 'jj-restore',
+        label: 'Discard Working-Copy Changes (jj restore)',
+        run: () => void this.restoreSelectedFile(),
       },
+    ]);
+
+    add('Repository', [
+      { id: 'jj-fetch', label: 'Fetch (jj git fetch)', run: () => this.runFetch() },
+      { id: 'jj-push', label: 'Push (jj git push)', run: () => this.runPush() },
+      { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => void this.createBookmark() },
       {
-        id: 'wrap',
-        label: this.wordWrap ? 'Word Wrap: On' : 'Word Wrap: Off',
-        hint: 'toggle',
-        run: () => this.toggleWordWrap(),
+        id: 'refresh',
+        label: 'Reload Repository',
+        run: () => {
+          void this.refresh();
+          void this.refreshProposals();
+        },
       },
+      { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
       {
-        id: 'whitespace',
-        label: this.ignoreWhitespace ? 'Whitespace: Hidden' : 'Whitespace: Shown',
-        hint: 'toggle',
-        run: () => this.toggleWhitespace(),
-      },
-      {
-        id: 'theme-system',
-        label: 'Theme: System',
-        hint: this.theme === 'system' ? 'current' : undefined,
-        run: () => this.applyTheme('system'),
-      },
-      {
-        id: 'theme-light',
-        label: 'Theme: Light',
-        hint: this.theme === 'light' ? 'current' : undefined,
-        run: () => this.applyTheme('light'),
-      },
-      {
-        id: 'theme-dark',
-        label: 'Theme: Dark',
-        hint: this.theme === 'dark' ? 'current' : undefined,
-        run: () => this.applyTheme('dark'),
+        id: 'open-repo-window',
+        label: 'Open Repository in New Window…',
+        run: () => void this.openFolderInNewWindow(),
       },
     ]);
 
     add('Review', [
-      {
-        id: 'find',
-        label: 'Find in Diffs',
-        hint: formatShortcut('Mod+f'),
-        run: () => this.openSearch(),
-      },
-      {
-        id: 'open-in-editor',
-        label: 'Open File in Editor',
-        hint: 'o',
-        run: () => void this.openFileInEditor(),
-      },
-      {
-        id: 'shortcuts',
-        label: 'Keyboard Shortcuts',
-        hint: '?',
-        run: () => (this.shortcutsOpen = true),
-      },
-      {
-        id: 'set-editor',
-        label: 'Set Editor Command…',
-        hint: 'for o',
-        run: () => void this.configureEditor(),
-      },
       this.walkthrough
         ? {
             id: 'walkthrough',
@@ -1943,48 +2190,6 @@ export class App extends LitElement {
         id: 'copy-review-md',
         label: 'Copy Review as Markdown',
         run: () => void this.copyReviewMarkdown(),
-      },
-    ]);
-
-    add('Change', [
-      !!change && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
-      { id: 'jj-new', label: 'New Change on Top (jj new)', run: () => this.newOnSelected() },
-      isWc && { id: 'jj-absorb', label: 'Absorb Into Ancestors (jj absorb)', run: () => this.runAbsorb() },
-      !!change && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => void this.rebaseSelected() },
-      !!change && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
-      { id: 'jj-duplicate', label: 'Duplicate Change (jj duplicate)', run: () => this.duplicateSelected() },
-      { id: 'jj-backout', label: 'Back Out Change (jj backout)', run: () => this.backoutSelected() },
-      !!change && { id: 'jj-abandon', label: 'Abandon Change (jj abandon)', run: () => void this.abandonSelected() },
-      isWc && {
-        id: 'jj-restore',
-        label: 'Discard Working-Copy Changes (jj restore)',
-        run: () => void this.restoreSelectedFile(),
-      },
-    ]);
-
-    add('Repository', [
-      { id: 'jj-fetch', label: 'Fetch (jj git fetch)', run: () => this.runFetch() },
-      { id: 'jj-push', label: 'Push (jj git push)', run: () => this.runPush() },
-      { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => void this.createBookmark() },
-      {
-        id: 'refresh',
-        label: 'Reload Repository',
-        run: () => {
-          void this.refresh();
-          void this.refreshProposals();
-        },
-      },
-      { id: 'open-repo', label: 'Open Repository…', run: () => void this.openFolder() },
-      {
-        id: 'open-repo-window',
-        label: 'Open Repository in New Window…',
-        run: () => void this.openFolderInNewWindow(),
-      },
-      {
-        id: 'install-terminal-helper',
-        label: 'Install Terminal Helper…',
-        hint: 'add `jjdiff` to PATH',
-        run: () => void this.runInstallTerminalHelper(),
       },
     ]);
 
@@ -2036,11 +2241,90 @@ export class App extends LitElement {
       },
     ]);
 
+    add('Tools', [
+      {
+        id: 'find',
+        label: 'Find in Diffs',
+        hint: formatShortcut('Mod+f'),
+        run: () => this.openSearch(),
+      },
+      {
+        id: 'open-in-editor',
+        label: 'Open File in Editor',
+        hint: 'o',
+        run: () => void this.openFileInEditor(),
+      },
+      {
+        id: 'shortcuts',
+        label: 'Keyboard Shortcuts',
+        hint: '?',
+        run: () => (this.shortcutsOpen = true),
+      },
+      {
+        id: 'set-editor',
+        label: 'Set Editor Command…',
+        hint: 'for o',
+        run: () => void this.configureEditor(),
+      },
+      {
+        id: 'install-terminal-helper',
+        label: 'Install Terminal Helper…',
+        hint: 'add `jjdiff` to PATH',
+        run: () => void this.runInstallTerminalHelper(),
+      },
+    ]);
+
+    add('View', [
+      {
+        id: 'toggle-sidebar',
+        label: this.sidebarCollapsed ? 'Show Sidebar' : 'Hide Sidebar',
+        hint: formatShortcut('Mod+b'),
+        run: () => this.toggleSidebar(),
+      },
+      {
+        id: 'layout',
+        label: `Diff Layout: ${this.layout === 'split' ? 'Split' : 'Unified'}`,
+        hint: 'switch',
+        run: () => this.toggleLayout(),
+      },
+      {
+        id: 'wrap',
+        label: this.wordWrap ? 'Word Wrap: On' : 'Word Wrap: Off',
+        hint: 'toggle',
+        run: () => this.toggleWordWrap(),
+      },
+      {
+        id: 'whitespace',
+        label: this.ignoreWhitespace ? 'Whitespace: Hidden' : 'Whitespace: Shown',
+        hint: 'toggle',
+        run: () => this.toggleWhitespace(),
+      },
+      // One entry, not twenty. Choosing a palette is a visual decision and the
+      // picker shows the colours; a list of names here would be the same
+      // decision made blind.
+      {
+        id: 'theme',
+        label: 'Theme…',
+        hint: THEMES.find((entry) => entry.id === this.theme)?.label ?? this.theme,
+        run: () => (this.themePickerOpen = true),
+      },
+      {
+        id: 'theme-cycle-mode',
+        label: 'Toggle Light / Dark',
+        hint: 'base themes',
+        run: () => void this.chooseTheme(this.theme === 'dark' ? 'light' : 'dark'),
+      },
+    ]);
+
     return commands;
   }
 
   protected override render() {
     this.style.setProperty('--jj-sidebar-w', `${this.sidebarWidth}px`);
+    // A class on the host rather than a width of 0: the grid rule owns the
+    // collapsed geometry, so the resize handle's stored width survives a fold
+    // and the panel comes back exactly as wide as it was.
+    this.classList.toggle('sidebar-collapsed', this.sidebarCollapsed);
     if (this.error) {
       return html`<div class="fatal">
         <div class="card">
@@ -2059,12 +2343,22 @@ export class App extends LitElement {
       ? this.files.filter((file) => file.path === this.focusPath)
       : this.files;
     return html`
-      <header>
+      <!-- The window's drag handle. With titleBarStyle: Overlay the WebView
+           covers the title bar, so the OS no longer gets the mousedown that
+           moves the window — this row has to offer it back.
+
+           "deep", not a bare attribute. Bare means "only a direct click on this
+           exact element", which the header almost never is: the spacer, the
+           tool-group wrappers and every label span sit on top of it, so most of
+           the bar was dead. Tauri's own walk stops at the first clickable
+           element it meets on the way up, so buttons, inputs and menu items
+           still click rather than drag. -->
+      <header data-tauri-drag-region="deep">
         <span class="repo-menu-root">
           <button class="repo-button" @click=${this.toggleRepoMenu} title=${this.repo.root}>
-            <span class="repo-icon">${folderIcon(false)}</span>
+            <span class="chip accent">${folderIcon(false)}</span>
             <span class="root">${basename(this.repo.root)}</span>
-            <span class="caret">▾</span>
+            <span class="fold-chevron ${this.repoMenuOpen ? 'up' : ''}">${iconChevron}</span>
           </button>
           ${this.repoMenuOpen
             ? html`<div class="repo-menu">
@@ -2084,105 +2378,140 @@ export class App extends LitElement {
             : nothing}
         </span>
         <span class="spacer"></span>
-        ${isWc
-          ? html`<button
-              class="tool icon"
-              title="jj absorb — auto-distribute working-copy changes into the relevant ancestors"
-              ?disabled=${!!this.busy || this.files.length === 0}
-              @click=${this.runAbsorb}
-            >
-              ${iconAbsorb}
-            </button>`
-          : nothing}
+        <!-- Ordered by what the verbs do to the repository, left to right:
+             bring work in (fetch), rearrange the work you have (absorb), take a
+             step back (undo). The old order put absorb first, which read as
+             "the main thing you do here" — it is the rarest of the three.
+             The view toggle changes nothing and lives in its own group. -->
+        <span class="tool-group">
+          <button
+            class="tool icon"
+            title="jj git fetch — update remote-tracking state"
+            ?disabled=${!!this.busy}
+            @click=${this.runFetch}
+          >
+            ${iconFetch}
+          </button>
+          ${isWc
+            ? html`<button
+                class="tool icon"
+                title="jj absorb — auto-distribute working-copy changes into the relevant ancestors"
+                ?disabled=${!!this.busy || this.files.length === 0}
+                @click=${this.runAbsorb}
+              >
+                ${iconAbsorb}
+              </button>`
+            : nothing}
+          <button
+            class="tool icon"
+            title="jj undo — reverse the last operation"
+            ?disabled=${!!this.busy}
+            @click=${this.runUndo}
+          >
+            ${iconUndo}
+          </button>
+        </span>
+        <span class="tool-group">
+          <button
+            class="tool icon"
+            title="Switch between side-by-side and unified diffs"
+            @click=${this.toggleLayout}
+          >
+            ${this.layout === 'split' ? iconSplit : iconUnified}
+          </button>
+        </span>
         <button
-          class="tool icon"
-          title="jj git fetch — update remote-tracking state"
-          ?disabled=${!!this.busy}
-          @click=${this.runFetch}
-        >
-          ${iconFetch}
-        </button>
-        <button
-          class="tool icon"
-          title="jj undo — reverse the last operation"
-          ?disabled=${!!this.busy}
-          @click=${this.runUndo}
-        >
-          ${iconUndo}
-        </button>
-        <button
-          class="tool icon"
-          title="Switch between side-by-side and unified diffs"
-          @click=${this.toggleLayout}
-        >
-          ${this.layout === 'split' ? iconSplit : iconUnified}
-        </button>
-        <button
-          class="tool"
+          class="tool palette-key"
           title="Everything else lives here (Mod+K)"
           @click=${() => (this.barOpen = true)}
         >
-          ⌘K
+          <kbd>⌘</kbd><kbd>K</kbd>
         </button>
       </header>
+      <!-- The pane switcher is a rail of icons, not a row of tabs.
+
+           Four labels plus two count badges never fit a 292px sidebar at a
+           readable size — the segmented control was already truncating, and the
+           indicator looked wrong because equal quarters give "Log" the same
+           width as "Files 17". A rail costs one fixed column, scales to any
+           number of panes, and hands the whole sidebar width back to the
+           content. The pane's name is not hidden: it is the sidebar's title. -->
+      <nav class="rail" aria-label="Sidebar panes">
+        ${RAIL_PANES.map(
+          (pane) => html`<button
+            class="rail-item ${this.sidebarTab === pane.id ? 'active' : ''}"
+            title=${
+              this.sidebarTab === pane.id && !this.sidebarCollapsed
+                ? `Hide ${pane.label}`
+                : pane.label
+            }
+            aria-label=${pane.label}
+            aria-expanded=${this.sidebarTab === pane.id && !this.sidebarCollapsed}
+            aria-current=${this.sidebarTab === pane.id ? 'page' : nothing}
+            @click=${() => this.selectTab(pane.id)}
+          >
+            ${pane.icon}
+            ${this.railBadge(pane.id)}
+          </button>`,
+        )}
+      </nav>
       <aside>
-        <nav class="tabs">
-          <button
-            class="tab ${this.sidebarTab === 'stack' ? 'active' : ''}"
-            @click=${() => (this.sidebarTab = 'stack')}
-          >
-            Log
-          </button>
-          <button
-            class="tab ${this.sidebarTab === 'files' ? 'active' : ''}"
-            @click=${() => (this.sidebarTab = 'files')}
-          >
-            Files
-            <span class="count">${this.files.length}</span>
-          </button>
-          <button
-            class="tab ${this.sidebarTab === 'walkthrough' ? 'active' : ''}"
-            @click=${() => (this.sidebarTab = 'walkthrough')}
-          >
-            Walkthrough
-            ${this.walkthrough
-              ? html`<span class="count">${this.walkthrough.steps.length}</span>`
-              : nothing}
-            ${this.walkStale ? html`<span class="stale-dot" title="Content changed"></span>` : nothing}
-          </button>
-          <button
-            class="tab ${this.sidebarTab === 'review' ? 'active' : ''}"
-            @click=${() => (this.sidebarTab = 'review')}
-          >
-            Review
-            ${this.pendingComments.length > 0
-              ? html`<span class="count">${this.pendingComments.length}</span>`
-              : nothing}
-          </button>
-        </nav>
+        <div class="pane-head">
+          <h2 class="pane-title">${RAIL_PANES.find((p) => p.id === this.sidebarTab)?.label}</h2>
+          ${this.sidebarTab === 'walkthrough' && this.walkStale
+            ? html`<span class="stale-dot" title="The change moved since this was generated"></span>`
+            : nothing}
+        </div>
         ${this.sidebarTab === 'stack'
           ? html`<div class="revset-bar">
-                <!-- Only the active filter is spelled out; the rest tuck into a deck
-                     beside it, and a tag names itself when you point at it. -->
-                <div class="revset-tags">
-                  ${REVSET_PRESETS.map((preset) => {
-                    const on = (this.graphRevset ?? '') === preset.revset;
-                    return html`<button
-                      class="preset ${on ? 'on' : ''}"
-                      title=${preset.revset || 'Every commit'}
-                      @click=${() => this.applyRevset(preset.revset)}
-                    >
-                      <span class="preset-label">${preset.label}</span>
-                    </button>`;
-                  })}
-                </div>
-                <input
-                  class="revset-input"
-                  placeholder="Search commits…"
-                  .value=${this.revsetSearch}
-                  @input=${(event: Event) =>
-                    (this.revsetSearch = (event.target as HTMLInputElement).value)}
-                />
+                <!-- Scope, then search: which commits are in the list, then
+                     which of those you are looking for. The scope used to be a
+                     deck of pills that collapsed to initials — clever, and
+                     unreadable: it hid five of six options behind a hover, so
+                     the only way to learn what the filters were was to sweep
+                     the mouse across them one at a time. -->
+                <span class="scope-root">
+                  <button
+                    class="scope-button"
+                    title="Which commits the log shows"
+                    aria-expanded=${this.scopeOpen}
+                    @click=${() => (this.scopeOpen = !this.scopeOpen)}
+                  >
+                    <span class="scope-label">${this.activeScope.label}</span>
+                    <span class="fold-chevron ${this.scopeOpen ? 'up' : ''}">${iconChevron}</span>
+                  </button>
+                  ${this.scopeOpen
+                    ? html`<div class="scope-menu" role="menu">
+                        ${REVSET_PRESETS.map((preset) => {
+                          const on = (this.graphRevset ?? '') === preset.revset;
+                          return html`<button
+                            class="scope-item ${on ? 'on' : ''}"
+                            role="menuitem"
+                            @click=${() => {
+                              this.scopeOpen = false;
+                              this.applyRevset(preset.revset);
+                            }}
+                          >
+                            <span class="scope-item-label">${preset.label}</span>
+                            <!-- The revset itself, because this app is for
+                                 people who write them and the preset is a
+                                 shortcut, not a replacement. -->
+                            <code>${preset.revset || 'all()'}</code>
+                          </button>`;
+                        })}
+                      </div>`
+                    : nothing}
+                </span>
+                <label class="field">
+                  <span class="field-icon">${iconSearch}</span>
+                  <input
+                    class="revset-input"
+                    placeholder="Search commits…"
+                    .value=${this.revsetSearch}
+                    @input=${(event: Event) =>
+                      (this.revsetSearch = (event.target as HTMLInputElement).value)}
+                  />
+                </label>
               </div>
               <div class="stack">
               <jj-log-graph
@@ -2211,7 +2540,7 @@ export class App extends LitElement {
               </div>`
           : html`
               ${change
-                ? html`<button class="context-card" @click=${() => (this.sidebarTab = 'stack')}>
+                ? html`<button class="context-card" @click=${() => this.selectTab('stack')}>
                     <span class="id">${change.changeId.slice(0, 8)}</span>
                     ${change.workingCopy ? html`<span class="badge">@</span>` : nothing}
                     <span class="desc ${change.description ? '' : 'empty-desc'}">
@@ -2244,7 +2573,11 @@ export class App extends LitElement {
         @mousedown=${this.onSidebarResizeStart}
       ></div>
       <main
-        class=${this.viewMode === 'pr' ? 'showing-pr' : ''}
+        class=${this.viewMode === 'pr'
+          ? 'showing-pr'
+          : this.viewMode === 'ops'
+            ? 'showing-ops'
+            : ''}
         @squash-file=${this.onSquashFile}
         @toggle-viewed=${this.onToggleViewed}
         @search-state=${(event: CustomEvent<{ count: number; current: number }>) => {
@@ -2307,41 +2640,65 @@ export class App extends LitElement {
                   this.detailCollapsed = !this.detailCollapsed;
                 }}
               >
-                <span class="detail-toggle">${this.detailCollapsed ? '▸' : '▾'}</span>
-                <span class="detail-id">${change.changeId.slice(0, 12)}</span>
-                ${change.bookmarks.map(
-                  (bookmark) => html`<span class="tag"
-                    >${bookmark}${this.renderTracking(bookmark)}
-                    <button
-                      class="tag-x"
-                      title="Delete bookmark"
-                      @click=${(event: Event) => {
-                        event.stopPropagation();
-                        void this.removeBookmark(bookmark);
-                      }}
-                    >
-                      ×
-                    </button></span
-                  >`,
-                )}
-                ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
-                ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
-                ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
-                ${this.detailCollapsed
-                  ? html`<span class="detail-summary"
-                      >${change.description.split('\n')[0] || '(no description)'}</span
-                    >`
-                  : nothing}
+                <!-- The card's own header: mark, title, then the identity line
+                     under it. The subject used to live in the folded body, so
+                     collapsing the card hid the one thing that names it and a
+                     truncated copy had to be rendered up here instead. It is
+                     the title now, and folding hides only the detail. -->
+                <span class="chip accent detail-mark">${iconCommit}</span>
+                <span class="detail-headings">
+                  <h2 class="detail-title">
+                    ${change.description.split('\n')[0] || '(no description)'}
+                  </h2>
+                  <span class="detail-meta">
+                    <span class="detail-id">${change.changeId.slice(0, 12)}</span>
+                    ${change.bookmarks.map(
+                      (bookmark) => html`<span class="tag"
+                        >${bookmark}${this.renderTracking(bookmark)}
+                        <button
+                          class="tag-x"
+                          title="Delete bookmark"
+                          @click=${(event: Event) => {
+                            event.stopPropagation();
+                            void this.removeBookmark(bookmark);
+                          }}
+                        >
+                          ×
+                        </button></span
+                      >`,
+                    )}
+                    ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
+                    ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
+                    ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
+                  </span>
+                </span>
                 <span class="spacer"></span>
                 <span class="detail-when"
                   >${change.author.name} · ${relativeTime(change.committer.timestamp)}</span
                 >
+                <span class="fold-chevron ${this.detailCollapsed ? 'closed' : ''}"
+                  >${iconChevron}</span
+                >
               </header>
 
-              ${this.detailCollapsed
-                ? nothing
-                : html`
-              ${this.editingDescription
+              <!-- Kept mounted and folded rather than unmounted: an element that
+                   does not exist cannot animate out, and a card that snaps shut
+                   loses the one cue that says where the content went. -->
+              <div class="fold ${this.detailCollapsed ? 'closed' : ''}">
+                <div>
+              <!-- Prose left, actions right. The description is capped at a
+                   readable measure, so on a wide window the right half of the
+                   card sat empty while the buttons queued up underneath it.
+                   The file list stays full width, below both. -->
+              <div class="detail-main">
+                <div class="detail-prose">
+              <!-- Guided review is a *reading* mode: you are being walked
+                   through someone's change, step by step. Offering to rewrite
+                   its message mid-walkthrough is an invitation to edit the
+                   thing you are in the middle of reviewing, so the control is
+                   gone until the walkthrough is exited. The message itself
+                   still shows. -->
+              ${this.editingDescription && !this.walkActive
                 ? html`<textarea
                       class="detail-edit"
                       .value=${this.description}
@@ -2363,117 +2720,82 @@ export class App extends LitElement {
                       </button>
                       <button class="tool" @click=${this.cancelDescriptionEdit}>Cancel</button>
                     </div>`
-                : html`<div class="detail-desc">${descriptionParts(change.description)}</div>
-                    <div class="detail-actions">
-                      <button
-                        class="tool"
-                        title=${
-                          change.immutable
-                            ? 'jj describe --ignore-immutable — this change is immutable, so you will be asked to confirm before the message is rewritten.'
-                            : 'jj describe — edit this change\'s message.'
-                        }
-                        @click=${this.startDescriptionEdit}
-                      >
-                        Edit description
-                      </button>
-                    </div>`}
+                : html`${descriptionBody(change.description)
+                      ? html`<div class="detail-desc">${descriptionBody(change.description)}</div>`
+                      : nothing}`}
+                </div>
 
-              <div class="detail-actions">
-                <span class="action-group">
-                  <button
-                    class="tool primary"
-                    title=${`jj edit — move the working copy onto this change so your edits land in it.${
-                      change.immutable
-                        ? ' This change is immutable; jjdiff will explain what rewriting it costs before doing anything.'
-                        : ''
-                    }`}
-                    @click=${this.editSelected}
-                  >
-                    Work on this
-                  </button>
-                  <button
-                    class="tool"
-                    title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
-                    @click=${this.newOnSelected}
-                  >
-                    New on top
-                  </button>
-                </span>
-
-                <span class="action-group">
-                  <button
-                    class="tool"
-                    title=${
-                      change.immutable
-                        ? 'jj rebase -s --ignore-immutable — this change is immutable (at or below trunk); you will be asked to confirm first.'
-                        : 'jj rebase -s — move this change and everything built on top of it onto a different parent. Conflicts are recorded, not fatal.'
-                    }
-                    @click=${this.rebaseSelected}
-                  >
-                    Rebase…
-                  </button>
-                  <button
-                    class="tool"
-                    title=${
-                      this.files.length < 2
-                        ? 'jj split — needs at least two files; there is nothing to separate.'
-                        : change.immutable
-                          ? 'jj split --ignore-immutable — this change is immutable; you will be asked to confirm first.'
-                          : 'jj split — pull the focused file out into its own change, leaving the rest here. File-level, no hunk picking.'
-                    }
-                    ?disabled=${this.files.length < 2}
-                    @click=${this.splitSelectedFiles}
-                  >
-                    Split file
-                  </button>
-                  <button
-                    class="tool"
-                    title="jj duplicate — copy this change to a second, independent change with the same content. The original stays put."
-                    @click=${this.duplicateSelected}
-                  >
-                    Duplicate
-                  </button>
-                  <button
-                    class="tool"
-                    title="jj backout — add a NEW change that undoes this one, keeping this one in history. Use for already-pushed work; use Abandon for work only you have."
-                    @click=${this.backoutSelected}
-                  >
-                    Back out
-                  </button>
-                </span>
-
-                <span class="action-group">
-                  <button
-                    class="tool"
-                    title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
-                    @click=${this.createBookmark}
-                  >
-                    Bookmark…
-                  </button>
-                  <button
-                    class="tool"
-                    title=${
-                      change.bookmarks.length
-                        ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
-                        : 'jj git push --change — push this change, auto-naming a bookmark from its change id.'
-                    }
-                    @click=${this.runPush}
-                  >
-                    Push
-                  </button>
-                </span>
-
+              <!-- Four verbs out, the rest behind "More". The split is by how
+                   often a hand reaches for them, not by what jj calls them. -->
+              <div class="detail-actions detail-verbs">
                 <button
-                  class="tool danger"
-                  title=${
+                  class="tool primary"
+                  title=${`jj edit — move the working copy onto this change so your edits land in it.${
                     change.immutable
-                      ? 'jj abandon --ignore-immutable — this change is immutable; you will be asked to confirm first. Back out is usually what you want for published work.'
-                      : 'jj abandon — remove this change from history entirely, as if it never existed. Undoable from the Ops tab. To reverse already-pushed work instead, use Back out.'
-                  }
-                  @click=${this.abandonSelected}
+                      ? ' This change is immutable; jjdiff will explain what rewriting it costs before doing anything.'
+                      : ''
+                  }`}
+                  @click=${this.editSelected}
                 >
-                  Abandon
+                  Work on this
                 </button>
+                <button
+                  class="tool"
+                  title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
+                  @click=${this.newOnSelected}
+                >
+                  New on top
+                </button>
+                <!-- Third, because the row is grouped by what each verb touches:
+                     the working copy, then this change's own message, then the
+                     refs pointing at it. Hidden while the editor is open — Save
+                     and Cancel are down in the prose column with the text they
+                     act on — and during guided review, which is a reading mode. -->
+                ${this.editingDescription || this.walkActive
+                  ? nothing
+                  : html`<button
+                      class="tool"
+                      title=${
+                        change.immutable
+                          ? 'jj describe --ignore-immutable — this change is immutable, so you will be asked to confirm before the message is rewritten.'
+                          : 'jj describe — edit this change\'s message.'
+                      }
+                      @click=${this.startDescriptionEdit}
+                    >
+                      Edit description
+                    </button>`}
+                <button
+                  class="tool"
+                  title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
+                  @click=${this.createBookmark}
+                >
+                  Bookmark…
+                </button>
+                <button
+                  class="tool"
+                  title=${
+                    change.bookmarks.length
+                      ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
+                      : 'jj git push --change — push this change, auto-naming a bookmark from its change id.'
+                  }
+                  @click=${this.runPush}
+                >
+                  Push
+                </button>
+
+                <span class="more-root">
+                  <button
+                    class="tool"
+                    title="Rebase, split, duplicate, back out, abandon"
+                    aria-expanded=${this.moreAt !== null}
+                    @click=${this.toggleMore}
+                  >
+                    More
+                    <span class="fold-chevron ${this.moreAt ? 'up' : ''}">${iconChevron}</span>
+                  </button>
+                  ${this.moreAt ? this.renderMoreMenu(change, this.moreAt) : nothing}
+                </span>
+              </div>
               </div>
 
               <div class="detail-files">
@@ -2493,52 +2815,78 @@ export class App extends LitElement {
                     </span>
                   </button>`,
                 )}
-              </div>`}
+              </div>
+                </div>
+              </div>
             </section>`
-          : change
+          : change && !this.walkActive
             ? html`<div class="describe">
+                <!-- Hidden during guided review for the same reason the detail
+                     card's edit button is: a walkthrough is for reading a
+                     change, and a compose box at the top of it is an invitation
+                     to start writing instead.
+
+                     Header then content, the same shape as the change detail
+                     card. The textarea carries no frame of its own: a bordered
+                     box inside a bordered card is two frames around one field. -->
+                <div class="describe-head">
+                  <span class="chip accent">${iconCommit}</span>
+                  <span class="describe-headings">
+                    <span class="describe-title">Working copy</span>
+                    <span class="describe-count">
+                      ${this.files.length
+                        ? `${this.files.length} file${this.files.length === 1 ? '' : 's'} changed`
+                        : 'No changes yet'}
+                    </span>
+                  </span>
+                  <span class="spacer"></span>
+                  <button
+                    class="tool"
+                    ?disabled=${this.description === change.description}
+                    @click=${this.saveDescription}
+                  >
+                    Describe
+                  </button>
+                  <button
+                    class="tool"
+                    ?disabled=${this.files.length === 0}
+                    title="Discard the focused file's changes (or all when none is focused)"
+                    @click=${this.restoreSelectedFile}
+                  >
+                    Discard…
+                  </button>
+                  <button
+                    class="tool primary"
+                    ?disabled=${this.files.length === 0 || !this.description.trim()}
+                    title="Describe @ and start a new change on top (jj describe + jj new)"
+                    @click=${this.commitAndNew}
+                  >
+                    Commit &amp; New
+                  </button>
+                </div>
                 <textarea
                   placeholder="Describe this change…"
                   .value=${this.description}
                   @input=${(event: Event) =>
                     (this.description = (event.target as HTMLTextAreaElement).value)}
                 ></textarea>
-                <button
-                  class="tool"
-                  ?disabled=${this.description === change.description}
-                  @click=${this.saveDescription}
-                >
-                  Describe
-                </button>
-                <button
-                  class="tool primary"
-                  ?disabled=${this.files.length === 0 || !this.description.trim()}
-                  title="Describe @ and start a new change on top (jj describe + jj new)"
-                  @click=${this.commitAndNew}
-                >
-                  Commit & New
-                </button>
-                <button
-                  class="tool"
-                  ?disabled=${this.files.length === 0}
-                  title="Discard the focused file's changes (or all when none is focused)"
-                  @click=${this.restoreSelectedFile}
-                >
-                  Discard…
-                </button>
               </div>`
             : nothing}
         ${change?.conflict
           ? html`<div class="banner conflict">
-              ⚠ This change has unresolved conflicts
-              (${this.conflictedPaths.size || '?'} file${this.conflictedPaths.size === 1
-                ? ''
-                : 's'}) — resolve with <code>jj resolve</code> in a terminal.
+              <span class="chip warn">${iconWarn}</span>
+              <span
+                >This change has unresolved conflicts
+                (${this.conflictedPaths.size || '?'} file${this.conflictedPaths.size === 1
+                  ? ''
+                  : 's'}) — resolve with <code>jj resolve</code> in a terminal.</span
+              >
             </div>`
           : nothing}
         ${this.changedSinceReview
           ? html`<div class="banner">
-              This change evolved since you reviewed it.
+              <span class="chip">${iconInfo}</span>
+              <span>This change evolved since you reviewed it.</span>
               <span class="spacer"></span>
               ${this.viewMode === 'interdiff'
                 ? html`<button class="tool" @click=${this.showFullDiff}>Full Diff</button>`
@@ -2549,12 +2897,24 @@ export class App extends LitElement {
             </div>`
           : nothing}
         ${this.renderPullRequestBanner()}
+        <!-- Above the step block, not below it. "This was generated for an
+             older version" changes how much you should trust everything under
+             it, so it has to be read before that, not after. -->
+        ${this.walkthrough && this.walkStale && !this.generating
+          ? html`<div class="banner">
+              <span class="chip">${iconInfo}</span>
+              <span>The walkthrough was generated for an older version of this change.</span>
+              <span class="spacer"></span>
+              <button class="tool" @click=${this.runGenerateWalkthrough}>Refresh Walkthrough</button>
+            </div>`
+          : nothing}
         ${this.walkActive && this.walkthrough
           ? html`<div class="walk-banner">
               ${keyed(
                 this.walkStep,
                 html`<div class="walk-content">
               <div class="walk-head">
+                <span class="chip accent">${iconSparkle}</span>
                 <span class="walk-progress">
                   ${this.stackReview
                     ? `Change ${this.stackIndex + 1}/${this.stackReview.length} · `
@@ -2568,6 +2928,23 @@ export class App extends LitElement {
                     : this.walkthrough.steps[this.walkStep]?.title}
                 </strong>
                 <span class="spacer"></span>
+                <!-- The way out, and it has to be here.
+
+                     Guided review hides the describe box and the edit-message
+                     button, because a walkthrough is for reading. That made the
+                     mode a trap: the only way to leave it was a command palette
+                     entry, so the describe box simply vanished with nothing on
+                     screen explaining where it went or how to get it back.
+
+                     Separated from Prev/Next by a rule: those two move *within*
+                     the review, this one ends it. -->
+                <button
+                  class="tool walk-exit"
+                  title="Leave guided review and go back to the full change"
+                  @click=${this.exitWalkthrough}
+                >
+                  Exit review
+                </button>
                 <button
                   class="tool"
                   ?disabled=${this.walkStep <= -1 && !(this.stackReview && this.stackIndex > 0)}
@@ -2586,20 +2963,24 @@ export class App extends LitElement {
                     : 'Next →'}
                 </button>
               </div>
-              <p class="walk-narrative">
+              <p class="walk-narrative ${this.walkExpanded ? 'expanded' : ''}">
                 ${this.walkStep < 0
                   ? this.walkthrough.summary
                   : this.walkthrough.steps[this.walkStep]?.narrative}
               </p>
+              ${this.walkOverflow
+                ? html`<button
+                    class="walk-more"
+                    @click=${() => (this.walkExpanded = !this.walkExpanded)}
+                  >
+                    ${this.walkExpanded ? 'Show less' : 'Show more'}
+                    <span class="fold-chevron ${this.walkExpanded ? 'up' : ''}"
+                      >${iconChevron}</span
+                    >
+                  </button>`
+                : nothing}
                 </div>`,
               )}
-            </div>`
-          : nothing}
-        ${this.walkthrough && this.walkStale && !this.generating
-          ? html`<div class="banner">
-              The walkthrough was generated for an older version of this change.
-              <span class="spacer"></span>
-              <button class="tool" @click=${this.runGenerateWalkthrough}>Refresh Walkthrough</button>
             </div>`
           : nothing}
         ${this.searchOpen
@@ -2636,12 +3017,10 @@ export class App extends LitElement {
           ? html`<div class="status error">${this.actionError}</div>`
           : nothing}
         ${this.actionInfo ? html`<div class="status info">${this.actionInfo}</div>` : nothing}
-        ${this.visibleFile && visible.length > 1
-          ? html`<div class="crumb" title=${this.visibleFile}>
-              <span class="crumb-dir">${dirname(this.visibleFile)}</span>
-              <span class="crumb-name">${basename(this.visibleFile)}</span>
-            </div>`
-          : nothing}
+        <!-- No breadcrumb: the diff pane pins the current file's own header,
+             which names the file *and* carries its actions. A separate crumb
+             put the same path on screen twice, one line apart. -->
+
         ${this.viewMode === 'pr'
           ? nothing
           : html`<jj-patch-view
@@ -2677,6 +3056,14 @@ export class App extends LitElement {
               this.proposalPicker = null;
             }}
           ></jj-command-bar>`
+        : nothing}
+      ${this.themePickerOpen
+        ? html`<jj-theme-picker
+            .current=${this.theme}
+            @preview-theme=${(event: CustomEvent<string>) => this.applyTheme(event.detail)}
+            @pick-theme=${(event: CustomEvent<string>) => void this.chooseTheme(event.detail)}
+            @close=${() => (this.themePickerOpen = false)}
+          ></jj-theme-picker>`
         : nothing}
       ${this.shortcutsOpen
         ? html`<jj-shortcuts-help
@@ -3163,11 +3550,22 @@ const reviewerTitle = (state: string) =>
     REQUESTED: 'review requested',
   })[state] ?? state.toLowerCase().replace(/_/g, ' ');
 
+/** Sidebar panes. `walkthrough` doubles as the guided-review switch — see `selectTab`. */
+type SidebarTab = 'stack' | 'files' | 'walkthrough' | 'review';
+
+/**
+ * The rail, in order. Ordered by how far from the code each pane sits: the
+ * commit graph, then that commit's files, then the guided reading of them, then
+ * the comments left on them.
+ */
+const RAIL_PANES: { id: SidebarTab; label: string; icon: TemplateResult }[] = [
+  { id: 'stack', label: 'Log', icon: iconGraph },
+  { id: 'files', label: 'Files', icon: iconFiles },
+  { id: 'walkthrough', label: 'Steps', icon: iconSparkle },
+  { id: 'review', label: 'Review', icon: iconComment },
+];
+
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;
-const dirname = (path: string) => {
-  const cut = path.lastIndexOf('/');
-  return cut === -1 ? '' : `${path.slice(0, cut)}/`;
-};
 
 declare global {
   interface HTMLElementTagNameMap {

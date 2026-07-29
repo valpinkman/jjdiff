@@ -643,6 +643,15 @@ export const setEditorCommand = (command: string): Promise<string> =>
     : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
 
 /**
+ * Persist `[ui] theme`. Same surgical edit as the editor command — a theme is
+ * picked once and expected to still be there next launch.
+ */
+export const setUiTheme = (theme: string): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('set_ui_theme', { theme })
+    : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
+
+/**
  * Open a repo-relative path in the configured editor. Rejects with a message
  * naming the config key when `[editor] command` is unset.
  */

@@ -273,6 +273,15 @@ async fn set_editor_command(command: String) -> Result<String, String> {
     .await
 }
 
+/// Persist `[ui] theme`, so a palette picked in the app is still there next
+/// launch. The name is not validated here — the frontend owns the theme list,
+/// and an unknown one falls back to `system` on load rather than failing.
+#[tauri::command]
+async fn set_ui_theme(theme: String) -> Result<String, String> {
+    blocking(move || config::set_ui_theme(theme.trim()).map(|path| path.display().to_string()))
+        .await
+}
+
 /// Rebuild the native menu from the frontend's command list.
 ///
 /// Only the focused window may set it: on macOS the menu bar is app-global, so
@@ -998,15 +1007,38 @@ fn spawn_window(
         WindowState { launch, repo: Some(repo.clone()), watchers: Vec::new() },
     );
 
-    tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
+    // `mut` is only used on macOS, below.
+    #[allow(unused_mut)]
+    let mut builder = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
         .title(title)
         .inner_size(1280.0, 840.0)
-        .min_inner_size(720.0, 480.0)
-        .build()
-        .map_err(|error| {
-            state.windows.lock().expect("windows lock").remove(&label);
-            format!("cannot open a window: {error}")
-        })?;
+        // Matches `main` in tauri.conf.json. 1024 is the narrowest the layout is
+        // designed for — a 52px rail plus a 292px sidebar leaves the diff pane
+        // under 700px below that, which is not enough for a side-by-side diff.
+        .min_inner_size(1024.0, 640.0);
+
+    // Same chrome as the `main` window in tauri.conf.json: the title bar is an
+    // overlay over the app's own background and the title is hidden, so the
+    // traffic lights float on the page instead of sitting in a grey strip. The
+    // title is still *set* — it is what the Window menu and Mission Control
+    // show — it is only not drawn in the bar.
+    //
+    // Both builder methods are `#[cfg(target_os = "macos")]` in Tauri, so this
+    // has to be gated: naming them unconditionally does not fail to *link* on
+    // Linux, it fails to compile. The equivalent keys in tauri.conf.json are
+    // cross-platform and simply ignored elsewhere, which is why only this call
+    // needed the cfg.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+
+    builder.build().map_err(|error| {
+        state.windows.lock().expect("windows lock").remove(&label);
+        format!("cannot open a window: {error}")
+    })?;
 
     // Watchers need the window to exist (they emit to its label).
     let watchers = attach_repo(app, &label, &repo);
@@ -1453,6 +1485,7 @@ pub fn run(args: Args) {
             launch_options,
             get_config,
             set_editor_command,
+            set_ui_theme,
             set_menu,
             repo_state,
             diff,

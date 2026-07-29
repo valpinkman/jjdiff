@@ -127,22 +127,39 @@ pub fn load() -> Config {
 ///
 /// Returns the path written, for the confirmation message.
 pub fn set_editor_command(command: &str) -> Result<PathBuf, String> {
+    set_value("editor", "command", command)
+}
+
+/// Write `[ui] theme` back to the config file. Same surgical edit as above — a
+/// theme is chosen once and expected to survive a restart.
+pub fn set_ui_theme(theme: &str) -> Result<PathBuf, String> {
+    set_value("ui", "theme", theme)
+}
+
+/// Set one `[table] key` in the user's config, touching nothing else.
+///
+/// Edits rather than re-serializes: this is the user's file, and round-tripping
+/// it through `Config` would silently delete their comments, key order and any
+/// setting a newer jjdiff added. `toml_edit` touches only the one value.
+///
+/// Returns the path written, for the confirmation message.
+fn set_value(table_name: &str, key: &str, value: &str) -> Result<PathBuf, String> {
     let path = config_path().ok_or_else(|| "cannot locate $HOME".to_string())?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut document = existing
         .parse::<toml_edit::DocumentMut>()
         .map_err(|error| format!("{} is not valid TOML: {error}", path.display()))?;
 
-    // Create `[editor]` explicitly when absent. Assigning straight into
-    // `document["editor"]["command"]` auto-vivifies an *inline* table
+    // Create the table explicitly when absent. Assigning straight into
+    // `document[table][key]` auto-vivifies an *inline* table
     // (`editor = { command = "…" }`) and hoists it above any leading comment,
     // reordering a file we were asked only to add one key to.
-    if !document.as_table().contains_key("editor") {
+    if !document.as_table().contains_key(table_name) {
         let mut table = toml_edit::Table::new();
         table.set_implicit(false);
-        document["editor"] = toml_edit::Item::Table(table);
+        document[table_name] = toml_edit::Item::Table(table);
     }
-    document["editor"]["command"] = toml_edit::value(command);
+    document[table_name][key] = toml_edit::value(value);
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

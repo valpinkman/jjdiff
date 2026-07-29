@@ -1,39 +1,56 @@
 /* jjdiff theme. All theming flows through custom properties so it crosses shadow and
-   light DOM (see DESIGN.md). Direction: modern, soft, layered — warm off-white paper in
-   light, deep neutral in dark, with the code surface floating above it on rounded cards. */
+   light DOM (see DESIGN.md).
+
+   The neutrals are a **pure grey ramp — zero chroma**, rebased on shadcn/ui's default
+   theme. The previous set was warm (#f7f7f5 / #fbfbfa / #ffffff) and that was the single
+   biggest thing making a careful layout look untended: three off-whites within 3% of each
+   other, so the page/panel/card hierarchy the layout depends on was invisible, and the
+   warmth read as a screen that had yellowed rather than as a choice. Grey also gets out
+   of the way of the only colours that carry meaning here — the diff's green and red. */
 
 :root {
   color-scheme: light;
 
-  /* Surfaces: page → panel → raised card. The code surface is the brightest thing on
-     screen, so the diff reads as the content and everything else recedes. */
-  --jj-bg: #f7f7f5;
-  --jj-bg-panel: #fbfbfa;
+  /* Surfaces: page → panel → raised card. The steps are wide enough to see. The card
+     is pure white and the page is a real grey, so a card reads as lifted off it without
+     needing a shadow to say so. */
+  --jj-bg: #f4f4f5;
+  --jj-bg-panel: #fafafa;
   --jj-surface: #ffffff;
-  --jj-surface-2: #f3f3f1;
+  --jj-surface-2: #f4f4f5;
 
   /* Ink. Alpha-based so text sits *on* the surface rather than fighting it. */
-  --jj-fg: #17171a;
-  --jj-fg-soft: rgb(23 23 26 / 0.72);
-  --jj-fg-muted: rgb(23 23 26 / 0.5);
-  --jj-fg-faint: rgb(23 23 26 / 0.32);
+  --jj-fg: #18181b;
+  --jj-fg-soft: rgb(24 24 27 / 0.72);
+  --jj-fg-muted: rgb(24 24 27 / 0.55);
+  --jj-fg-faint: rgb(24 24 27 / 0.36);
 
-  /* Hairlines, also alpha: they tint with whatever they sit on. */
-  --jj-border: rgb(23 23 26 / 0.1);
-  --jj-border-strong: rgb(23 23 26 / 0.16);
-  --jj-wash: rgb(23 23 26 / 0.045);
+  /* Hairlines, alpha so they tint with whatever they sit on — but a step stronger than
+     before. Faint borders are what made the cards read as smudges: at 10% the frame was
+     losing to the shadow and neither was drawing the edge. */
+  --jj-border: rgb(24 24 27 / 0.12);
+  --jj-border-strong: rgb(24 24 27 / 0.19);
+  --jj-wash: rgb(24 24 27 / 0.05);
+
+  /* Neutral primary. The main action is near-black rather than blue: a blue fill in a
+     diff viewer competes with the green and red that mean something, and it left the
+     accent doing two jobs — "this is the button" and "this is selected". Now the accent
+     means selection and focus, only. */
+  --jj-primary: #18181b;
+  --jj-primary-hi: #27272a;
+  --jj-primary-fg: #fafafa;
 
   /* One accent for selection and focus; one warm ref colour for bookmarks. */
-  --jj-accent: #3d7ff5;
-  --jj-accent-soft: rgb(61 127 245 / 0.12);
-  --jj-accent-line: rgb(61 127 245 / 0.42);
+  --jj-accent: #2563eb;
+  --jj-accent-soft: rgb(37 99 235 / 0.11);
+  --jj-accent-line: rgb(37 99 235 / 0.4);
   --jj-ref: #b26a10;
   --jj-ref-soft: rgb(178 106 16 / 0.12);
 
   /* Log graph lanes: one hue per column so branches are followable at a glance. Lane 0
      is the accent — the mainline reads as "the app's colour" and the rest fan around it
      at similar weight, so no lane shouts louder than another. */
-  --jj-lane-0: #3d7ff5;
+  --jj-lane-0: #2563eb;
   --jj-lane-1: #7d5cd6;
   --jj-lane-2: #10877a;
   --jj-lane-3: #b26a10;
@@ -55,44 +72,109 @@
   --jj-merged-fg: #7442cf;
   --jj-merged-bg: rgb(116 66 207 / 0.1);
   --jj-removed-mark: rgb(184 49 47 / 0.2);
-  --jj-hunk-bg: rgb(23 23 26 / 0.035);
-  --jj-num-fg: rgb(23 23 26 / 0.3);
+  --jj-hunk-bg: rgb(24 24 27 / 0.04);
+  --jj-num-fg: rgb(24 24 27 / 0.32);
 
   --jj-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --jj-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --jj-code-size: 12.5px;
 
-  /* Rounded, not pill: controls 7, cards 10, floating panels 14. */
-  --jj-r-sm: 7px;
-  --jj-r-md: 10px;
-  --jj-r-lg: 14px;
+  /* ---- Scales ----------------------------------------------------------
+     Three ramps, and nothing outside them. A value picked by eye is the thing
+     that makes an interface feel assembled rather than designed: two paddings
+     one pixel apart read as a mistake even when nobody can name it. */
 
-  /* Elevation: soft, tinted to the page rather than pure black. */
-  --jj-shadow-card: 0 1px 2px rgb(23 23 26 / 0.05), 0 1px 1px rgb(23 23 26 / 0.03);
-  --jj-shadow-pop: 0 16px 48px rgb(23 23 26 / 0.16), 0 2px 8px rgb(23 23 26 / 0.08);
+  /* Space: 4pt, doubling at the top where the steps stop needing to be fine. */
+  --jj-s-1: 4px;
+  --jj-s-2: 6px;
+  --jj-s-3: 8px;
+  --jj-s-4: 12px;
+  --jj-s-5: 16px;
+  --jj-s-6: 20px;
+  --jj-s-7: 28px;
+  --jj-s-8: 40px;
+
+  /* Type. The app used to top out at 14.5px, which is what made a dense tool
+     read as a database client: no size said "this is the thing on screen".
+     `title` is that voice, and it is used sparingly — one per view. */
+  --jj-text-xs: 11px;
+  --jj-text-sm: 12px;
+  --jj-text-base: 13px;
+  --jj-text-md: 14px;
+  --jj-text-lg: 16px;
+  --jj-text-title: 22px;
+
+  /* Radius is binary here, not a ramp.
+
+     **Surfaces are square. Controls are pills.** A card, a panel, a popover, a
+     pane — anything you put things *into* — has no radius and no border; it is
+     told apart from its neighbour by its background. Anything you *press or
+     type into* is fully round. The middle ground (a 16px card holding 9px
+     buttons, each with its own hairline) is what made the app read as a stack
+     of boxes inside boxes: at any point on screen there were three nested
+     frames, and none of them meant anything.
+
+     The names are kept so the ramp can come back without touching every rule. */
+  --jj-r-xs: var(--jj-r-pill);
+  --jj-r-sm: var(--jj-r-pill);
+  --jj-r-chip: var(--jj-r-pill);
+  --jj-r-md: 0px;
+  --jj-r-lg: 0px;
+  --jj-r-xl: 0px;
+  --jj-r-pill: 999px;
+
+  /* Motion. Duration says how far something travelled; the curve says what
+     kind of thing it is. `out` decelerates into place and is the default —
+     the element is arriving, not being thrown. `pop` overshoots by a hair and
+     is reserved for things that appear from nothing (menus, toasts). */
+  --jj-t-1: 120ms;
+  --jj-t-2: 180ms;
+  --jj-t-3: 260ms;
+  --jj-t-4: 420ms;
+  --jj-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --jj-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --jj-ease-pop: cubic-bezier(0.34, 1.32, 0.64, 1);
+
+  /* Elevation: four steps, each a near-contact shadow plus a diffuse one, both
+     tinted to the page rather than pure black. `raised` is the hover state of
+     `card`; nothing skips a step. */
+  --jj-shadow-xs: 0 1px 1px rgb(24 24 27 / 0.04);
+  --jj-shadow-card: 0 1px 2px rgb(24 24 27 / 0.05), 0 1px 1px rgb(24 24 27 / 0.03);
+  --jj-shadow-raised: 0 4px 12px rgb(24 24 27 / 0.09), 0 1px 2px rgb(24 24 27 / 0.05);
+  --jj-shadow-pop: 0 20px 56px rgb(24 24 27 / 0.18), 0 4px 12px rgb(24 24 27 / 0.08),
+    0 1px 2px rgb(24 24 27 / 0.05);
   --jj-focus-ring: 0 0 0 3px var(--jj-accent-soft);
+
+  /* The sheen that crosses a filled control on hover. White at low alpha, so it
+     works over the neutral primary in either theme. */
+  --jj-sheen: rgb(255 255 255 / 0.16);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-jj-theme='light']) {
     color-scheme: dark;
-    --jj-bg: #131316;
-    --jj-bg-panel: #17171b;
-    --jj-surface: #1c1c21;
-    --jj-surface-2: #212127;
-    --jj-fg: #e8e8ea;
-    --jj-fg-soft: rgb(232 232 234 / 0.74);
-    --jj-fg-muted: rgb(232 232 234 / 0.5);
-    --jj-fg-faint: rgb(232 232 234 / 0.3);
-    --jj-border: rgb(232 232 234 / 0.1);
-    --jj-border-strong: rgb(232 232 234 / 0.17);
-    --jj-wash: rgb(232 232 234 / 0.05);
-    --jj-accent: #6ba5ff;
-    --jj-accent-soft: rgb(107 165 255 / 0.16);
-    --jj-accent-line: rgb(107 165 255 / 0.45);
+    /* Deeper and cleaner than before: a near-black page with the card a clear step
+       above it, rather than three shades of blue-grey inside 10 points of lightness. */
+    --jj-bg: #09090b;
+    --jj-bg-panel: #0e0e11;
+    --jj-surface: #18181b;
+    --jj-surface-2: #27272a;
+    --jj-fg: #fafafa;
+    --jj-fg-soft: rgb(250 250 250 / 0.74);
+    --jj-fg-muted: rgb(250 250 250 / 0.52);
+    --jj-fg-faint: rgb(250 250 250 / 0.33);
+    --jj-border: rgb(255 255 255 / 0.1);
+    --jj-border-strong: rgb(255 255 255 / 0.17);
+    --jj-wash: rgb(255 255 255 / 0.06);
+    --jj-primary: #fafafa;
+    --jj-primary-hi: #ffffff;
+    --jj-primary-fg: #18181b;
+    --jj-accent: #60a5fa;
+    --jj-accent-soft: rgb(96 165 250 / 0.16);
+    --jj-accent-line: rgb(96 165 250 / 0.45);
     --jj-ref: #e0a13f;
     --jj-ref-soft: rgb(224 161 63 / 0.15);
-    --jj-lane-0: #6ba5ff;
+    --jj-lane-0: #60a5fa;
     --jj-lane-1: #a98cf5;
     --jj-lane-2: #3fbda4;
     --jj-lane-3: #e0a13f;
@@ -106,32 +188,42 @@
     --jj-merged-fg: #bfa0f8;
     --jj-merged-bg: rgb(191 160 248 / 0.13);
     --jj-removed-mark: rgb(238 126 126 / 0.22);
-    --jj-hunk-bg: rgb(232 232 234 / 0.04);
-    --jj-num-fg: rgb(232 232 234 / 0.28);
-    --jj-shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
-    --jj-shadow-pop: 0 16px 48px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.4);
+    --jj-hunk-bg: rgb(255 255 255 / 0.045);
+    --jj-num-fg: rgb(250 250 250 / 0.3);
+    --jj-sheen: rgb(255 255 255 / 0.14);
+    /* Dark needs the opposite trick: a shadow disappears on a dark page, so the
+       lift comes from a hairline of light along the top edge as well. */
+    --jj-shadow-xs: 0 1px 1px rgb(0 0 0 / 0.24);
+    --jj-shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), inset 0 1px 0 rgb(255 255 255 / 0.03);
+    --jj-shadow-raised: 0 6px 18px rgb(0 0 0 / 0.44), 0 1px 2px rgb(0 0 0 / 0.3),
+      inset 0 1px 0 rgb(255 255 255 / 0.05);
+    --jj-shadow-pop: 0 24px 64px rgb(0 0 0 / 0.6), 0 4px 12px rgb(0 0 0 / 0.44),
+      inset 0 1px 0 rgb(255 255 255 / 0.05);
   }
 }
 
 :root[data-jj-theme='dark'] {
   color-scheme: dark;
-  --jj-bg: #131316;
-  --jj-bg-panel: #17171b;
-  --jj-surface: #1c1c21;
-  --jj-surface-2: #212127;
-  --jj-fg: #e8e8ea;
-  --jj-fg-soft: rgb(232 232 234 / 0.74);
-  --jj-fg-muted: rgb(232 232 234 / 0.5);
-  --jj-fg-faint: rgb(232 232 234 / 0.3);
-  --jj-border: rgb(232 232 234 / 0.1);
-  --jj-border-strong: rgb(232 232 234 / 0.17);
-  --jj-wash: rgb(232 232 234 / 0.05);
-  --jj-accent: #6ba5ff;
-  --jj-accent-soft: rgb(107 165 255 / 0.16);
-  --jj-accent-line: rgb(107 165 255 / 0.45);
+  --jj-bg: #09090b;
+  --jj-bg-panel: #0e0e11;
+  --jj-surface: #18181b;
+  --jj-surface-2: #27272a;
+  --jj-fg: #fafafa;
+  --jj-fg-soft: rgb(250 250 250 / 0.74);
+  --jj-fg-muted: rgb(250 250 250 / 0.52);
+  --jj-fg-faint: rgb(250 250 250 / 0.33);
+  --jj-border: rgb(255 255 255 / 0.1);
+  --jj-border-strong: rgb(255 255 255 / 0.17);
+  --jj-wash: rgb(255 255 255 / 0.06);
+  --jj-primary: #fafafa;
+  --jj-primary-hi: #ffffff;
+  --jj-primary-fg: #18181b;
+  --jj-accent: #60a5fa;
+  --jj-accent-soft: rgb(96 165 250 / 0.16);
+  --jj-accent-line: rgb(96 165 250 / 0.45);
   --jj-ref: #e0a13f;
   --jj-ref-soft: rgb(224 161 63 / 0.15);
-  --jj-lane-0: #6ba5ff;
+  --jj-lane-0: #60a5fa;
   --jj-lane-1: #a98cf5;
   --jj-lane-2: #3fbda4;
   --jj-lane-3: #e0a13f;
@@ -145,10 +237,15 @@
   --jj-merged-fg: #bfa0f8;
   --jj-merged-bg: rgb(191 160 248 / 0.13);
   --jj-removed-mark: rgb(238 126 126 / 0.22);
-  --jj-hunk-bg: rgb(232 232 234 / 0.04);
-  --jj-num-fg: rgb(232 232 234 / 0.28);
-  --jj-shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
-  --jj-shadow-pop: 0 16px 48px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.4);
+  --jj-hunk-bg: rgb(255 255 255 / 0.045);
+  --jj-num-fg: rgb(250 250 250 / 0.3);
+  --jj-sheen: rgb(255 255 255 / 0.14);
+  --jj-shadow-xs: 0 1px 1px rgb(0 0 0 / 0.24);
+  --jj-shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), inset 0 1px 0 rgb(255 255 255 / 0.03);
+  --jj-shadow-raised: 0 6px 18px rgb(0 0 0 / 0.44), 0 1px 2px rgb(0 0 0 / 0.3),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --jj-shadow-pop: 0 24px 64px rgb(0 0 0 / 0.6), 0 4px 12px rgb(0 0 0 / 0.44),
+    inset 0 1px 0 rgb(255 255 255 / 0.05);
 }
 
 html,
@@ -158,7 +255,7 @@ body {
   background: var(--jj-bg);
   color: var(--jj-fg);
   font-family: var(--jj-sans);
-  font-size: 13px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
 }
@@ -175,23 +272,451 @@ body {
   box-shadow: var(--jj-focus-ring);
 }
 
+/* A multi-line field is a surface, not a control.
+   "Controls are pills" is a rule about things one line tall, where a full
+   radius reads as a capsule. Applied to a textarea it produces a lozenge with
+   the text sitting in a shrinking middle band — the corners eat the first and
+   last lines. Square, like every other thing you put content into. */
+textarea {
+  border-radius: 0;
+}
+
+/* Selected text takes the accent, like every other selection in the app. The
+   default system highlight is a fourth colour that nobody chose, and it lands
+   on the diff — the one surface where the palette was worked out carefully. */
+::selection {
+  background: var(--jj-accent-soft);
+}
+
+/* Scrollbars. Overlay-thin and drawn only in the track they belong to, because
+   this app is a stack of independently scrolling panes and full-width system
+   bars would put four grey rails on screen at once. They fade up on hover of
+   the pane: present when you are working in it, gone when you are reading. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover,
+*:focus-within {
+  scrollbar-color: var(--jj-border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: var(--jj-r-pill);
+  /* Transparent border with `background-clip` is how a webkit thumb gets inset
+     from its track — there is no padding on a scrollbar part. */
+  border: 3px solid transparent;
+  background-clip: content-box;
+  transition: background-color var(--jj-t-2) ease;
+}
+
+:hover::-webkit-scrollbar-thumb,
+:focus-within::-webkit-scrollbar-thumb {
+  background-color: var(--jj-border-strong);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--jj-fg-faint);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* One switch for the whole app. Motion here is affordance — a fold that opens,
+   a beam that says something is still running — so it degrades to the same
+   states arriving instantly rather than to a different interface. `0.01ms`
+   rather than `none`: animations still fire their `animationend`, so nothing
+   that waits on one is left hanging. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- Fold ------------------------------------------------------------
+   The one disclosure in the app. Everything that opens and closes — the change
+   detail, a proposal thread, a walkthrough step — uses this, so folding is a
+   single gesture the user learns once.
+
+   Height is animated through `grid-template-rows: 1fr → 0fr`, which is the only
+   way to transition to a *content-derived* height: `max-height` needs a magic
+   number that is either too small (content clips) or too large (the close
+   stalls while the box travels through empty space). The inner element carries
+   `min-height: 0` because a grid item's default `auto` minimum would refuse to
+   shrink below its content and the fold would never close. */
+.fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--jj-t-3) var(--jj-ease-out);
+}
+
+.fold > * {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.fold.closed {
+  grid-template-rows: 0fr;
+}
+
+/* ---- Chip ------------------------------------------------------------
+   A rounded square holding one icon, on a soft fill.
+
+   It is the smallest unit of the visual language and it does a specific job:
+   it gives an icon a *body*, so a row that starts with one has a consistent
+   left edge and a consistent optical weight whatever glyph is in it. A bare
+   16px icon beside 13px text reads as an afterthought; the same icon in a 28px
+   chip reads as the row's subject.
+
+   Neutral by default. The `accent`/`warn`/`good` variants are for rows whose
+   subject already has a meaning in the palette — they add no new colour. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--jj-r-chip);
+  background: var(--jj-wash);
+  color: var(--jj-fg-muted);
+  transition:
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    color var(--jj-t-2) var(--jj-ease-out);
+}
+
+.chip svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.chip.sm {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--jj-r-xs);
+}
+
+.chip.sm svg {
+  width: 13px;
+  height: 13px;
+}
+
+.chip.accent {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+}
+
+.chip.warn {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+.chip.good {
+  background: var(--jj-added-bg);
+  color: var(--jj-added-fg);
+}
+
+.chip.ref {
+  background: var(--jj-ref-soft);
+  color: var(--jj-ref);
+}
+
+/* ---- Beam ------------------------------------------------------------
+   A light that runs the border of something still working. It replaces an
+   opacity pulse, which said only "this element is special" — a beam that
+   completes a lap says the work has duration, and the eye reads a lap as
+   progress even when there is no percentage to report.
+
+   Three pieces stacked. `--jj-beam-angle` is a *registered* property, so the
+   browser interpolates it as an angle and the conic gradient can actually
+   spin; an unregistered custom property is a string and would snap from 0 to
+   360. The gradient paints the full ring, and a second conic gradient used as
+   a mask lights only the arc — so what travels is the light, not the ring.
+   `mask-composite: xor` against a content-box rectangle is what hollows the
+   middle out, leaving a border rather than a filled card.
+
+   Applied only where something is genuinely in flight. A beam on an idle
+   control is the decorative version of a progress bar that never moves. */
+@property --jj-beam-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.beam {
+  position: relative;
+}
+
+.beam::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--jj-beam-angle),
+    transparent 0%,
+    transparent 54%,
+    color-mix(in srgb, var(--jj-beam-color, var(--jj-accent)) 25%, transparent) 60%,
+    var(--jj-beam-color, var(--jj-accent)) 66%,
+    color-mix(in srgb, var(--jj-beam-color, var(--jj-accent)) 25%, transparent) 72%,
+    transparent 78%,
+    transparent 100%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  /* The bloom, and the reason there is only one pseudo-element here. A second
+     blurred copy of the gradient would be an unmasked 60° wedge — a smear
+     across the whole card, not a glow along its edge. `drop-shadow` runs
+     *after* the mask, so it can only see the sliver of border that survived it
+     and traces exactly that. */
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--jj-beam-color, var(--jj-accent)) 60%, transparent));
+  animation: jj-beam-spin 2.4s linear infinite;
+}
+
+@keyframes jj-beam-spin {
+  to {
+    --jj-beam-angle: 360deg;
+  }
+}
+
+/* Without motion the beam has nothing to say, so it becomes a plain lit border
+   — still visibly "running", just not moving. */
+@media (prefers-reduced-motion: reduce) {
+  .beam::after {
+    background: var(--jj-beam-color, var(--jj-accent));
+    filter: none;
+    opacity: 0.5;
+  }
+}
+
+/* The chevron is the same glyph in both states, turned. Two different glyphs
+   swap; one glyph rotating shows which way the content went. */
+.fold-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--jj-fg-faint);
+  user-select: none;
+  transition:
+    transform var(--jj-t-2) var(--jj-ease-out),
+    color var(--jj-t-1) ease;
+}
+
+.fold-chevron svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+/* Closed means "the content is off to the side", so the chevron points the way
+   it would travel to open. */
+.fold-chevron.closed {
+  transform: rotate(-90deg);
+}
+
+/* A menu's chevron starts pointing down — the panel is *below* the button —
+   and flips when it is showing. Same glyph, different question. */
+.fold-chevron.up {
+  transform: rotate(180deg);
+}
+
 /* ---- App shell (jj-app is light DOM; all chrome styles live here) ---- */
 
+/* The shell is a page with two panels on it, not three regions divided by
+   rules. The sidebar is inset and rounded like every other surface in the app,
+   which is what makes the whole window read as composed rather than as a
+   window that has been partitioned. */
+/* Rail | sidebar | resize | main. The rail is a fixed column outside the
+   sidebar panel, so the panel's full width belongs to its content. */
 jj-app {
   display: grid;
-  grid-template-columns: var(--jj-sidebar-w, 292px) 4px 1fr;
-  grid-template-rows: auto 1fr;
+  /* `minmax(0, 1fr)`, never a bare `1fr`. A grid track's automatic minimum is
+     `min-content`, so the diff pane — whose min-content is its widest unwrapped
+     line — pushed the whole grid wider than the window and the *shell* scrolled
+     sideways, taking the toolbar off screen. The pane scrolls its own code
+     instead; the app frame never moves. */
+  grid-template-columns: 52px var(--jj-sidebar-w, 292px) 4px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100vh;
+  background: var(--jj-bg);
+  padding-bottom: var(--jj-s-3);
+  box-sizing: border-box;
+  gap: 0;
+  /* Belt and braces: nothing inside may scroll the shell in either direction. */
+  overflow: hidden;
+  transition: grid-template-columns var(--jj-t-3) var(--jj-ease-out);
+}
+
+/* Folded: the sidebar column and its resize handle go to zero and the diff
+   takes the space. The rail stays — it is how the panel comes back. The two
+   track lists have the same shape so the widths interpolate rather than jump. */
+jj-app.sidebar-collapsed {
+  grid-template-columns: 52px 0px 0px minmax(0, 1fr);
+}
+
+jj-app.sidebar-collapsed > aside {
+  opacity: 0;
+  pointer-events: none;
+}
+
+jj-app > .rail {
+  grid-row: 2;
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--jj-s-2);
+  padding: var(--jj-s-3) 0;
+}
+
+jj-app .rail-item {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: var(--jj-r-chip);
+  background: none;
+  color: var(--jj-fg-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    color var(--jj-t-2) var(--jj-ease-out);
+}
+
+jj-app .rail-item svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+jj-app .rail-item:hover {
+  background: var(--jj-wash);
+  color: var(--jj-fg);
+}
+
+jj-app .rail-item.active {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+}
+
+/* Folded, the active pane is still *selected* — it is the one that comes back —
+   but nothing is showing, so the accent fill would be claiming otherwise. */
+jj-app.sidebar-collapsed .rail-item.active {
+  background: var(--jj-wash);
+  color: var(--jj-fg-soft);
+}
+
+/* No leading bar here. Everywhere else in the app selection is "soft fill plus
+   a bar on the leading edge", but the rail's leading edge *is* the window edge
+   — the bar had nowhere to sit and was clipped to a sliver. The accent chip is
+   the whole marker on this one control. */
+
+jj-app .rail-count {
+  position: absolute;
+  top: 1px;
+  right: -2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-surface-2);
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--jj-bg);
+}
+
+jj-app .rail-item.active .rail-count {
+  background: var(--jj-accent);
+  color: var(--jj-primary-fg);
+}
+
+/* The pane's name, which the rail icon does not spell out. */
+jj-app .pane-head {
+  display: flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  padding: var(--jj-s-4) var(--jj-s-4) var(--jj-s-2);
+}
+
+jj-app .pane-title {
+  margin: 0;
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-lg);
+  font-weight: 650;
+  letter-spacing: -0.017em;
+  color: var(--jj-fg);
 }
 
 jj-app > header {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
+  gap: var(--jj-s-3);
+  /* The title bar is an Overlay (tauri.conf.json), so the traffic lights float
+     over the page rather than sitting in a strip above it. The header clears
+     them *vertically* — the repo name sits below the lights, at the same left
+     edge as everything else — rather than being pushed 78px right to sit beside
+     them, which left the masthead floating in the middle of nothing.
+
+     macOS-specific, and it costs a row of empty pixels elsewhere; that is the
+     price of one layout for every platform, and it reads as breathing room
+     rather than as a mistake.
+
+     The left inset is 8px, not 12: `.repo-button` carries 4px of its own
+     padding around the chip, and the two together put the chip's centre at
+     26px — the same axis the rail's icons sit on, one row below. */
+  padding: var(--jj-s-8) var(--jj-s-4) var(--jj-s-4) var(--jj-s-3);
+  background: var(--jj-bg);
+  z-index: 20;
+  /* This row is the window's drag handle (`data-tauri-drag-region`). Selecting
+     it instead of moving the window is never what a drag here means. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Full height, so the drag region covers the whole row rather than a band
+   through the middle of it. */
+jj-app > header .spacer {
+  align-self: stretch;
 }
 
 /* Repo switcher */
@@ -204,30 +729,38 @@ jj-app .repo-menu-root {
 jj-app .repo-button {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--jj-s-3);
   border: 1px solid transparent;
-  border-radius: var(--jj-r-sm);
+  border-radius: var(--jj-r-chip);
   background: none;
   color: var(--jj-fg);
   font: inherit;
-  padding: 4px 9px;
+  padding: 4px 10px 4px 4px;
   cursor: pointer;
-  transition: background-color 0.14s ease;
+  transition: background-color var(--jj-t-2) var(--jj-ease-out);
 }
 
 jj-app .repo-button:hover {
   background: var(--jj-wash);
 }
 
+/* The repository name is the app's masthead — the only thing in the header
+   that says which project you are looking at, so it gets weight the toolbar
+   beside it does not. */
 jj-app .repo-button .root {
-  font-weight: 600;
-  font-size: 13.5px;
-  letter-spacing: -0.01em;
+  font-weight: 650;
+  font-size: var(--jj-text-lg);
+  letter-spacing: -0.017em;
 }
 
-jj-app .repo-button .caret {
-  font-size: 8px;
-  color: var(--jj-fg-faint);
+jj-app .repo-button .fold-chevron {
+  width: 12px;
+  height: 12px;
+}
+
+jj-app .repo-button .fold-chevron svg {
+  width: 12px;
+  height: 12px;
 }
 
 jj-app .repo-icon {
@@ -243,17 +776,21 @@ jj-app .repo-menu {
   max-width: 440px;
   background: var(--jj-surface);
   border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-lg);
   box-shadow: var(--jj-shadow-pop);
-  padding: 5px;
+  /* Vertical only: the rows carry their own horizontal padding so a hover fill
+     reaches both edges instead of floating as an inset pill. */
+  padding: var(--jj-s-1) 0;
   z-index: 50;
-  animation: jj-pop 0.16s ease-out;
+  animation: jj-pop var(--jj-t-2) var(--jj-ease-pop);
 }
 
+/* Menus come *from* their trigger rather than fading in on top of it: the
+   transform origin is the top edge, so the panel unfolds downward out of the
+   control that opened it. */
 @keyframes jj-pop {
   from {
     opacity: 0;
-    transform: translateY(-6px) scale(0.985);
+    transform: translateY(-8px) scale(0.96);
   }
 }
 
@@ -263,13 +800,13 @@ jj-app .repo-item {
   gap: 9px;
   width: 100%;
   border: 0;
-  border-radius: var(--jj-r-sm);
+  border-radius: 0;
   background: none;
   color: var(--jj-fg);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--jj-text-base);
   text-align: left;
-  padding: 7px 10px;
+  padding: 7px var(--jj-s-4);
   cursor: pointer;
   transition: background-color 0.12s ease;
   box-sizing: border-box;
@@ -299,9 +836,8 @@ jj-app .repo-item .repo-path {
 jj-app .repo-item.open-folder {
   color: var(--jj-accent);
   font-weight: 550;
-  margin-top: 3px;
+  margin-top: var(--jj-s-1);
   border-top: 1px solid var(--jj-border);
-  border-radius: 0 0 var(--jj-r-sm) var(--jj-r-sm);
   padding-top: 9px;
   justify-content: center;
 }
@@ -310,10 +846,7 @@ jj-app .repo-item.open-folder {
    neutral rather than accent-tinted — the accent means selection, and this is
    context, not a cursor. */
 jj-app .pr-banner {
-  padding: 11px 16px 10px;
-  border-bottom: 1px solid var(--jj-border);
-  border-left: 3px solid var(--jj-fg-faint);
-  background: var(--jj-bg-panel);
+  padding: var(--jj-s-4) var(--jj-s-5);
 }
 
 jj-app .pr-head {
@@ -407,7 +940,7 @@ jj-app .pr-state {
   font-weight: 600;
   letter-spacing: 0.01em;
   text-transform: capitalize;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   padding: 2px 9px 2px 7px;
   border: 1px solid transparent;
   background: var(--jj-wash);
@@ -465,23 +998,30 @@ jj-app .pr-conflict {
   font-weight: 550;
 }
 
-/* The proposal as its own view, sharing the ops view's shape: it replaces the
-   diff rather than hanging above it, because the description and thread are
-   prose of unbounded length and the code is what the pane is for. */
-/* The proposal view owns the pane. Its siblings — the change detail card, the
-   conflict/review banners, the breadcrumb — are all context for the *diff*, and
-   leaving them mounted left the view with a third of the height and a band of
-   dead space beneath it. Hidden here rather than unmounted in the template:
-   they are spread across a long render and this keeps "a view replaces the
-   pane" as one statement instead of a condition repeated on each. */
-jj-app main.showing-pr > *:not(.pr-view) {
+/* A view owns the pane. The proposal and the operation log both replace the
+   diff rather than hanging above it — their content is prose or a history of
+   unbounded length, and the code is what the pane is for.
+
+   Their siblings — the change detail card, the conflict and review banners —
+   are all context for the *diff*, so leaving them mounted gave the view a
+   fraction of the height with a band of dead space under it, and left banners
+   about a change on screen while you were reading something else entirely.
+   Hidden here rather than unmounted in the template: those siblings are spread
+   across a long render, and this keeps "a view replaces the pane" as one
+   statement instead of a condition repeated on each of them. */
+jj-app main.showing-pr > *:not(.pr-view),
+jj-app main.showing-ops > *:not(.ops-view) {
   display: none;
 }
 
 jj-app .pr-view {
-  padding: 16px 20px 24px;
+  padding: var(--jj-s-5) var(--jj-s-6) var(--jj-s-6);
   overflow-y: auto;
   box-sizing: border-box;
+  border: 0;
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  margin-bottom: var(--jj-s-4);
   /* `main` is a flex column and the diff pane is a sibling, so `height: 100%`
      resolves and is then shrunk — the view ends up a fraction of the pane with
      dead space under it. Claim the free space instead, and `min-height: 0` so
@@ -500,8 +1040,9 @@ jj-app .pr-view-head {
 jj-app .pr-view-head h2 {
   margin: 0;
   font-family: var(--jj-sans);
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--jj-text-title);
+  font-weight: 650;
+  letter-spacing: -0.02em;
   color: var(--jj-fg);
 }
 
@@ -596,7 +1137,7 @@ jj-app .pr-anchor {
   font-size: 10.5px;
   color: var(--jj-fg-muted);
   background: var(--jj-wash);
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   padding: 1px 7px;
 }
 
@@ -649,22 +1190,42 @@ jj-app .pr-checks.pending {
   color: var(--jj-fg-muted);
 }
 
-/* Pulse, never spin (DESIGN.md §6). */
+/* A solid dot that sends out a ring, the way a live indicator does. The dot
+   itself stays at full strength — an opacity pulse dims the only thing telling
+   you the state, so at the bottom of every cycle the badge reads as disabled. */
 jj-app .pr-checks.pending .dot {
+  position: relative;
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   background: currentColor;
-  animation: jj-pulse 1.4s ease-in-out infinite;
+  flex: none;
 }
 
-@keyframes jj-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
+jj-app .pr-checks.pending .dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid currentColor;
+  animation: jj-ping 1.8s var(--jj-ease-out) infinite;
+}
+
+@keyframes jj-ping {
+  from {
+    transform: scale(1);
+    opacity: 0.7;
   }
-  50% {
-    opacity: 1;
+  to {
+    transform: scale(3);
+    opacity: 0;
+  }
+}
+
+/* No ring to send, so the dot carries it the old way. */
+@media (prefers-reduced-motion: reduce) {
+  jj-app .pr-checks.pending .dot::after {
+    display: none;
   }
 }
 
@@ -737,7 +1298,6 @@ jj-app .pr-review-body {
   padding: 9px 11px;
   resize: vertical;
   border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-sm);
   background: var(--jj-bg);
   color: var(--jj-fg);
   font-family: var(--jj-mono);
@@ -757,24 +1317,23 @@ jj-app .file-menu {
   position: fixed;
   background: var(--jj-surface);
   border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-lg);
   box-shadow: var(--jj-shadow-pop);
-  padding: 5px;
+  padding: var(--jj-s-1) 0;
   z-index: 60;
-  animation: jj-pop 0.16s ease-out;
+  animation: jj-pop var(--jj-t-2) var(--jj-ease-pop);
 }
 
 jj-app .file-menu button {
   display: block;
   width: 100%;
   border: 0;
-  border-radius: var(--jj-r-sm);
+  border-radius: 0;
   background: none;
   color: var(--jj-fg);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--jj-text-base);
   text-align: left;
-  padding: 6px 10px;
+  padding: 7px var(--jj-s-4);
   cursor: pointer;
   transition: background-color 0.12s ease;
   box-sizing: border-box;
@@ -795,8 +1354,13 @@ jj-app .spacer {
 
 /* Controls */
 
+/* The button is the most repeated object in the app, so it carries the whole
+   motion vocabulary in miniature: it lifts toward the cursor on hover and is
+   pushed back down on press. Lift is `translateY` plus a step up the elevation
+   ramp — the shadow is what makes it read as height rather than as a jump. */
 jj-app button.tool,
 jj-app a.tool {
+  position: relative;
   border: 1px solid var(--jj-border-strong);
   background: var(--jj-surface);
   color: var(--jj-fg-soft);
@@ -804,14 +1368,16 @@ jj-app a.tool {
   font-size: 12px;
   font-weight: 500;
   border-radius: var(--jj-r-sm);
-  padding: 5px 11px;
+  padding: 6px 13px;
   cursor: pointer;
+  isolation: isolate;
   box-shadow: var(--jj-shadow-card);
   transition:
-    background-color 0.14s ease,
-    color 0.14s ease,
-    border-color 0.14s ease,
-    transform 0.1s ease;
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    color var(--jj-t-2) var(--jj-ease-out),
+    border-color var(--jj-t-2) var(--jj-ease-out),
+    box-shadow var(--jj-t-2) var(--jj-ease-out),
+    transform var(--jj-t-2) var(--jj-ease-out);
 }
 
 jj-app a.tool {
@@ -826,7 +1392,7 @@ jj-app button.tool.icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 5px 8px;
+  padding: 6px 9px;
   color: var(--jj-fg-muted);
 }
 
@@ -836,26 +1402,25 @@ jj-app button.tool.icon:hover:not(:disabled) {
 
 jj-app button.tool svg {
   display: block;
+  transition: transform var(--jj-t-2) var(--jj-ease-out);
 }
 
-jj-app button.tool:hover,
+jj-app button.tool:hover:not(:disabled),
 jj-app a.tool:hover {
   background: var(--jj-surface-2);
   color: var(--jj-fg);
+  border-color: var(--jj-border-strong);
+  box-shadow: var(--jj-shadow-raised);
+  transform: translateY(-1px);
 }
 
-jj-app button.tool:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-jj-app button.tool.generating {
-  animation: jj-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes jj-pulse {
-  50% {
-    opacity: 0.5;
-  }
+/* Press cancels the lift and takes a sliver of scale with it. Faster than the
+   release, so the button feels like it resists rather than sags. */
+jj-app button.tool:active:not(:disabled),
+jj-app a.tool:active {
+  transform: translateY(0) scale(0.975);
+  box-shadow: var(--jj-shadow-xs);
+  transition-duration: var(--jj-t-1);
 }
 
 jj-app button.tool.on {
@@ -864,15 +1429,48 @@ jj-app button.tool.on {
   color: var(--jj-accent);
 }
 
+/* The primary action is neutral — near-black on a light page, near-white on a
+   dark one. It was a blue fill, which put the app's loudest colour next to a
+   diff whose green and red are the only colours that mean anything, and made
+   the accent do two jobs at once: "press this" and "this is selected". Flat,
+   because a gradient on the one high-contrast object in the view is the kind of
+   detail that reads as a theme rather than as a control. */
 jj-app button.tool.primary {
-  background: var(--jj-accent);
-  border-color: transparent;
-  color: #fff;
+  background: var(--jj-primary);
+  border-color: var(--jj-primary);
+  color: var(--jj-primary-fg);
+  box-shadow:
+    var(--jj-shadow-card),
+    inset 0 1px 0 var(--jj-sheen);
 }
 
-jj-app button.tool.primary:hover {
-  background: color-mix(in srgb, var(--jj-accent) 88%, #000);
-  color: #fff;
+/* The sheen crosses on hover and is gone by the time the pointer settles: a
+   highlight that stayed put would just be a lighter button. Painted on a
+   pseudo-element so the gradient can move without the label moving with it. */
+jj-app button.tool.primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 30%, var(--jj-sheen) 50%, transparent 70%);
+  background-size: 260% 100%;
+  background-position: 130% 0;
+  opacity: 0;
+  transition:
+    background-position var(--jj-t-4) var(--jj-ease-out),
+    opacity var(--jj-t-1) ease;
+}
+
+jj-app button.tool.primary:hover:not(:disabled) {
+  background: var(--jj-primary-hi);
+  border-color: var(--jj-primary-hi);
+  color: var(--jj-primary-fg);
+}
+
+jj-app button.tool.primary:hover:not(:disabled)::after {
+  background-position: -30% 0;
+  opacity: 1;
 }
 
 jj-app button.tool.danger {
@@ -880,9 +1478,10 @@ jj-app button.tool.danger {
   border-color: color-mix(in srgb, var(--jj-removed-fg) 32%, transparent);
 }
 
-jj-app button.tool.danger:hover {
+jj-app button.tool.danger:hover:not(:disabled) {
   background: var(--jj-removed-bg);
   color: var(--jj-removed-fg);
+  border-color: color-mix(in srgb, var(--jj-removed-fg) 50%, transparent);
 }
 
 jj-app button.tool:disabled {
@@ -891,205 +1490,324 @@ jj-app button.tool:disabled {
   box-shadow: none;
 }
 
+/* A button that owns its row. In a narrow pane a control sized to its label
+   leaves a ragged edge against everything else, all of which is full width. */
+jj-app button.tool.block {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+}
+
+/* The last thing in a sidebar pane, held off the content above it. */
+jj-app .pane-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jj-s-3);
+  padding: var(--jj-s-4);
+}
+
+/* A run of icon buttons reads as one instrument rather than four loose keys:
+   the group carries the border and the shadow, the keys carry only their own
+   hover. Hairlines between them come from the group, so there is no doubled
+   1px seam where two borders meet. */
+jj-app .tool-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--jj-border-strong);
+  border-radius: var(--jj-r-sm);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  overflow: hidden;
+}
+
+jj-app .tool-group button.tool {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: none;
+  transform: none;
+}
+
+jj-app .tool-group button.tool + button.tool {
+  box-shadow: inset 1px 0 0 var(--jj-border);
+}
+
+jj-app .tool-group button.tool:hover:not(:disabled) {
+  background: var(--jj-wash);
+  transform: none;
+}
+
+jj-app .tool-group button.tool:active:not(:disabled) {
+  background: var(--jj-border);
+  transform: none;
+}
+
+/* The one control that survives a press: the group has no shadow to take away,
+   so the glyph itself dips instead. */
+jj-app .tool-group button.tool:active:not(:disabled) svg {
+  transform: scale(0.9);
+}
+
+/* The palette opener wears its own shortcut. It is the one control whose label
+   *is* a key, and printing it as keycaps says "this is reachable from the
+   keyboard" without a line of help text. */
+jj-app button.tool.palette-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 8px;
+}
+
+jj-app .palette-key kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: var(--jj-r-xs);
+  background: var(--jj-wash);
+  box-shadow: inset 0 -1px 0 var(--jj-border);
+  font-family: var(--jj-sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--jj-fg-muted);
+  transition: color var(--jj-t-2) var(--jj-ease-out);
+}
+
+jj-app button.tool.palette-key:hover kbd {
+  color: var(--jj-fg);
+}
+
 /* ---- Sidebar ---- */
 
 jj-app > aside {
-  border-right: 1px solid var(--jj-border);
+  grid-row: 2;
+  grid-column: 2;
+  min-width: 0;
+  margin: var(--jj-s-3) 0 0 0;
+  border: 0;
   background: var(--jj-bg-panel);
-  overflow-y: auto;
-  overflow-x: hidden;
+  box-shadow: var(--jj-shadow-card);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-bottom: var(--jj-s-3);
+  transition: opacity var(--jj-t-2) var(--jj-ease-out);
 }
-
-jj-app .tabs {
-  display: flex;
-  gap: 2px;
-  padding: 8px 8px 0;
-}
-
-jj-app .tab {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 0;
-  border-radius: var(--jj-r-sm);
-  background: none;
-  color: var(--jj-fg-muted);
-  font-family: var(--jj-sans);
-  font-size: 12px;
-  font-weight: 550;
-  padding: 6px 8px;
-  cursor: pointer;
-  transition:
-    background-color 0.14s ease,
-    color 0.14s ease;
-}
-
-jj-app .tab:hover {
-  background: var(--jj-wash);
-  color: var(--jj-fg);
-}
-
-jj-app .tab.active {
-  background: var(--jj-accent-soft);
-  color: var(--jj-accent);
-}
-
-jj-app .tab .count {
-  font-family: var(--jj-mono);
-  font-size: 10px;
-  border-radius: 999px;
-  padding: 1px 6px;
-  background: var(--jj-wash);
-  color: var(--jj-fg-muted);
-}
-
-jj-app .tab.active .count {
-  background: var(--jj-accent-soft);
-  color: var(--jj-accent);
-}
-
-jj-app .tab .stale-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--jj-ref);
-  flex: none;
-}
-
-/* Revset filter — compact single row */
 
 jj-app .revset-bar {
   display: flex;
-  flex-direction: column; /* filter and search each get their own row */
-  gap: 6px;
-  padding: 6px 8px;
+  flex-direction: column; /* scope and search each get their own row */
+  gap: var(--jj-s-3);
+  padding: var(--jj-s-2) var(--jj-s-4) var(--jj-s-4);
 }
 
-/* Revset presets. The active one is the only tag wearing its name; the rest collapse
-   into a deck of coins beside it, and a coin names itself when you point at it —
-   one at a time, so the row never turns into a panel. */
+/* Scope + search, stacked.
 
-jj-app .revset-tags {
+   The presets used to be a deck of pills that collapsed to single initials and
+   named themselves on hover. It was a nice trick and a bad control: five of the
+   six options were invisible, so the only way to find out what the filters were
+   was to sweep the pointer across them one at a time. A named button that opens
+   a labelled menu shows every option in one glance and costs one click. */
+
+jj-app .scope-root {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 4px;
 }
 
-jj-app .preset {
-  position: relative; /* so the deck can stack front-to-back */
-  flex: none;
+jj-app .scope-button {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: var(--jj-s-1);
+  width: 100%;
   box-sizing: border-box;
-  height: 21px; /* fixed, so losing the padding doesn't shrink a collapsed coin */
-  max-width: 14ch;
-  padding: 0 9px;
-  overflow: hidden;
-  white-space: nowrap;
-  border: 1px solid var(--jj-border);
-  border-radius: 999px;
-  background: var(--jj-surface);
-  color: var(--jj-fg-muted);
-  font-family: var(--jj-sans);
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    min-width 0.18s ease,
-    max-width 0.18s ease,
-    padding 0.18s ease,
-    margin 0.18s ease,
-    color 0.14s ease,
-    border-color 0.14s ease,
-    background-color 0.14s ease;
-}
-
-jj-app .preset.on {
-  z-index: 2; /* the active tag is the top card */
-  background: var(--jj-accent-soft);
-  border-color: var(--jj-accent-line);
-  color: var(--jj-accent);
-  font-weight: 550;
-}
-
-jj-app .preset-label {
-  transition: opacity 0.14s ease;
-}
-
-/* Collapsed: as wide as it is tall, so the pill reads as a round coin. Labels fade
-   rather than clip — no half-letters showing through the edge.
-
-   The delay is the breathing room: opening is instant (that state carries no delay),
-   but closing waits a beat, so clipping the edge of a pill on the way past doesn't
-   snap it shut under the cursor. */
-jj-app .preset:not(.on):not(:hover):not(:focus-visible) {
-  min-width: 21px;
-  max-width: 21px;
-  padding: 0;
-  transition-delay: 0.2s;
-}
-
-jj-app .preset:not(.on):not(:hover):not(:focus-visible) .preset-label {
-  opacity: 0;
-  transition-delay: 0.2s;
-}
-
-/* Coins overlap into a stack, but stay clear of the active tag and of the one being
-   read — the hovered tag pulls out of the deck rather than growing out of it. No delay
-   declared here: it would land on a hovered coin too and stall its own opening. */
-jj-app .preset:not(.on) + .preset:not(.on) {
-  margin-left: -11px;
-}
-
-jj-app .preset:not(.on) + .preset:not(.on):hover,
-jj-app .preset:not(.on) + .preset:not(.on):focus-visible,
-jj-app .preset:not(.on):hover + .preset:not(.on),
-jj-app .preset:not(.on):focus-visible + .preset:not(.on) {
-  margin-left: 0;
-}
-
-jj-app .preset:hover,
-jj-app .preset:focus-visible {
-  z-index: 3;
-  color: var(--jj-fg);
-  border-color: var(--jj-border-strong);
-}
-
-jj-app .revset-input {
-  flex: none;
-  min-width: 0;
+  padding: 5px var(--jj-s-3);
   border: 1px solid var(--jj-border);
   border-radius: var(--jj-r-sm);
   background: var(--jj-surface);
-  color: var(--jj-fg);
+  color: var(--jj-fg-soft);
   font-family: var(--jj-sans);
-  font-size: 11px;
-  padding: 3px 8px;
+  font-size: var(--jj-text-sm);
+  font-weight: 550;
+  cursor: pointer;
+  transition:
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    border-color var(--jj-t-2) var(--jj-ease-out),
+    color var(--jj-t-2) var(--jj-ease-out);
 }
 
-jj-app .revset-input:focus {
-  outline: none;
+jj-app .scope-button:hover {
+  background: var(--jj-surface-2);
+  border-color: var(--jj-border-strong);
+  color: var(--jj-fg);
+}
+
+jj-app .scope-label {
+  flex: 1;
+  text-align: left;
+}
+
+jj-app .scope-button .fold-chevron {
+  width: 11px;
+  height: 11px;
+  color: currentColor;
+  opacity: 0.6;
+}
+
+jj-app .scope-button .fold-chevron svg {
+  width: 11px;
+  height: 11px;
+}
+
+jj-app .scope-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding: var(--jj-s-1) 0;
+  border: 1px solid var(--jj-border);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-pop);
+  animation: jj-pop var(--jj-t-2) var(--jj-ease-pop);
+}
+
+jj-app .scope-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--jj-s-2);
+  width: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--jj-fg-soft);
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-base);
+  text-align: left;
+  padding: 7px var(--jj-s-4);
+  cursor: pointer;
+  transition:
+    background-color var(--jj-t-1) ease,
+    color var(--jj-t-1) ease;
+}
+
+jj-app .scope-item:hover {
+  background: var(--jj-wash);
+  color: var(--jj-fg);
+}
+
+jj-app .scope-item.on {
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+}
+
+jj-app .scope-item-label {
+  font-weight: 550;
+  flex: none;
+}
+
+jj-app .scope-item code {
+  font-family: var(--jj-mono);
+  font-size: 10px;
+  color: var(--jj-fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  text-align: right;
+}
+
+jj-app .scope-item.on code {
+  color: color-mix(in srgb, var(--jj-accent) 70%, transparent);
+}
+
+/* A text field is a pill with its icon inside it, not a rectangle with a label
+   above it. The icon lives in the same box as the caret so the whole thing is
+   one target and one focus ring. */
+jj-app .field {
+  display: flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  padding: 0 var(--jj-s-4);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-surface);
+  transition:
+    border-color var(--jj-t-2) var(--jj-ease-out),
+    box-shadow var(--jj-t-2) var(--jj-ease-out);
+}
+
+jj-app .field:focus-within {
   border-color: var(--jj-accent-line);
   box-shadow: var(--jj-focus-ring);
 }
 
+jj-app .field-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--jj-fg-faint);
+  transition: color var(--jj-t-2) var(--jj-ease-out);
+}
+
+jj-app .field-icon svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+jj-app .field:focus-within .field-icon {
+  color: var(--jj-accent);
+}
+
+jj-app .revset-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--jj-fg);
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-sm);
+  padding: 6px 0;
+}
+
+jj-app .revset-input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
 /* Sidebar resize handle */
 
+/* Invisible until wanted. With the sidebar inset as its own panel there is
+   already a gap between the two surfaces; a permanent grey rail down it would
+   put back the divider the panels were meant to replace. */
 jj-app .sidebar-resize {
   cursor: col-resize;
-  background: var(--jj-border);
   grid-row: 2;
-  grid-column: 2;
-  transition: background-color 0.12s ease;
+  grid-column: 3;
+  position: relative;
 }
-jj-app .sidebar-resize:hover {
+
+jj-app .sidebar-resize::after {
+  content: '';
+  position: absolute;
+  top: var(--jj-s-5);
+  bottom: var(--jj-s-5);
+  left: 1px;
+  width: 2px;
+  border-radius: var(--jj-r-pill);
   background: var(--jj-accent-line);
+  opacity: 0;
+  transition: opacity var(--jj-t-2) var(--jj-ease-out);
+}
+
+jj-app .sidebar-resize:hover::after {
+  opacity: 1;
 }
 
 /* Walkthrough tab */
@@ -1101,37 +1819,69 @@ jj-app .walkthrough-empty {
   text-align: center;
 }
 
-jj-app .walkthrough-generate {
-  padding: 20px 16px;
+/* Agent at work. A card rather than a line of text: the wait has a shape, so
+   the panel does not look like it failed to load something. */
+jj-app .walkthrough-working {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  text-align: center;
+  gap: var(--jj-s-2);
+  margin: var(--jj-s-4) var(--jj-s-3);
+  padding: var(--jj-s-6) var(--jj-s-5) var(--jj-s-6);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  animation: jj-rise var(--jj-t-3) var(--jj-ease-out);
+}
+
+jj-app .walkthrough-working jj-orbs {
+  margin-bottom: var(--jj-s-2);
+}
+
+jj-app .working-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--jj-fg);
+}
+
+jj-app .working-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--jj-fg-muted);
+  max-width: 30ch;
+}
+
+jj-app .walkthrough-generate {
+  padding: var(--jj-s-6) var(--jj-s-5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--jj-s-4);
 }
 jj-app .walkthrough-generate p {
   color: var(--jj-fg-muted);
   font-size: 12.5px;
   margin: 0;
 }
-jj-app .walkthrough-generate .stale-note {
-  color: var(--jj-warn, #c89a2e);
-  font-size: 11px;
+/* The caption above whatever action resolves it. Amber rather than red: a
+   walkthrough written against an older revision is out of date, not broken. */
+jj-app .stale-note {
+  margin: 0;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--jj-ref);
+  font-size: var(--jj-text-sm);
+  line-height: 1.45;
 }
-jj-app .walkthrough-generate button.primary {
-  background: var(--jj-accent);
-  color: #fff;
-  border-color: var(--jj-accent);
-}
+/* Nothing: `.tool.primary` already styles this, and overriding it here to blue
+   was how the one primary button in the sidebar ended up a different colour
+   from every other primary button in the app. */
 
-jj-app .walkthrough-stale {
-  padding: 6px 10px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11.5px;
-  color: var(--jj-warn, #c89a2e);
-  border-top: 1px solid var(--jj-border);
-}
 
 jj-app .section-title {
   font-size: 10.5px;
@@ -1142,8 +1892,11 @@ jj-app .section-title {
   padding: 10px 12px 4px;
 }
 
+/* No side padding: the selected row runs the full width of the pane and its
+   cursor bar sits on the pane's own edge, rather than floating in an 8px
+   margin with a rounded corner of its own. */
 jj-app .stack {
-  padding: 4px 6px 8px;
+  padding: 0 0 var(--jj-s-3);
   overflow-y: auto;
 }
 
@@ -1201,7 +1954,7 @@ jj-app .tag {
   font-family: var(--jj-sans);
   font-size: 10.5px;
   font-weight: 550;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   padding: 1.5px 8px;
   background: var(--jj-ref-soft);
   color: var(--jj-ref);
@@ -1311,45 +2064,139 @@ jj-app .context-card .progress {
 
 /* ---- Main pane ---- */
 
+/* The main pane is a *page*, and everything above the diff is a card on it.
+   Before, each band ran edge to edge with a hairline under it and the pane read
+   as a stack of rules — a form, not a workspace. Cards give each thing its own
+   body and let the page show between them, which is what makes the eye group
+   them as separate objects instead of one striped region.
+   The diff is the exception, below: it is the content, and code width is worth
+   more than a symmetric gutter. */
 jj-app > main {
+  grid-row: 2;
+  grid-column: 4;
   min-height: 0;
+  /* Lets the column actually shrink — a flex/grid item defaults to a
+     `min-width: auto` that refuses to go below its content. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: var(--jj-s-3);
+  /* Even on both sides. The left was 0 on the theory that the resize column
+     supplied the gap, but that column is 4px and the right gutter is 8, so the
+     pane sat visibly off-centre in its own window. */
+  padding: var(--jj-s-3) var(--jj-s-3) 0 var(--jj-s-3);
+  box-sizing: border-box;
+  /* Flat. There was an "ambient" pair of radial tints along the top here, meant
+     to give the page a direction. On a light page it was invisible; on a dark
+     one it was a blue smear in the gap beside the first card — the eye read it
+     as a rendering artefact, not as atmosphere. A page that is one colour is
+     not a failure of imagination when everything on it is a card. */
   background: var(--jj-bg);
+}
+
+/* The diff is the content, so it gets a body of its own rather than sitting on
+   the page: one large card filling the rest of the pane, with the file cards
+   inside it. It is the only surface in the app the eye should end up on. */
+jj-app > main > jj-patch-view {
+  border: 0;
+  background: var(--jj-bg-panel);
+  box-shadow: var(--jj-shadow-card);
+  overflow: hidden;
+  margin-bottom: var(--jj-s-1);
+}
+
+/* The shared body of everything that sits on that page.
+
+   No border and no radius: the card is told apart from the page by being a
+   different colour, which is one signal instead of three. The shadow stays —
+   it is what says "in front of", and it is the only thing left doing that. */
+jj-app .banner,
+jj-app .detail,
+jj-app .describe,
+jj-app .walk-banner,
+jj-app .pr-banner,
+jj-app .search-bar,
+jj-app .status,
+jj-app .outcome {
+  border: 0;
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  box-sizing: border-box;
+  flex: none;
+}
+
+/* A view swapping into the pane rises rather than appearing. It is the same
+   gesture as the empty state's copy and the working card's — one arrival
+   animation, so a screen the user has not seen before still behaves the way
+   the rest of the app taught them. */
+jj-app .ops-view,
+jj-app .pr-view {
+  animation: jj-rise var(--jj-t-3) var(--jj-ease-out);
 }
 
 /* Working-copy describe row */
 
 jj-app .describe {
   display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
+  flex-direction: column;
+  gap: var(--jj-s-2);
+  padding: var(--jj-s-4) var(--jj-s-5) var(--jj-s-4);
 }
 
+jj-app .describe-head {
+  display: flex;
+  align-items: center;
+  gap: var(--jj-s-3);
+}
+
+jj-app .describe-headings {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+jj-app .describe-title {
+  font-size: var(--jj-text-lg);
+  font-weight: 650;
+  letter-spacing: -0.017em;
+  color: var(--jj-fg);
+}
+
+jj-app .describe-count {
+  font-size: var(--jj-text-sm);
+  color: var(--jj-fg-muted);
+}
+
+/* No frame: the card is the frame. The field is just where the text goes, and
+   the focus ring is what marks it while it is being typed in. */
+/* Two lines, not four. An empty field claiming the height of a paragraph is
+   space taken from the diff on every working-copy view, and it grows when
+   there is something to grow for. */
 jj-app .describe textarea {
-  flex: 1;
   resize: vertical;
   min-height: 38px;
   max-height: 160px;
-  border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-md);
-  background: var(--jj-surface);
+  border: 1px solid transparent;
+  background: none;
   color: var(--jj-fg);
   font-family: var(--jj-sans);
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 9px 11px;
+  font-size: var(--jj-text-md);
+  line-height: 1.55;
+  /* Padding is constant across states — the focus ring is drawn on the border,
+     and animating the box would shift the text the user is about to type. */
+  padding: var(--jj-s-2) var(--jj-s-3);
+  margin-left: calc(var(--jj-s-3) * -1);
   box-sizing: border-box;
   transition:
-    border-color 0.14s ease,
-    box-shadow 0.14s ease;
+    border-color var(--jj-t-2) var(--jj-ease-out),
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    box-shadow var(--jj-t-2) var(--jj-ease-out);
 }
 
 jj-app .describe textarea:focus {
   outline: none;
+  background: var(--jj-bg);
   border-color: var(--jj-accent-line);
   box-shadow: var(--jj-focus-ring);
 }
@@ -1357,24 +2204,23 @@ jj-app .describe textarea:focus {
 /* ---- Change detail ---- */
 
 jj-app .detail {
-  padding: 12px 16px 14px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
+  padding: var(--jj-s-4) var(--jj-s-5) var(--jj-s-5);
   overflow-y: auto;
   max-height: 44%;
-  flex: none;
 }
 
+/* The hit target is the card's full width. Negative margins cancel the card's
+   own padding, and the row puts it back — so the hover fill runs edge to edge
+   with square corners instead of floating as an inset pill. */
 jj-app .detail-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: -4px -8px 10px;
-  padding: 5px 8px;
-  border-radius: var(--jj-r-sm);
+  gap: var(--jj-s-4);
+  margin: calc(var(--jj-s-4) * -1) calc(var(--jj-s-5) * -1) var(--jj-s-4);
+  padding: var(--jj-s-4) var(--jj-s-5);
+  border-radius: 0;
   cursor: pointer;
-  transition: background-color 0.13s ease;
+  transition: background-color var(--jj-t-1) ease;
 }
 
 jj-app .detail-head:hover {
@@ -1382,74 +2228,74 @@ jj-app .detail-head:hover {
 }
 
 jj-app .detail.collapsed .detail-head {
-  margin-bottom: -4px;
+  margin-bottom: calc(var(--jj-s-5) * -1);
 }
 
-jj-app .detail-toggle {
-  color: var(--jj-fg-faint);
-  font-size: 9px;
-  line-height: 1;
-  width: 12px;
-  flex: none;
-  user-select: none;
-}
-
-jj-app .detail-head:hover .detail-toggle {
+jj-app .detail-head:hover .fold-chevron,
+jj-app .detail-head:hover .detail-mark {
   color: var(--jj-accent);
+}
+
+/* Title over identity. The stack is what makes the card read as being *about*
+   something rather than as a row of fields — the name first, and the change id,
+   bookmarks and state underneath where they belong to it. */
+jj-app .detail-headings {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+jj-app .detail-title {
+  margin: 0;
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-title);
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: var(--jj-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+jj-app .detail-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 jj-app .detail-id {
   font-family: var(--jj-mono);
-  font-size: 12px;
+  font-size: var(--jj-text-sm);
   font-weight: 500;
-  color: var(--jj-accent);
-}
-
-jj-app .detail-when {
-  font-size: 11.5px;
   color: var(--jj-fg-muted);
 }
 
-jj-app .detail-summary {
-  font-size: 12.5px;
-  color: var(--jj-fg-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
+jj-app .detail-when {
+  flex: none;
+  font-size: var(--jj-text-sm);
+  color: var(--jj-fg-muted);
   white-space: nowrap;
-  max-width: 52ch;
 }
 
-/* Description reads as prose on its own card: subject line, then body. */
+/* The description is the card's own content, not a panel inside it. It used to
+   be a second bordered box sitting on a bordered band — two frames around one
+   sentence. Now the subject *is* the card's title and the body is the prose
+   under it, which is the hierarchy the thing actually has. */
 jj-app .detail-desc {
-  margin: 0 0 12px;
-  padding: 11px 14px;
-  background: var(--jj-surface);
-  border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-md);
-  box-shadow: var(--jj-shadow-card);
+  margin: 0 0 var(--jj-s-5);
   font-family: var(--jj-sans);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: var(--jj-text-md);
+  line-height: 1.6;
   max-width: 78ch;
   max-height: 15em;
   overflow-y: auto;
-  color: var(--jj-fg-soft);
-}
-
-/* The first line is the subject — give it weight, like a mail client. */
-jj-app .detail-subject {
-  display: block;
-  font-size: 14.5px;
-  font-weight: 600;
-  letter-spacing: -0.011em;
-  color: var(--jj-fg);
-  margin-bottom: 6px;
-  font-family: var(--jj-sans);
-}
-
-jj-app .detail-body {
-  display: block;
   white-space: pre-wrap;
+  color: var(--jj-fg-soft);
 }
 
 jj-app .detail-edit {
@@ -1458,11 +2304,10 @@ jj-app .detail-edit {
   min-height: 62px;
   box-sizing: border-box;
   border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-md);
   background: var(--jj-surface);
   color: var(--jj-fg);
   font-family: var(--jj-sans);
-  font-size: 13px;
+  font-size: var(--jj-text-md);
   line-height: 1.55;
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -1477,20 +2322,135 @@ jj-app .detail-edit:focus {
   box-shadow: var(--jj-focus-ring);
 }
 
+/* Prose and verbs, side by side. Reading measure is capped at 78ch, so on any
+   window wider than that the right half of the card was empty while the action
+   row queued up under the text. */
+jj-app .detail-main {
+  display: grid;
+  grid-template-columns: minmax(0, 78ch) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--jj-s-5) var(--jj-s-7);
+  margin-bottom: var(--jj-s-5);
+  /* Room for the hover lift. The fold's inner element must clip (that is how it
+     animates to a content-derived height), and this is the first thing inside
+     it — so a button in the top row lost its raised shadow, and the top of its
+     own outline, to that edge. `--jj-shadow-raised` reaches ~8px above the box;
+     12 clears it with the 1px lift on top. */
+  padding-top: var(--jj-s-4);
+}
+
+/* One column below the measure — two columns of nothing is worse than one. */
+@media (max-width: 1100px) {
+  jj-app .detail-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+jj-app .detail-prose {
+  min-width: 0;
+}
+
 jj-app .detail-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: var(--jj-s-2);
+  margin-bottom: var(--jj-s-4);
 }
 
-jj-app .action-group {
+/* The verbs sit at the top of their column and run to the card's right edge,
+   so the row reads right-to-left from the destructive end back to the primary. */
+jj-app .detail-verbs {
+  justify-content: flex-end;
+  margin-bottom: 0;
+}
+
+@media (max-width: 1100px) {
+  jj-app .detail-verbs {
+    justify-content: flex-start;
+  }
+}
+
+/* The overflow. Same popover grammar as the repo switcher and the file context
+   menu — one menu in three places, so it is learned once. */
+jj-app .more-root {
+  position: relative;
   display: inline-flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding-right: 10px;
-  border-right: 1px solid var(--jj-border);
+}
+
+jj-app .more-root .fold-chevron {
+  width: 11px;
+  height: 11px;
+  margin-left: 3px;
+  margin-right: -2px;
+  color: currentColor;
+  opacity: 0.6;
+}
+
+jj-app .more-root .fold-chevron svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* Fixed, not absolute: the change detail card scrolls, and an absolute menu is
+   clipped by it — the entry that fell off the bottom was Abandon. Coordinates
+   come from the trigger's rect at open time (`toggleMore`). */
+jj-app .more-menu {
+  position: fixed;
+  min-width: 190px;
+  z-index: 50;
+  padding: var(--jj-s-1) 0;
+  border: 1px solid var(--jj-border);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-pop);
+  animation: jj-pop var(--jj-t-2) var(--jj-ease-pop);
+}
+
+jj-app .more-menu button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--jj-fg-soft);
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-base);
+  text-align: left;
+  padding: 7px var(--jj-s-4);
+  cursor: pointer;
+  transition:
+    background-color var(--jj-t-1) ease,
+    color var(--jj-t-1) ease;
+}
+
+jj-app .more-menu button:hover:not(:disabled) {
+  background: var(--jj-wash);
+  color: var(--jj-fg);
+}
+
+jj-app .more-menu button:focus-visible {
+  outline: 2px solid var(--jj-accent);
+  outline-offset: -2px;
+}
+
+jj-app .more-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The one entry here that can lose work, held off from the rest. */
+jj-app .more-menu button.danger {
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid var(--jj-border);
+  border-radius: 0 0 var(--jj-r-xs) var(--jj-r-xs);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .more-menu button.danger:hover {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
 }
 
 jj-app .detail-label {
@@ -1503,53 +2463,83 @@ jj-app .detail-label {
   margin-bottom: 5px;
 }
 
+/* The card is on a card, so it drops the border and takes the recessed fill
+   instead — a well in the surface rather than a second frame on it. */
+/* Full width: a path list is a table, not prose, and has no reading measure to
+   respect — capping it at 78ch just left half the card empty.
+
+   Vertical padding only. The rows carry the horizontal padding themselves, so a
+   hover fill reaches both edges of the well instead of stopping short of them. */
 jj-app .detail-files {
-  border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-md);
-  background: var(--jj-surface);
-  box-shadow: var(--jj-shadow-card);
-  padding: 9px 11px;
-  max-width: 78ch;
+  background: var(--jj-wash);
+  padding: var(--jj-s-3) 0 var(--jj-s-2);
+}
+
+jj-app .detail-files .detail-label {
+  padding: 0 var(--jj-s-4);
 }
 
 jj-app .detail-file {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--jj-s-3);
   width: 100%;
   border: 0;
-  border-radius: var(--jj-r-sm);
+  /* A row in a list, not a pill in a box: square, and its own padding is what
+     lets the hover fill reach both edges of the well. */
+  border-radius: 0;
   background: none;
   color: var(--jj-fg-soft);
   font-family: var(--jj-mono);
-  font-size: 11.5px;
+  font-size: var(--jj-text-sm);
   text-align: left;
-  padding: 3px 6px;
+  padding: var(--jj-s-1) var(--jj-s-4);
   cursor: pointer;
-  transition: background-color 0.12s ease;
+  box-sizing: border-box;
+  transition:
+    background-color var(--jj-t-1) ease,
+    color var(--jj-t-1) ease;
 }
 
 jj-app .detail-file:hover {
-  background: var(--jj-wash);
+  background: var(--jj-surface);
   color: var(--jj-fg);
 }
 
+/* The status letter gets a body of its own, the same idea as `.chip` at the
+   smallest size the row can carry. A bare letter in a column of paths reads as
+   part of the path. */
 jj-app .detail-file-status {
-  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 17px;
+  height: 17px;
+  border-radius: var(--jj-r-xs);
+  background: var(--jj-wash);
+  font-size: 10px;
   font-weight: 600;
-  color: var(--jj-fg-faint);
+  color: var(--jj-fg-muted);
   text-transform: uppercase;
 }
 
+jj-app .detail-file:hover .detail-file-status {
+  background: var(--jj-surface-2);
+}
+
 jj-app .detail-file-status.added {
+  background: var(--jj-added-bg);
   color: var(--jj-added-fg);
 }
 
 jj-app .detail-file-status.deleted {
+  background: var(--jj-removed-bg);
   color: var(--jj-removed-fg);
 }
 
 jj-app .detail-file-status.renamed {
+  background: var(--jj-accent-soft);
   color: var(--jj-accent);
 }
 
@@ -1573,30 +2563,51 @@ jj-app .detail-file-counts .minus {
 jj-app .banner {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
-  font-size: 12.5px;
+  gap: var(--jj-s-4);
+  padding: var(--jj-s-3) var(--jj-s-4);
+  font-size: var(--jj-text-base);
   color: var(--jj-fg-soft);
 }
 
+/* The wash tints the card rather than replacing it, so a conflict banner is
+   still recognisably the same object as the neutral one beside it. */
 jj-app .banner.conflict {
-  background: var(--jj-removed-bg);
+  background: color-mix(in srgb, var(--jj-removed-bg) 55%, var(--jj-surface));
+  border-color: color-mix(in srgb, var(--jj-removed-fg) 22%, var(--jj-border));
   color: var(--jj-removed-fg);
 }
 
+/* An ordinary card. Tinting the whole block with the accent produced a muddy
+   wash — `accent-soft` over a surface is a *third* colour that is neither, and
+   in a dark theme it landed as a dishwater blue-grey next to the clean panels
+   around it. The accent belongs on the chip and the border, where it is the
+   accent rather than a stain. */
 jj-app .walk-banner {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--jj-border);
-  border-left: 3px solid var(--jj-accent);
-  background: var(--jj-accent-soft);
+  padding: var(--jj-s-4) var(--jj-s-5) var(--jj-s-4);
+  border-color: color-mix(in srgb, var(--jj-accent) 30%, var(--jj-border));
 }
 
 jj-app .walk-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--jj-s-2);
+}
+
+/* Ends the mode, rather than moving inside it — held off from the Prev/Next
+   pair by a rule so the two jobs do not read as one row of three buttons. */
+jj-app .walk-exit {
+  position: relative;
+  margin-right: var(--jj-s-4);
+}
+
+jj-app .walk-exit::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  right: calc(var(--jj-s-2) * -1);
+  width: 1px;
+  background: var(--jj-border);
 }
 
 jj-app .walk-progress {
@@ -1609,12 +2620,55 @@ jj-app .walk-progress {
   white-space: nowrap;
 }
 
+/* Clamped to three lines. This banner sits directly above the diff, so every
+   line it takes is a line of code pushed off screen — the overview narrative
+   alone ran to twelve and the file being reviewed started below the fold. */
 jj-app .walk-narrative {
-  margin: 7px 0 0;
-  font-size: 13px;
+  margin: var(--jj-s-2) 0 0;
+  font-size: var(--jj-text-md);
   line-height: 1.55;
-  max-width: 70ch;
+  max-width: 78ch;
   color: var(--jj-fg-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+jj-app .walk-narrative.expanded {
+  display: block;
+  overflow: visible;
+}
+
+jj-app .walk-more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-1);
+  margin-top: var(--jj-s-1);
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--jj-accent);
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-sm);
+  font-weight: 550;
+  cursor: pointer;
+  transition: opacity var(--jj-t-1) ease;
+}
+
+jj-app .walk-more:hover {
+  opacity: 0.75;
+}
+
+jj-app .walk-more .fold-chevron {
+  width: 11px;
+  height: 11px;
+  color: currentColor;
+}
+
+jj-app .walk-more .fold-chevron svg {
+  width: 11px;
+  height: 11px;
 }
 
 jj-app .walk-content {
@@ -1629,30 +2683,30 @@ jj-app .walk-content {
 }
 
 jj-app .status {
-  padding: 7px 16px;
+  padding: var(--jj-s-3) var(--jj-s-4);
   font-size: 12px;
   white-space: pre-wrap;
-  border-bottom: 1px solid var(--jj-border);
 }
 
 jj-app .status.error {
   color: var(--jj-removed-fg);
-  background: var(--jj-removed-bg);
+  background: color-mix(in srgb, var(--jj-removed-bg) 55%, var(--jj-surface));
+  border-color: color-mix(in srgb, var(--jj-removed-fg) 22%, var(--jj-border));
 }
 
 jj-app .status.info {
   color: var(--jj-added-fg);
-  background: var(--jj-added-bg);
+  background: color-mix(in srgb, var(--jj-added-bg) 55%, var(--jj-surface));
+  border-color: color-mix(in srgb, var(--jj-added-fg) 22%, var(--jj-border));
 }
 
 jj-app .outcome {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-accent-soft);
-  font-size: 12.5px;
+  gap: var(--jj-s-4);
+  padding: var(--jj-s-3) var(--jj-s-4);
+  border-color: color-mix(in srgb, var(--jj-accent) 30%, var(--jj-border));
+  font-size: var(--jj-text-base);
 }
 
 jj-app .outcome-text {
@@ -1668,22 +2722,20 @@ jj-app .outcome-text {
 jj-app .search-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
+  gap: var(--jj-s-3);
+  padding: var(--jj-s-3) var(--jj-s-4);
 }
 
 jj-app .search-bar input {
   flex: 1;
   max-width: 360px;
   border: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-sm);
-  background: var(--jj-surface);
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-bg);
   color: var(--jj-fg);
   font-family: var(--jj-mono);
   font-size: 12px;
-  padding: 5px 9px;
+  padding: 6px 13px;
 }
 
 jj-app .search-bar input:focus {
@@ -1697,29 +2749,6 @@ jj-app .search-bar .matches {
   font-size: 11px;
   color: var(--jj-fg-muted);
   min-width: 74px;
-}
-
-/* Sticky breadcrumb above the diff */
-
-jj-app .crumb {
-  padding: 7px 16px;
-  border-bottom: 1px solid var(--jj-border);
-  background: var(--jj-bg-panel);
-  font-family: var(--jj-mono);
-  font-size: 11.5px;
-  color: var(--jj-fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-jj-app .crumb-dir {
-  color: var(--jj-fg-faint);
-}
-
-jj-app .crumb-name {
-  color: var(--jj-fg);
-  font-weight: 500;
 }
 
 /* Operation log */
@@ -1749,7 +2778,7 @@ jj-app .op-when {
 jj-app .op-current {
   font-size: 10px;
   font-weight: 600;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   background: var(--jj-accent-soft);
   color: var(--jj-accent);
   padding: 1px 7px;
@@ -1821,6 +2850,9 @@ jj-patch-view {
   display: block;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  /* The pinned file header overlays this box rather than the scroller inside it. */
+  position: relative;
 }
 
 /* Registered so the `em`/`ch` in the natural width below resolve against the code font
@@ -1833,10 +2865,15 @@ jj-patch-view {
 }
 
 .jj-patch {
-  /* Card gutter. Rows are absolutely positioned by the virtualizer, so their
-     `100%` resolves against the padding box — subtract the gutter explicitly or
-     every card overhangs the right edge by 2× this value. */
-  --jj-diff-gutter: 16px;
+  /* No side gutter. The diff pane became a card of its own, so an inset gutter
+     inside it drew a second frame around every file — two rounded boxes, 16px
+     apart, saying the same thing. File cards now run the full width of the pane
+     and are separated from each other vertically only.
+
+     Rows are absolutely positioned by the virtualizer, so their `100%` resolves
+     against the padding box; the value is kept (at 0) rather than deleted
+     because the row width calculation still subtracts it. */
+  --jj-diff-gutter: 0px;
   /* --jj-code-cols: widest line in monospace columns, set by patch-view. */
   /* Per-side code offsets, driven by wheel/trackpad in patch-view. */
   --jj-scroll-old: 0px;
@@ -1852,7 +2889,7 @@ jj-patch-view {
   line-height: 1.55;
   tab-size: 8; /* TAB_COLUMNS in patch-view.ts */
   box-sizing: border-box;
-  padding: 12px var(--jj-diff-gutter) 40px;
+  padding: 0 var(--jj-diff-gutter) 40px;
 }
 
 /* Natural width: what a row would need to show its widest line uncut. Only read back
@@ -1890,6 +2927,7 @@ jj-patch-view {
 }
 
 .jj-empty {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -1899,8 +2937,28 @@ jj-patch-view {
   color: var(--jj-fg-muted);
   font-family: var(--jj-sans);
   text-align: center;
-  padding: 40px 24px;
+  padding: var(--jj-s-8) var(--jj-s-6);
   box-sizing: border-box;
+  overflow: hidden;
+}
+
+.jj-empty-copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  /* Arrives a beat after the surface, so the eye lands on the sentence rather
+     than watching it appear. */
+  animation: jj-rise var(--jj-t-4) var(--jj-ease-out) 120ms backwards;
+}
+
+@keyframes jj-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 .jj-empty .glyph {
@@ -1930,12 +2988,21 @@ jj-patch-view {
   display: flex;
   gap: 9px;
   align-items: center;
-  padding: 9px 14px;
+  padding: 10px 15px;
   background: var(--jj-surface);
-  border: 1px solid var(--jj-border);
-  border-top: 14px solid transparent;
-  border-radius: var(--jj-r-md) var(--jj-r-md) 0 0;
+  /* The gap between file cards. A transparent border rather than a margin,
+     because the virtualizer measures offsetHeight and a margin is height it
+     cannot see — the rows would drift out of position as you scroll. */
+  border: 0;
+  border-top: 18px solid transparent;
   background-clip: padding-box;
+  /* The card's top and side hairlines are drawn as *inset shadows*, not
+     borders. A real `border-left` runs the full height of the element, which
+     includes the 18px transparent strip above — so every file card had two
+     orphaned 1px ticks floating in the gap above it, one per side. Inset
+     shadows are painted inside the padding box, so they start where the card
+     visually starts. */
+  box-shadow: inset 0 1px 0 var(--jj-border);
   font-family: var(--jj-sans);
   font-weight: 550;
   font-size: 12.5px;
@@ -1946,7 +3013,7 @@ jj-patch-view {
   font-family: var(--jj-sans);
   font-size: 10.5px;
   font-weight: 600;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   padding: 1.5px 8px;
   background: var(--jj-wash);
   color: var(--jj-fg-muted);
@@ -2002,20 +3069,22 @@ jj-patch-view {
   font-family: var(--jj-sans);
   font-size: 11px;
   font-weight: 500;
-  border-radius: var(--jj-r-sm);
-  padding: 2.5px 9px;
+  border-radius: var(--jj-r-pill);
+  padding: 3px 11px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 5px;
   user-select: none;
   transition:
-    border-color 0.12s ease,
-    color 0.12s ease;
+    border-color var(--jj-t-2) var(--jj-ease-out),
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    color var(--jj-t-2) var(--jj-ease-out);
 }
 
 .file-action:hover {
   border-color: var(--jj-border-strong);
+  background: var(--jj-surface-2);
   color: var(--jj-fg);
 }
 
@@ -2033,7 +3102,7 @@ select.file-action {
 .conflict-badge {
   font-size: 10.5px;
   font-weight: 600;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   padding: 1.5px 8px;
   background: var(--jj-removed-bg);
   color: var(--jj-removed-fg);
@@ -2047,8 +3116,6 @@ select.file-action {
   color: var(--jj-fg-faint);
   font-size: 11px;
   box-sizing: border-box;
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
   border-top: 1px solid var(--jj-border);
 }
 
@@ -2063,8 +3130,6 @@ select.file-action {
   background: var(--jj-surface);
   box-sizing: border-box;
   border: 0;
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
   transition: background-color 0.12s ease;
 }
 
@@ -2079,19 +3144,60 @@ select.file-action {
 
 /* Closing edge of a file card. A real row, not a pseudo-element: the virtualizer
    measures offsetHeight, so anything contributing height must be in the row model. */
+/* Closing edge of a file section. Full-bleed now, so it is a hairline under the
+   last row rather than the bottom of a box. */
 .file-end {
   height: 8px;
   background: var(--jj-surface);
-  border: 1px solid var(--jj-border);
-  border-top: 0;
-  border-radius: 0 0 var(--jj-r-md) var(--jj-r-md);
+  border: 0;
+  box-shadow: inset 0 -1px 0 var(--jj-border);
   box-sizing: border-box;
 }
 
-/* A collapsed (viewed) file is header-only, so the header closes itself. */
+/* A collapsed (viewed) file is header-only, so the header closes itself — the
+   fourth hairline joins the other three in the inset set. */
 .file-header.viewed {
-  border-bottom: 1px solid var(--jj-border);
-  border-radius: var(--jj-r-md);
+  box-shadow:
+    inset 0 1px 0 var(--jj-border),
+    inset 0 -1px 0 var(--jj-border);
+}
+
+/* The pinned copy of the current file's header.
+
+   `position: sticky` is not available: the virtualizer positions every row
+   absolutely, and an absolutely-positioned element cannot stick. Nor can this
+   live inside `.jj-patch` — that element *is* the scroll container, so anything
+   in it scrolls, and a sticky child's natural flow position sits below the
+   virtualizer's full-height spacer, which would pin it to the bottom. So it
+   overlays from outside the scroller instead.
+
+   It renders only while the real header is above the fold, which is also what
+   stops the path being on screen twice — the bug this replaced was a breadcrumb
+   that showed the same name as the card header right below it. */
+jj-patch-view > .file-header.stuck {
+  position: absolute;
+  top: 0;
+  left: var(--jj-diff-gutter, 0px);
+  right: var(--jj-diff-gutter, 0px);
+  z-index: 5;
+  width: auto;
+  /* No transparent gap to keep clear of, so this one can use real borders — and
+     it needs all four. The top was zeroed on the theory that a bar pinned to
+     the top of the pane has nothing above it to separate from; but it sits
+     flush against the pane's own top edge, where the background changes, and a
+     missing hairline there reads as the bar having been cut off. */
+  border: 1px solid var(--jj-border);
+  background: var(--jj-surface);
+  /* Enough shadow to read as being in front of the code sliding beneath it. */
+  box-shadow: 0 8px 18px -8px rgb(0 0 0 / 0.35);
+  animation: jj-stick-in var(--jj-t-2) var(--jj-ease-out);
+}
+
+@keyframes jj-stick-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
 }
 
 .notice {
@@ -2100,10 +3206,7 @@ select.file-action {
   font-family: var(--jj-sans);
   background: var(--jj-surface);
   box-sizing: border-box;
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
   border-bottom: 1px solid var(--jj-border);
-  border-radius: 0 0 var(--jj-r-md) var(--jj-r-md);
 }
 
 /* Code rows */
@@ -2113,8 +3216,6 @@ select.file-action {
   grid-template-columns: 3.4em 3.4em 1.2em minmax(0, 1fr);
   box-sizing: border-box;
   background: var(--jj-surface);
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
 }
 
 .line.unified.added {
@@ -2130,8 +3231,6 @@ select.file-action {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   box-sizing: border-box;
   background: var(--jj-surface);
-  border-left: 1px solid var(--jj-border);
-  border-right: 1px solid var(--jj-border);
 }
 
 .cell {
@@ -2353,7 +3452,6 @@ select.file-action {
 .comment-composer {
   margin-top: 6px;
   padding: 6px 8px;
-  border-radius: 6px;
   background: var(--jj-bg);
   border: 1px solid var(--jj-accent-line);
 }
@@ -2361,11 +3459,10 @@ select.file-action {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--jj-border);
-  border-radius: 5px;
   background: var(--jj-bg);
   color: var(--jj-fg);
   font-family: var(--jj-sans);
-  font-size: 12.5px;
+  font-size: var(--jj-text-base);
   padding: 5px 8px;
   resize: vertical;
   min-height: 36px;
@@ -2394,12 +3491,16 @@ select.file-action {
   cursor: pointer;
 }
 .composer-actions button.primary {
-  background: var(--jj-accent);
-  color: #fff;
-  border-color: var(--jj-accent);
+  background: var(--jj-primary);
+  color: var(--jj-primary-fg);
+  border-color: var(--jj-primary);
 }
+/* `brightness()` moves the wrong way in one theme or the other — the primary is
+   near-black in light and near-white in dark, so "brighter" means "washed out"
+   on one of them. The ramp already has the hover value. */
 .composer-actions button.primary:hover {
-  filter: brightness(1.05);
+  background: var(--jj-primary-hi);
+  border-color: var(--jj-primary-hi);
 }
 
 /* Review tab in the sidebar. */
@@ -2443,20 +3544,29 @@ select.file-action {
 /* ---- Operation log in main view ---- */
 
 .ops-view {
-  padding: 16px;
+  padding: var(--jj-s-5) var(--jj-s-6) var(--jj-s-6);
   overflow-y: auto;
-  height: 100%;
   box-sizing: border-box;
+  border: 0;
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  /* `height: 100%` resolved and was then shrunk by the flex column, leaving the
+     view short with a band of dead space beneath it — the same trap the
+     proposal view documents. Claim the free space instead. */
+  flex: 1;
+  min-height: 0;
+  margin-bottom: var(--jj-s-4);
 }
 .ops-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
+  gap: var(--jj-s-4);
+  margin-bottom: var(--jj-s-5);
 }
 .ops-header h2 {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--jj-text-title);
+  font-weight: 650;
+  letter-spacing: -0.02em;
   margin: 0;
 }
 .ops-view .op {
@@ -2478,7 +3588,7 @@ select.file-action {
 }
 .ops-view .op-current {
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--jj-r-pill);
   background: var(--jj-accent-soft);
   color: var(--jj-accent);
   font-size: 10px;

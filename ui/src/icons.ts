@@ -43,3 +43,67 @@ export const iconUnified = icon(svg`
   <rect x="2.2" y="3" width="11.6" height="10" rx="1.8" />
   <path d="M4.9 6.5h6.2" />
   <path d="M4.9 9.5h6.2" />`);
+
+/**
+ * The disclosure marker for every fold in the app. Always drawn pointing down
+ * and rotated to the closed position by `.fold-chevron.closed`, so the two
+ * states are one glyph turning rather than two glyphs swapping — the turn is
+ * what shows which way the content went.
+ */
+export const iconChevron = icon(svg`<path d="m4 6 4 4 4-4" />`);
+
+/** Search. Leads every filter field. */
+export const iconSearch = icon(svg`
+  <circle cx="7.2" cy="7.2" r="4.5" />
+  <path d="m10.6 10.6 2.7 2.7" />`);
+
+/** Something needs attention but nothing is broken — conflicts, drift. */
+export const iconWarn = icon(svg`
+  <path d="M8 2.7 14.2 13H1.8L8 2.7Z" />
+  <path d="M8 6.7v3" />
+  <path d="M8 11.6h.01" />`);
+
+/** Neutral notice: state the user should know, no action implied. */
+export const iconInfo = icon(svg`
+  <circle cx="8" cy="8" r="6.2" />
+  <path d="M8 7.4v3.4" />
+  <path d="M8 5.3h.01" />`);
+
+/** Agent-authored content: the walkthrough, and anything else generated. */
+export const iconSparkle = icon(svg`
+  <path d="M8 2.2 9.4 6 13.2 7.4 9.4 8.8 8 12.6 6.6 8.8 2.8 7.4 6.6 6 8 2.2Z" />
+  <path d="M12.6 11.2l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5.5-1.3Z" />`);
+
+/** A commit under review — the change detail card's mark. */
+export const iconCommit = icon(svg`
+  <circle cx="8" cy="8" r="2.9" />
+  <path d="M8 1.8v3.3" />
+  <path d="M8 10.9v3.3" />`);
+
+/* ---- Sidebar rail. One per pane; the pane's name is its tooltip and its title. ---- */
+
+/** Log: the commit graph — a trunk with a branch off it. */
+export const iconGraph = icon(svg`
+  <circle cx="4.6" cy="3.6" r="1.7" />
+  <circle cx="4.6" cy="12.4" r="1.7" />
+  <circle cx="11.4" cy="8" r="1.7" />
+  <path d="M4.6 5.3v5.4" />
+  <path d="M9.7 8H6.3" />`);
+
+/** Files: a stack of sheets. */
+export const iconFiles = icon(svg`
+  <path d="M9 2H4.6a1.3 1.3 0 0 0-1.3 1.3v9.4A1.3 1.3 0 0 0 4.6 14h6.8a1.3 1.3 0 0 0 1.3-1.3V5.4L9 2Z" />
+  <path d="M9 2v3.4h3.7" />`);
+
+/** Review: comments on a line. */
+export const iconComment = icon(svg`
+  <path d="M14 9.7a1.5 1.5 0 0 1-1.5 1.5H5.2L2 14V3.5A1.5 1.5 0 0 1 3.5 2h9a1.5 1.5 0 0 1 1.5 1.5v6.2Z" />`);
+
+/** A forge proposal. */
+export const iconProposal = icon(svg`
+  <circle cx="4.2" cy="3.6" r="1.8" />
+  <circle cx="4.2" cy="12.4" r="1.8" />
+  <circle cx="11.8" cy="12.4" r="1.8" />
+  <path d="M4.2 5.4v5.2" />
+  <path d="M11.8 10.6V7.4a2 2 0 0 0-2-2H6.6" />
+  <path d="m8.2 3.8-1.6 1.6 1.6 1.6" />`);
