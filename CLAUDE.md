@@ -128,6 +128,8 @@ Use `askText` / `askConfirm` from `ui/src/prompt.ts` instead. They also work in 
 
 **An overlay's backdrop test is `event.composedPath()[0] === this`, never `event.target === this`.** The scrim is the host element and the listener is bound to the host, so an event from inside the shadow root is *retargeted to the host* and a click on the panel is indistinguishable from a click on the scrim. All five overlays (command bar, prompt, theme picker, shortcuts sheet, evolog drawer) had this and dismissed on any click they received — the theme picker's filter box could not be clicked, and the version radios did nothing.
 
+The same retargeting bites the keyboard, and worse: **an overlay with a text field must handle keys on its panel and `stopPropagation()`**, as `jj-prompt`, `jj-command-bar` and `jj-rebase-picker` do. `App.onGlobalKey` decides an event is typing by looking at `event.target.tagName`, and by the time the event reaches window that target is the *host element*, not the input two shadow roots down — so `j`, `k`, `c` and `v` typed into a filter box would scroll the diff behind the dialog. A window-level listener is still right for Escape alone, since a click on the scrim moves focus off the panel.
+
 Same class of gap: **`target="_blank"` does nothing** — there is no tab to open. Outbound links go through the `open_url` command (`editor::open_url`), which hands the URL to the OS and refuses any scheme that isn't http/https.
 
 ## Ahead/behind is reported inverted by jj
@@ -143,6 +145,20 @@ The one place this matters beyond a badge is the PR banner: `renderHeadDrift` wa
 `Repo::allowing_immutable(true)` returns a handle whose **rewriting** verbs carry `--ignore-immutable`; `Repo::mutate_rewriting` applies it and `Repo::mutate` does not. The split is not cosmetic: `backout` and `duplicate` *reject* the flag (they add commits rather than rewrite them), so funnelling every mutation through one helper turns an unrelated command into a clap parse error.
 
 The opt-in is a per-call argument all the way from `ui/src/ipc.ts` to the CLI — nothing stores it. jj marks commits immutable to stop them being rewritten by accident, and a persisted "allow immutable" toggle would hand that guarantee back for a whole session instead of one confirmed command. On the frontend every such action routes through `App.confirmImmutableRewrite`, which returns `true` immediately for mutable changes and otherwise names the bookmark, the force-push, and the descendants that get rebased. Adding a new rewriting command means threading `allowImmutable` through and calling that helper — a rewriting action that skips it is one that silently rewrites published history.
+
+## Hunk-level split: jjdiff is jj's diff editor
+
+`jj split -i` has no non-interactive form and no flag that takes hunks. What it has is a protocol: jj writes the two sides of the change into a pair of directories, runs the configured diff editor, and takes whatever the **right** one holds when it exits. So jjdiff plays the editor. `Repo::split_with_diff_editor` registers this binary as `merge-tools.jjdiff-split` for one invocation (`--config`, never written to anyone's config file) and jj re-enters it as `jjdiff --apply-split-plan <plan> $left $right` — a headless command in `cli.rs`, dispatched before any window exists. `-m` is not optional there: without it jj opens `$EDITOR` for the description and a GUI-spawned editor with no terminal hangs.
+
+The plan is built by the frontend from the diff **on screen** (`App.buildSplitPlan`), not recomputed in the backend, so the hunks that move are the ones that were ticked. That is only safe because `jjdiff_diff::apply_selected_hunks` refuses to write unless two things hold: every hunk's context and removed lines appear verbatim where it claims, and applying *all* of them reproduces the right side exactly. The second is the load-bearing one — it is a property of any correct diff, so it costs nothing when things are well and catches a stale plan, a file edited since it was read, or a diff of some other pair of trees. It also means our hunk boundaries need not match jj's: any correct cut of the same left→right change composes back to the same right. A failure exits non-zero, and jj aborts the split rather than committing a half-edited directory.
+
+Three cases the plan encodes rather than derives, because a hunk list cannot express them: a file with `select: "all"` is left exactly as jj wrote it, `"none"` is restored from the left side (one rule — copy what the old side has, remove what it does not — which undoes an edit, an addition, a deletion and, with a rename's two paths, a rename), and only `"hunks"` runs the arithmetic. `supportsHunkSelection` in `rows.ts` decides which files can be divided at all: not binary, not renamed, more than one hunk.
+
+## Conflicts are navigable, not just flagged
+
+`Repo::conflicts` keeps both halves of each `jj resolve --list` line — the path *and* jj's description of its shape ("2-sided conflict"), which is the only place a conflict's arity is stated outside the marker lines. `PatchView.moveToConflict` steps between the `<<<<<<<` lines rather than between files, because one file can hold several; a conflicted file whose contents were not diffed contributes its header as a stand-in so the banner's count and the button's reach agree. Marker lines carry a role class (`start`/`end`/`side`/`base`) so the sides read apart — jj already names each side in the marker text, unlike git's bare `<<<<<<< HEAD`, so the colour only has to say which *kind* of side it is.
+
+Resolution itself is still terminal-only, for the M4 reason: a merge editor spawned from a GUI without a TTY hangs more often than it works.
 
 ## Keyboard shortcuts
 

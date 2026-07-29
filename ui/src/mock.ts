@@ -5,6 +5,7 @@ import type {
   Change,
   ChangeVersion,
   Config,
+  ConflictedFile,
   FilePatch,
   ForgeInfo,
   Interdiff,
@@ -413,6 +414,13 @@ export const mockFileContent = (path: string): string => {
   }
   return Array.from({ length: 20 }, (_, i) => `// line ${i + 1}`).join('\n');
 };
+
+/**
+ * No conflicts in the fixture repo — the browser build has no jj to ask, and a
+ * fabricated conflict would put a banner and a navigation control on screen
+ * for a change whose diff contains no markers to navigate to.
+ */
+export const mockConflicts: ConflictedFile[] = [];
 
 export const mockOperations: Operation[] = [
   {

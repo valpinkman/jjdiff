@@ -47,6 +47,20 @@ pub struct Outcome {
     pub operation: String,
 }
 
+/// A path with an unresolved conflict, and jj's own description of its shape
+/// ("2-sided conflict", "3-sided conflict including 1 deletion", …).
+///
+/// The description is carried rather than discarded because it is the only
+/// place the *arity* of a conflict is stated: a two-sided text conflict and a
+/// three-sided one with a deletion in it want very different attention, and
+/// the marker lines in the diff only say so once you are already inside them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictedFile {
+    pub path: String,
+    pub description: String,
+}
+
 /// A discovered, colocated jj repository. Cheap to clone (two paths) — commands clone it out
 /// of app state so blocking jj work can run off the main thread.
 #[derive(Clone)]
@@ -56,6 +70,29 @@ pub struct Repo {
     /// Opt-in to rewriting commits jj has marked immutable. Off by default and
     /// never persisted — see [`Repo::allowing_immutable`].
     allow_immutable: bool,
+}
+
+/// A TOML basic string. `--config` values are parsed as TOML, so anything going
+/// through one has to survive that pass — a Windows path or a temp directory
+/// with a quote in it would otherwise turn into a config syntax error at best.
+fn toml_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if (control as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Template producing one JSON object per revision (JSONL). Field names match
@@ -225,10 +262,10 @@ impl Repo {
         self.runner.read(&args)
     }
 
-    /// Paths with unresolved conflicts in `revset`. Parses `jj resolve --list` lines of the
-    /// form `<path>    <N>-sided conflict…` — the description suffix is stripped from the
-    /// right so paths containing spaces survive.
-    pub fn conflicted_paths(&self, revset: &str) -> Result<Vec<String>> {
+    /// Unresolved conflicts in `revset`. Parses `jj resolve --list` lines of the
+    /// form `<path>    <N>-sided conflict…` — the split is made from the *right*
+    /// so paths containing spaces survive, and both halves are kept.
+    pub fn conflicts(&self, revset: &str) -> Result<Vec<ConflictedFile>> {
         let out = match self.runner.read(&["resolve", "--list", "-r", revset]) {
             Ok(out) => out,
             // jj exits non-zero when there is nothing to resolve.
@@ -241,8 +278,14 @@ impl Repo {
             .lines()
             .filter(|line| !line.is_empty())
             .map(|line| match line.rfind("    ") {
-                Some(position) => line[..position].trim_end().to_string(),
-                None => line.trim_end().to_string(),
+                Some(position) => ConflictedFile {
+                    path: line[..position].trim_end().to_string(),
+                    description: line[position..].trim().to_string(),
+                },
+                None => ConflictedFile {
+                    path: line.trim_end().to_string(),
+                    description: String::new(),
+                },
             })
             .collect())
     }
@@ -348,11 +391,50 @@ impl Repo {
     }
 
     /// File-level `jj split`: the named paths move to the first commit, the rest to a
-    /// child. Non-interactive on purpose — hunk-level splitting needs a diff-editor shim.
+    /// child. See [`Self::split_with_diff_editor`] for the hunk-level form.
     pub fn split_paths(&self, revset: &str, paths: &[String]) -> Result<Outcome> {
         let mut args: Vec<&str> = vec!["split", "-r", revset, "--"];
         args.extend(paths.iter().map(String::as_str));
         self.mutate_rewriting(&args)
+    }
+
+    /// Hunk-level `jj split`, by *being* the diff editor.
+    ///
+    /// jj offers no way to select hunks on a command line: `jj split -i` writes
+    /// the two sides of the change into a pair of directories, runs the
+    /// configured diff editor, and takes whatever the right-hand one holds
+    /// afterwards. So the caller supplies a program that edits that directory
+    /// without a human — jjdiff's own binary, running `--apply-split-plan`.
+    ///
+    /// The tool is registered through `--config` for this one invocation rather
+    /// than written into anyone's config file: it is an implementation detail of
+    /// one command, and a `merge-tools` entry left behind in `~/.jjconfig.toml`
+    /// would outlive the app that understands it.
+    ///
+    /// `message` describes the selected half. Passing it is what keeps the whole
+    /// thing non-interactive — without `-m`, jj opens `$EDITOR` for a
+    /// description and a GUI-spawned editor with no terminal simply hangs.
+    pub fn split_with_diff_editor(
+        &self,
+        revset: &str,
+        program: &Path,
+        edit_args: &[String],
+        message: &str,
+    ) -> Result<Outcome> {
+        const TOOL: &str = "jjdiff-split";
+        let program = format!(
+            "merge-tools.{TOOL}.program={}",
+            toml_string(&program.to_string_lossy())
+        );
+        let args = format!(
+            "merge-tools.{TOOL}.edit-args=[{}]",
+            edit_args.iter().map(|arg| toml_string(arg)).collect::<Vec<_>>().join(",")
+        );
+        self.mutate_rewriting(&[
+            "--config", &program,
+            "--config", &args,
+            "split", "-r", revset, "--tool", TOOL, "-m", message,
+        ])
     }
 
     pub fn abandon(&self, revset: &str) -> Result<Outcome> {
@@ -576,6 +658,18 @@ mod tests {
             assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         };
         run(&["git", "init", "--colocate", "."]);
+        // Pin the signing behaviour *in the repo*, not just on the invocations
+        // this helper makes. Tests drive `Repo` too, and `Repo` deliberately
+        // runs jj the way the user's own jj runs — so without this the suite
+        // inherits whatever `signing.backend` the machine has configured, and
+        // fails with "agent refused operation" whenever the ssh-agent is locked
+        // or wants a touch. That is a real failure of the test environment
+        // masquerading as a failure of the code.
+        run(&["config", "set", "--repo", "signing.behavior", "drop"]);
+        // `signing.behavior` does not cover the push path: `git.sign-on-push`
+        // signs at push time regardless, so a test that pushes still hits the
+        // agent without this.
+        run(&["config", "set", "--repo", "git.sign-on-push", "false"]);
         std::fs::write(dir.join("hello.txt"), "hello\n").unwrap();
         run(&["--config", "user.name=Test", "--config", "user.email=test@example.com", "commit", "-m", "initial"]);
     }
@@ -881,7 +975,14 @@ mod tests {
     }
 
     #[test]
-    fn conflicted_paths_lists_conflicts_and_handles_none() {
+    fn toml_strings_survive_the_config_parser() {
+        assert_eq!(toml_string("/tmp/plain"), "\"/tmp/plain\"");
+        assert_eq!(toml_string(r#"C:\dir\"x""#), r#""C:\\dir\\\"x\"""#);
+        assert_eq!(toml_string("a\tb"), "\"a\\tb\"");
+    }
+
+    #[test]
+    fn conflicts_list_paths_with_their_shape_and_handle_none() {
         let _guard = jj_serial();
         if !jj_available() {
             eprintln!("skipping: jj not installed");
@@ -910,7 +1011,7 @@ mod tests {
         let repo = Repo::discover(tmp.path()).unwrap();
 
         // No conflicts → empty, not an error.
-        assert!(repo.conflicted_paths("@").unwrap().is_empty());
+        assert!(repo.conflicts("@").unwrap().is_empty());
 
         // Two divergent edits of the same line, merged. Address parents by change id —
         // description() revset matching is not worth depending on in tests.
@@ -922,7 +1023,66 @@ mod tests {
         std::fs::write(tmp.path().join("sp file.txt"), "right\n").unwrap();
         jj(&["new", "-m", "merge", &left, "@"]);
 
-        let conflicted = repo.conflicted_paths("@").unwrap();
-        assert_eq!(conflicted, vec!["sp file.txt"], "path with spaces survives parsing");
+        let conflicted = repo.conflicts("@").unwrap();
+        assert_eq!(conflicted.len(), 1);
+        assert_eq!(conflicted[0].path, "sp file.txt", "path with spaces survives parsing");
+        assert!(
+            conflicted[0].description.contains("sided conflict"),
+            "jj's own description of the conflict is kept: {:?}",
+            conflicted[0].description
+        );
+    }
+
+    /// The whole hunk-level split, end to end against a real `jj split`: a
+    /// scripted diff editor is the only way to select part of a change, and
+    /// nothing short of running one proves the protocol is being spoken.
+    #[test]
+    fn split_with_diff_editor_keeps_only_what_the_editor_left_behind() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+
+        // A change with two independent edits, at opposite ends of one file.
+        std::fs::write(tmp.path().join("f.txt"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        repo.describe("@", "both edits").unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "ONE\ntwo\nthree\nfour\nFIVE\n").unwrap();
+        repo.describe("@", "both edits").unwrap(); // snapshots the edit
+
+        // The "diff editor": writes the first edit alone into the right dir.
+        let editor = tmp.path().join("editor.sh");
+        std::fs::write(
+            &editor,
+            "#!/bin/sh\nprintf 'ONE\\ntwo\\nthree\\nfour\\nfive\\n' > \"$2/f.txt\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let args = vec!["$left".to_string(), "$right".to_string()];
+        repo.split_with_diff_editor("@", &editor, &args, "first edit only").unwrap();
+
+        // Two commits now, and the earlier one carries only the first edit.
+        let selected = repo.log("@-").unwrap();
+        assert_eq!(selected[0].first_line(), "first edit only");
+        let patch = repo.patch_for("@-", false).unwrap();
+        assert!(patch.contains("+ONE"), "the selected half has the first edit: {patch}");
+        assert!(!patch.contains("+FIVE"), "and not the second: {patch}");
+
+        // The remainder keeps the rest, and the two together are the original.
+        let rest = repo.patch_for("@", false).unwrap();
+        assert!(rest.contains("+FIVE"), "the remainder has the second edit: {rest}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("f.txt")).unwrap(),
+            "ONE\ntwo\nthree\nfour\nFIVE\n",
+            "the working copy is unchanged by a split"
+        );
     }
 }

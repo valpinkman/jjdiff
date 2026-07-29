@@ -104,23 +104,27 @@
   --jj-text-lg: 16px;
   --jj-text-title: 22px;
 
-  /* Radius is binary here, not a ramp.
+  /* Two families, not a ramp. **Controls are pills. Surfaces are softened.**
+     Anything you press or type into is fully round; anything you put things
+     *into* gets a small radius — enough to read as a card, not enough to
+     restate its edge.
 
-     **Surfaces are square. Controls are pills.** A card, a panel, a popover, a
-     pane — anything you put things *into* — has no radius and no border; it is
-     told apart from its neighbour by its background. Anything you *press or
-     type into* is fully round. The middle ground (a 16px card holding 9px
-     buttons, each with its own hairline) is what made the app read as a stack
-     of boxes inside boxes: at any point on screen there were three nested
-     frames, and none of them meant anything.
+     The earlier rule here was that surfaces are square, on the grounds that a
+     16px card holding 9px buttons each with its own hairline made the app a
+     stack of boxes inside boxes. That diagnosis was about *nesting and
+     hairlines*, and it still holds — the cards have no borders, only a
+     background and a shadow. A radius of 6-8px does not bring the boxes back;
+     it rounds the one edge each surface already had.
 
-     The names are kept so the ramp can come back without touching every rule. */
+     Values are deliberately small and only two apart: a card (8) and the file
+     cards inside it (6), so the nesting reads as nesting rather than as two
+     unrelated shapes. */
   --jj-r-xs: var(--jj-r-pill);
   --jj-r-sm: var(--jj-r-pill);
   --jj-r-chip: var(--jj-r-pill);
-  --jj-r-md: 0px;
-  --jj-r-lg: 0px;
-  --jj-r-xl: 0px;
+  --jj-r-md: 6px;
+  --jj-r-lg: 8px;
+  --jj-r-xl: 10px;
   --jj-r-pill: 999px;
 
   /* Motion. Duration says how far something travelled; the curve says what
@@ -1583,14 +1587,21 @@ jj-app button.tool.palette-key:hover kbd {
 
 /* ---- Sidebar ---- */
 
+/* The sidebar sits *on* the page rather than being a surface of its own.
+   It is navigation, not content: the eye should end up on the diff, and a
+   second panel-coloured slab beside it competed for that. Without a background
+   the rail, the sidebar and the page are one continuous field, and the only
+   things that read as objects are the cards holding the change. Rows inside
+   still carry their own hover and selected fills, which is what makes the list
+   legible now that the slab is gone. */
 jj-app > aside {
   grid-row: 2;
   grid-column: 2;
   min-width: 0;
   margin: var(--jj-s-3) 0 0 0;
   border: 0;
-  background: var(--jj-bg-panel);
-  box-shadow: var(--jj-shadow-card);
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -2097,10 +2108,16 @@ jj-app > main {
 /* The diff is the content, so it gets a body of its own rather than sitting on
    the page: one large card filling the rest of the pane, with the file cards
    inside it. It is the only surface in the app the eye should end up on. */
+/* …except this one, which is a *container* of cards rather than a card. It
+   used to be both: a panel-coloured slab with the file cards sitting on it, so
+   the space between two files was a third colour that meant nothing — neither
+   page nor card, just the gap showing through. The file cards are the objects
+   here; the pane is the space they occupy, and that space is the page. */
 jj-app > main > jj-patch-view {
   border: 0;
-  background: var(--jj-bg-panel);
-  box-shadow: var(--jj-shadow-card);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
   margin-bottom: var(--jj-s-1);
 }
@@ -2119,6 +2136,7 @@ jj-app .search-bar,
 jj-app .status,
 jj-app .outcome {
   border: 0;
+  border-radius: var(--jj-r-lg);
   background: var(--jj-surface);
   box-shadow: var(--jj-shadow-card);
   box-sizing: border-box;
@@ -2577,6 +2595,66 @@ jj-app .banner.conflict {
   color: var(--jj-removed-fg);
 }
 
+/* The conflicted files, under the count that summarises them. Wraps rather
+   than scrolls: a repo mid-rebase can have a dozen, and a horizontal scroller
+   hides exactly the ones you have not thought about yet. */
+jj-app .banner.conflict-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--jj-s-2);
+  padding-top: 0;
+}
+
+jj-app .conflict-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--jj-s-2);
+  max-width: 100%;
+  padding: 2px 10px;
+  border: 1px solid color-mix(in srgb, var(--jj-removed-fg) 30%, transparent);
+  border-radius: var(--jj-r-pill);
+  background: transparent;
+  color: var(--jj-removed-fg);
+  font-family: var(--jj-mono);
+  font-size: var(--jj-text-xs);
+  cursor: pointer;
+  transition: background var(--jj-t-1) ease-out;
+}
+
+jj-app .conflict-chip:hover,
+jj-app .conflict-chip.here {
+  background: var(--jj-removed-bg);
+}
+
+jj-app .conflict-chip .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* jj's own words for the conflict's shape ("2-sided conflict"), which is the
+   part that says how much work it will be. */
+jj-app .conflict-chip .shape {
+  font-family: var(--jj-sans);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+jj-app .conflict-position {
+  font-family: var(--jj-mono);
+  font-size: var(--jj-text-xs);
+  color: var(--jj-removed-fg);
+  white-space: nowrap;
+}
+
+/* Picking hunks is a mode, and a mode has to look like one — the accent border
+   is what says the checkboxes below belong to this bar. */
+jj-app .banner.split-banner {
+  background: var(--jj-surface);
+  border-color: color-mix(in srgb, var(--jj-accent) 34%, var(--jj-border));
+  color: var(--jj-fg);
+}
+
 /* An ordinary card. Tinting the whole block with the accent produced a muddy
    wash — `accent-soft` over a surface is a *third* colour that is neither, and
    in a dark theme it landed as a dishwater blue-grey next to the clean panels
@@ -2865,10 +2943,10 @@ jj-patch-view {
 }
 
 .jj-patch {
-  /* No side gutter. The diff pane became a card of its own, so an inset gutter
-     inside it drew a second frame around every file — two rounded boxes, 16px
-     apart, saying the same thing. File cards now run the full width of the pane
-     and are separated from each other vertically only.
+  /* No side gutter. The pane is a container, not a frame, so an inset gutter
+     inside it drew a second edge around every file — two boxes, 16px apart,
+     saying the same thing. File cards run the full width of the pane and are
+     separated from each other vertically only.
 
      Rows are absolutely positioned by the virtualizer, so their `100%` resolves
      against the padding box; the value is kept (at 0) rather than deleted
@@ -2990,19 +3068,24 @@ jj-patch-view {
   align-items: center;
   padding: 10px 15px;
   background: var(--jj-surface);
-  /* The gap between file cards. A transparent border rather than a margin,
-     because the virtualizer measures offsetHeight and a margin is height it
-     cannot see — the rows would drift out of position as you scroll. */
+  /* The card's lid: rounded at the top, square where the diff continues below.
+     The gap above it is a `.file-gap` row rather than a margin (invisible to
+     the virtualizer) or a transparent border (which cannot be rounded — the
+     padding box's radius is the border radius minus the border width, so an
+     18px strip flattens it). */
   border: 0;
-  border-top: 18px solid transparent;
-  background-clip: padding-box;
-  /* The card's top and side hairlines are drawn as *inset shadows*, not
-     borders. A real `border-left` runs the full height of the element, which
-     includes the 18px transparent strip above — so every file card had two
-     orphaned 1px ticks floating in the gap above it, one per side. Inset
-     shadows are painted inside the padding box, so they start where the card
-     visually starts. */
-  box-shadow: inset 0 1px 0 var(--jj-border);
+  border-radius: var(--jj-r-md) var(--jj-r-md) 0 0;
+  /* Real borders on all four sides. The bottom one divides the header from the
+     code: the header is the file's identity and its actions, the code is the
+     content, and without a rule between them the diff's first line reads as
+     part of the title bar. The sides are the top of the card's own outline —
+     see `.jj-patch > .file-header` and friends below, which continue it down
+     every row to the footer. (These used to be inset shadows, because a real
+     `border-left` would have run through the transparent spacing strip that
+     used to live on this element. That strip is a `.file-gap` row now, so the
+     borders can be honest.) */
+  border: 1px solid var(--jj-border);
+  box-sizing: border-box;
   font-family: var(--jj-sans);
   font-weight: 550;
   font-size: 12.5px;
@@ -3111,12 +3194,25 @@ select.file-action {
 /* Hunk headers, expanders and notices sit inside the card. */
 
 .hunk-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 4px 14px;
   background: var(--jj-hunk-bg);
   color: var(--jj-fg-faint);
   font-size: 11px;
   box-sizing: border-box;
   border-top: 1px solid var(--jj-border);
+}
+
+/* Split-selection boxes. Same control in the file header and the hunk header,
+   so "this whole file" and "this hunk" read as the same kind of decision at
+   two scales — the indeterminate state on the file box is what ties them. */
+.split-check {
+  accent-color: var(--jj-accent);
+  margin: 0;
+  flex: none;
+  cursor: pointer;
 }
 
 .expander {
@@ -3146,20 +3242,62 @@ select.file-action {
    measures offsetHeight, so anything contributing height must be in the row model. */
 /* Closing edge of a file section. Full-bleed now, so it is a hairline under the
    last row rather than the bottom of a box. */
+/* The card's foot: closes the outline the header opened. */
 .file-end {
-  height: 8px;
+  height: 9px;
   background: var(--jj-surface);
-  border: 0;
-  box-shadow: inset 0 -1px 0 var(--jj-border);
+  border: 1px solid var(--jj-border);
+  border-top: 0;
+  border-radius: 0 0 var(--jj-r-md) var(--jj-r-md);
   box-sizing: border-box;
 }
 
-/* A collapsed (viewed) file is header-only, so the header closes itself — the
-   fourth hairline joins the other three in the inset set. */
+/* The space between two file cards. A row, so the virtualizer can measure it —
+   see `buildRows`. Deliberately absent from the side-border rule below: it is
+   the one row that is *not* part of a card, and the break in the outline is
+   what makes two cards read as two. */
+.file-gap {
+  height: 18px;
+}
+
+/* The card's sides, continued down every row between the header and the foot.
+
+   There is no per-file container element to hang an outline on — every row in
+   the diff is a direct child of one flat virtualized list, across all files —
+   so each row draws its own two edges and they line up into one. Real borders
+   rather than inset shadows or a background gradient, because both of those
+   are already spoken for on these rows: `box-shadow` carries the keyboard
+   cursor and search hits (with `!important`), and the diff fills are set with
+   the `background` shorthand, which resets `background-image`.
+   Every row kind that can appear inside a card belongs here; a new one that
+   forgets shows up as a card with a notch cut out of its side.
+
+   Descendant selectors, not `>`: a row kind is free to render as more than one
+   top-level node (a code line and the comment composer under it are siblings),
+   and the virtualizer owns how items are attached. Nothing in this list nests
+   inside another, so the looser match costs nothing. */
+.jj-patch .hunk-header,
+.jj-patch .expander,
+.jj-patch .notice,
+.jj-patch .line,
+.jj-patch .split-row,
+.jj-patch .comment-row,
+.jj-patch .comment-composer,
+.jj-patch .markdown-preview,
+.jj-patch jj-image-view {
+  border-left: 1px solid var(--jj-border);
+  border-right: 1px solid var(--jj-border);
+  box-sizing: border-box;
+}
+
+.jj-patch jj-image-view {
+  display: block;
+}
+
+/* A collapsed (viewed) file is header-only, so the header *is* the whole card
+   and the radius runs all the way round rather than stopping at the top. */
 .file-header.viewed {
-  box-shadow:
-    inset 0 1px 0 var(--jj-border),
-    inset 0 -1px 0 var(--jj-border);
+  border-radius: var(--jj-r-md);
 }
 
 /* The pinned copy of the current file's header.
@@ -3174,23 +3312,58 @@ select.file-action {
    It renders only while the real header is above the fold, which is also what
    stops the path being on screen twice — the bug this replaced was a breadcrumb
    that showed the same name as the card header right below it. */
-jj-patch-view > .file-header.stuck {
+/* The holder does the positioning and the hiding; the header inside it does the
+   looking. They have to be two elements: `border-radius` clips *every*
+   background layer an element has, so a rounded bar cannot also paint the
+   square corner it sits in — and through those two corner notches you could
+   watch the real file card's own rounded corner slide past underneath. The
+   holder is square and opaque, so what shows in the notches is the pane's own
+   background, which is what would be there if nothing were scrolling at all. */
+jj-patch-view > .stuck-holder {
   position: absolute;
   top: 0;
   left: var(--jj-diff-gutter, 0px);
   right: var(--jj-diff-gutter, 0px);
   z-index: 5;
-  width: auto;
-  /* No transparent gap to keep clear of, so this one can use real borders — and
-     it needs all four. The top was zeroed on the theory that a bar pinned to
-     the top of the pane has nothing above it to separate from; but it sits
-     flush against the pane's own top edge, where the background changes, and a
-     missing hairline there reads as the bar having been cut off. */
+  background: var(--jj-bg);
+  /* How far the next card has shoved this one off the top, set per scroll frame
+     by `updateStuckGeometry`. The entry animation lives on the header inside
+     rather than here, because it animates `transform` too and would fight this
+     for the 180ms it runs — the bar would jump back down mid-handover. */
+  transform: translateY(var(--jj-stuck-push, 0px));
+}
+
+jj-patch-view .file-header.stuck {
+  /* The 1px border is width the holder has already allocated, not width on top
+     of it. */
+  box-sizing: border-box;
+  width: 100%;
+  /* No gap row above it, so this one can use real borders — and it needs all
+     four. The top was zeroed on the theory that a bar pinned to the top of the
+     pane has nothing above it to separate from; but it sits flush against the
+     pane's own top edge, where the background changes, and a missing hairline
+     there reads as the bar having been cut off.
+     Same radius as the header it stands in for: it *is* that header, moved.
+     Squaring it while the scrolled-away original is round made the pinned bar
+     read as a different kind of object rather than as the same one following
+     you down the file. */
   border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md) var(--jj-r-md) 0 0;
   background: var(--jj-surface);
-  /* Enough shadow to read as being in front of the code sliding beneath it. */
-  box-shadow: 0 8px 18px -8px rgb(0 0 0 / 0.35);
+  /* No drop shadow. The card outline already says where the bar ends, and a
+     shadow under a bar that is flush with the card beneath it reads as a seam
+     rather than as height. */
+  box-shadow: none;
+  /* Only the corners animate, and only when the card ends under them. */
+  transition: border-radius var(--jj-t-1, 120ms) var(--jj-ease-out);
   animation: jj-stick-in var(--jj-t-2) var(--jj-ease-out);
+}
+
+/* The card's body has scrolled past, so the pinned header is the last piece of
+   it left on screen: it stops being a lid and becomes the whole card, which
+   means closing its own bottom edge. */
+jj-patch-view .file-header.stuck.closing {
+  border-radius: var(--jj-r-md);
 }
 
 @keyframes jj-stick-in {
@@ -3313,7 +3486,15 @@ jj-patch-view > .file-header.stuck {
   border-radius: 3px;
 }
 
-/* jj materialized-conflict marker lines. */
+/* jj materialized-conflict marker lines.
+   Three roles, three colours, because the whole difficulty of reading a
+   materialized conflict is knowing which side you are looking at. The fences
+   bound the region and stay neutral-accent; a `+++++++` line introduces one
+   side's content verbatim, so it takes the added colour; `%%%%%%%` and its
+   `\\\\\\\` continuation introduce a side expressed as a diff from the base,
+   which is the removed colour because that is where its `-` lines came from.
+   jj writes the commit ids and descriptions into the marker text itself, so
+   the colour only has to say *which kind*; the line says which commit. */
 .line.conflict-marker,
 .cell.conflict-marker {
   background: var(--jj-accent-soft);
@@ -3323,6 +3504,38 @@ jj-patch-view > .file-header.stuck {
 .cell.conflict-marker .content {
   color: var(--jj-accent);
   font-weight: 600;
+}
+
+.line.conflict-marker.side,
+.cell.conflict-marker.side {
+  background: var(--jj-added-bg);
+}
+
+.line.conflict-marker.side .content,
+.cell.conflict-marker.side .content {
+  color: var(--jj-added-fg);
+}
+
+.line.conflict-marker.base,
+.cell.conflict-marker.base {
+  background: var(--jj-removed-bg);
+}
+
+.line.conflict-marker.base .content,
+.cell.conflict-marker.base .content {
+  color: var(--jj-removed-fg);
+}
+
+/* The two fences get a rule on the edge they close, so a long conflict reads
+   as one block rather than as scattered coloured lines. */
+.line.conflict-marker.start,
+.cell.conflict-marker.start {
+  border-top: 1px solid var(--jj-accent-line);
+}
+
+.line.conflict-marker.end,
+.cell.conflict-marker.end {
+  border-bottom: 1px solid var(--jj-accent-line);
 }
 
 /* Keyboard cursor + search hits. */

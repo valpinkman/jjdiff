@@ -82,6 +82,42 @@ export interface FilePatch {
   hunks: Hunk[];
 }
 
+/**
+ * A path with an unresolved conflict, plus jj's own description of its shape
+ * ("2-sided conflict"). The description is the only place a conflict's arity is
+ * stated outside the marker lines themselves.
+ */
+export interface ConflictedFile {
+  path: string;
+  description: string;
+}
+
+// -- Hunk-level split --
+
+/** One hunk of a split plan: enough to apply it, plus whether it was picked. */
+export interface SplitHunk {
+  selected: boolean;
+  oldStart: number;
+  oldLines: number;
+  lines: { kind: LineKind; text: string }[];
+}
+
+/**
+ * What happens to one file. `hunks` is only read for `'hunks'`, and carries
+ * *every* hunk rather than the picked ones — the backend re-applies the lot as
+ * a check that the plan still describes the change (see `crates/diff/apply.rs`).
+ */
+export interface SplitFilePlan {
+  path: string;
+  oldPath: string | null;
+  select: 'all' | 'none' | 'hunks';
+  hunks: SplitHunk[];
+}
+
+export interface SplitPlan {
+  files: SplitFilePlan[];
+}
+
 export interface LaunchOptions {
   repoPath: string;
   revset: string | null;
@@ -322,6 +358,20 @@ export const splitPaths = (
   IN_TAURI
     ? invoke<Outcome>('split_paths', { revset, paths, allowImmutable })
     : mockOutcome('Split.');
+/**
+ * Hunk-level split. jj has no flag for this: the backend registers jjdiff as
+ * jj's own diff editor for one invocation and hands it `plan`, so the hunks
+ * that move are exactly the ones that were on screen.
+ */
+export const splitHunks = (
+  revset: string,
+  plan: SplitPlan,
+  message: string,
+  allowImmutable = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('split_hunks', { revset, plan, message, allowImmutable })
+    : mockOutcome('Split by hunk.');
 export const abandonChange = (revset: string, allowImmutable = false): Promise<Outcome> =>
   IN_TAURI
     ? invoke<Outcome>('abandon_change', { revset, allowImmutable })
@@ -386,8 +436,8 @@ export const restoreOperation = (operation: string): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('restore_operation', { operation }) : mockOutcome('Restored.');
 export const revertOperation = (operation: string): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('revert_operation', { operation }) : mockOutcome('Reverted.');
-export const getConflicts = (revset: string): Promise<string[]> =>
-  IN_TAURI ? invoke<string[]>('conflicts', { revset }) : Promise.resolve([]);
+export const getConflicts = (revset: string): Promise<ConflictedFile[]> =>
+  IN_TAURI ? invoke<ConflictedFile[]>('conflicts', { revset }) : mock((m) => m.mockConflicts);
 export const getReviewStatus = (changeId: string): Promise<ReviewStatus> =>
   IN_TAURI
     ? invoke<ReviewStatus>('review_status', { changeId })

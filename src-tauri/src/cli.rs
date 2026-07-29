@@ -54,6 +54,11 @@ pub enum Headless {
     /// `--print-hunks [revset]` — text dump for agents.
     PrintHunks(Option<String>),
     InstallTerminalHelper,
+    /// `--apply-split-plan <plan> <left> <right>` — jjdiff acting as its own
+    /// diff editor during a hunk-level `jj split`. Not a user-facing command:
+    /// jj re-enters the binary with it, and the exit status is what decides
+    /// whether the split lands. See `split.rs`.
+    ApplySplitPlan { plan: PathBuf, left: PathBuf, right: PathBuf },
 }
 
 impl Args {
@@ -101,6 +106,13 @@ impl Args {
                     headless = Some(Headless::Diff(rev));
                 }
                 "--install-terminal-helper" => headless = Some(Headless::InstallTerminalHelper),
+                "--apply-split-plan" => {
+                    headless = Some(Headless::ApplySplitPlan {
+                        plan: PathBuf::from(want_value(&mut peekable, arg)?),
+                        left: PathBuf::from(want_value(&mut peekable, arg)?),
+                        right: PathBuf::from(want_value(&mut peekable, arg)?),
+                    });
+                }
                 // Tauri / `pnpm tauri dev` injects its own flags (e.g. `--no-watch`).
                 // Ignore them on the GUI path so dev mode keeps working; the headless
                 // commands above never see them because they short-circuit earlier.
@@ -288,6 +300,11 @@ pub fn run_headless(headless: &Headless, args: &Args) -> Result<(), String> {
             let files = diff_files(args, revset.as_deref())?;
             print_hunks(&files);
             Ok(())
+        }
+        // No output on success: jj is the caller here and reads the exit status,
+        // not stdout.
+        Headless::ApplySplitPlan { plan, left, right } => {
+            crate::split::apply_plan(plan, left, right)
         }
     }
 }
@@ -566,6 +583,24 @@ mod tests {
     fn headless_install_helper() {
         let args = Args::parse(&argv("--install-terminal-helper")).unwrap();
         assert_eq!(args.headless, Some(Headless::InstallTerminalHelper));
+    }
+
+    /// jj re-enters the binary with exactly these three positionals when it
+    /// runs jjdiff as its diff editor; mis-parsing them would apply a split
+    /// plan to the wrong pair of directories.
+    #[test]
+    fn headless_apply_split_plan_takes_three_paths() {
+        let args = Args::parse(&argv("--apply-split-plan /tmp/plan.json /tmp/d/left /tmp/d/right")).unwrap();
+        assert_eq!(
+            args.headless,
+            Some(Headless::ApplySplitPlan {
+                plan: PathBuf::from("/tmp/plan.json"),
+                left: PathBuf::from("/tmp/d/left"),
+                right: PathBuf::from("/tmp/d/right"),
+            })
+        );
+        let short = Args::parse(&argv("--apply-split-plan /tmp/plan.json")).unwrap_err();
+        assert!(matches!(short, ParseError::MissingValue(flag) if flag == "--apply-split-plan"));
     }
 
     #[test]

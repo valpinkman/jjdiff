@@ -38,5 +38,10 @@ r2d2_sqlite = "0.24"
 base64 = "0.22"
 toml_edit = "0.25.13"
 
+# The hunk-level split plan is handed to a child process (jjdiff acting as
+# jj's diff editor) through a temp file, and must be cleaned up however the
+# `jj split` ends.
+tempfile = "3"
+
 [dev-dependencies]
 tempfile = "3"

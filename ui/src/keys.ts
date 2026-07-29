@@ -85,6 +85,7 @@ export const shortcutReference = (commandBar: string): KeyGroup[] => [
       { keys: 'n / p', label: 'Next / previous hunk' },
       { keys: 'v', label: 'Mark file viewed' },
       { keys: 'o', label: 'Open file in editor' },
+      { keys: 'c / C', label: 'Next / previous conflict' },
     ],
   },
   {

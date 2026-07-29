@@ -5,8 +5,10 @@ import type { Comment, FilePatch, Line } from './ipc.js';
 export type DiffLayout = 'split' | 'unified';
 
 export type Row =
+  /** Transparent space between two file cards. See `buildRows`. */
+  | { kind: 'gap'; fileIndex: number }
   | { kind: 'file'; fileIndex: number; file: FilePatch }
-  | { kind: 'hunk'; fileIndex: number; label: string }
+  | { kind: 'hunk'; fileIndex: number; label: string; path: string; hunkId: string }
   /** Clickable gap between hunks: pulls more context from the full file. */
   | {
       kind: 'expander';
@@ -87,6 +89,16 @@ export function buildRows(
     if (hunkFilter && !file.hunks.some((hunk) => hunkFilter.has(hunk.id))) {
       return;
     }
+    // Space between cards is a row of its own, not a margin and not a
+    // transparent border on the header. Margins are invisible to the
+    // virtualizer (it measures `offsetHeight`), and a transparent border on the
+    // header cannot be rounded — `background-clip: padding-box` clips the
+    // surface to a box whose corner radius is the border radius *minus* the
+    // border width, so an 18px strip flattens any radius under it. A spacer row
+    // leaves the header free to round its own top.
+    if (rows.length > 0) {
+      rows.push({ kind: 'gap', fileIndex });
+    }
     rows.push({ kind: 'file', fileIndex, file });
     if (viewed.has(file.path)) {
       // Viewed files collapse to the header alone — that is the point of the flag. The
@@ -154,6 +166,8 @@ export function buildRows(
         rows.push({
           kind: 'hunk',
           fileIndex,
+          path: file.path,
+          hunkId: hunk.id,
           label: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@${
             hunk.context ? ' ' + hunk.context : ''
           }`,
@@ -308,6 +322,38 @@ export function sideTexts(file: FilePatch): SideTexts {
     }
   }
   return { old: oldLines, new: newLines };
+}
+
+// ---- Selection units (hunk-level split) ----
+//
+// A split selection is a set of strings, and a file contributes either its
+// hunk ids or a single id standing for the whole file. One set rather than two
+// because every consumer — the checkboxes, the counts, the plan — asks the same
+// question of both kinds: is this in.
+
+/**
+ * The id standing for a whole file. `#*` cannot collide with a hunk id, which
+ * is always `<path>#<index>`.
+ */
+export const fileUnitId = (path: string): string => `${path}#*`;
+
+/**
+ * Whether a file's change can be divided at all.
+ *
+ * Binary content has no hunks to pick between. A rename is one act — keeping
+ * the move but dropping the edits is not a thing `jj split` can express, since
+ * both halves would have to claim the same path. And a single hunk is already
+ * the whole file, so offering a second checkbox for it would be two controls
+ * for one decision.
+ */
+export const supportsHunkSelection = (file: FilePatch): boolean =>
+  !file.binary && !file.skipped && !file.oldPath && file.hunks.length > 1;
+
+/** Everything in `file` that can be independently selected. */
+export function selectionUnits(file: FilePatch): string[] {
+  return supportsHunkSelection(file)
+    ? file.hunks.map((hunk) => hunk.id)
+    : [fileUnitId(file.path)];
 }
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);

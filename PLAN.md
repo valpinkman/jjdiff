@@ -87,10 +87,11 @@ to the user's repo. Phase 1 is **CLI-first**:
 | rewrite tracking (review-state migration) | `jj evolog -T` |
 | change detection | watch `.jj/repo/op_heads/heads/` + debounced fs events (notify crate) |
 
-Hunk-level (not file-level) squash/split is the one thing the CLI can't do non-interactively:
-Phase 1 ships file-level; Phase 2 does hunk-level via a scripted `JJ_EDITOR`/diff-editor shim or
-
-jj-lib tree edits.
+Hunk-level (not file-level) squash/split is the one thing the CLI can't do
+non-interactively. Phase 1 ships file-level; the scripted diff-editor shim this predicted
+is what hunk-level split was eventually built on — jjdiff registers itself as jj's diff
+editor for one `jj split` and edits the directory jj hands it. `squash -i` speaks the same
+protocol and is the remaining half.
 
 ### Review-state model
 
@@ -214,7 +215,7 @@ no remote, nothing to squash).
 | Group | Commands | Notes |
 |---|---|---|
 | Navigate | `new [rev]`, `edit <rev>` | "Work on this change" from the detail view |
-| Shape | `squash` (whole + per file ✅), `absorb` ✅, `split <paths>`, `duplicate`, `abandon` | Split is **file-level, non-interactive** (`jj split <paths>`), matching our squash approach; interactive hunk-splitting stays deferred |
+| Shape | `squash` (whole + per file ✅), `absorb` ✅, `split <paths>` ✅ + per hunk ✅, `duplicate`, `abandon` | Both splits ship: file-level is `jj split <paths>`, hunk-level drives jj's diff editor (see *Still open after Phase 2*). Hunk-level `squash` is the piece still missing |
 | History | `rebase -r/-s/-b -d <dest>`, `backout` | Destination picker over the graph; drag-to-rebase deliberately not first — misdrops are expensive, and every rebase is undoable but not free |
 | Describe | `describe` ✅, bulk-describe empty changes | |
 | Remote | `git fetch`, `git push -b/--change`, bookmark create/set/delete/track, **open pull request** | Push needs bookmarks; `--change` auto-names from the change id. Show ahead/behind per bookmark. See PR note below |
@@ -264,8 +265,18 @@ is out of date before you push over it.
 
 ### Still open after Phase 2
 
-- **Interactive (hunk-level) split** — file-level `jj split <paths>` shipped; hunk-level
-  still needs a scripted diff-editor shim.
+- ~~**Interactive (hunk-level) split**~~ ✅ **DONE.** The scripted diff-editor shim this
+  entry always called for, with jjdiff as the shim: `jj split -i` hands two directories
+  to a diff editor and takes whatever the right one holds, so jjdiff registers *itself*
+  as that editor for one invocation and jj re-enters the binary as
+  `--apply-split-plan`. The plan is built from the diff on screen rather than
+  recomputed, which is the point — the hunks that move are the ones that were ticked.
+  What makes that safe to do to someone's commit is a check rather than trust:
+  applying **every** hunk must reproduce the new side exactly, a property of any correct
+  diff, so it is free when things are well and refuses a stale plan, a file edited since
+  it was read, or a diff of some other pair of trees. It also means our hunk boundaries
+  need not agree with jj's, since any correct cut of the same change composes back to the
+  same result. A refusal exits non-zero and jj abandons the split whole.
 - ~~**Ahead/behind per bookmark**~~ ✅ **DONE.** `Repo::bookmark_statuses` templates
   `jj bookmark list --all-remotes` for `tracking_ahead_count`/`tracking_behind_count`,
   which are stated from the *remote* ref's side and so mean the opposite of the names
@@ -274,9 +285,25 @@ is out of date before you push over it.
   not an outcome) and disappear when in sync. The payoff is on the forge banner: an
   unpushed head means CI, reviewers and merge state describe code the forge has and the
   reviewer does not, so `renderHeadDrift` says so next to the checks.
-- **Rebase destination picker** — currently a prompt for a revset; a graph-target picker
-  (and eventually drag-to-rebase) is the better UI.
-- **Conflict resolution** — still terminal-only, for the reason given in M4.
+- ~~**Rebase destination picker**~~ ✅ **DONE.** The revset prompt asked the wrong
+  question: the destination is nearly always a commit already on screen, so naming it
+  meant reading an id off the graph and retyping it — a transcription step whose only
+  possible contribution is an error. The picker lists the graph, filterable, with
+  bookmarks and immutability visible, and the mode (`-r` / `-s` / `-b`) is a labelled
+  choice rather than a hardcoded `-s`. Destinations that would form a cycle — the change
+  and its descendants — are not offered at all, so jj's refusal arrives before the
+  confirmation instead of after it. The free-form field stays, below the list: `trunk()`
+  and `main@origin` are real answers that no list of commits contains. Drag-to-rebase is
+  still deliberately not first; misdrops are undoable but not free.
+- **Conflict resolution** — resolving is still terminal-only, for the reason given in
+  M4, but the conflict is no longer a dead end. `jj resolve --list` gives every path
+  *and* jj's description of each ("2-sided conflict"), which is the only statement of a
+  conflict's arity outside the marker lines; the banner names them, clicking one jumps
+  to it, and `c`/`C` step between conflict **regions** rather than files, since one file
+  routinely holds several. The markers themselves are coloured by role — fence, side,
+  base — because jj, unlike git, already writes each side's commit and description into
+  the marker text, so the colour only has to say which kind of side you are looking at.
+  What remains deferred is the merge editor itself.
 - ~~**`jj op diff`**~~ ✅ **DONE.** Every row in the operation log answers "what did that
   actually do": *What changed* narrates one operation against its parent, and pinning a row
   as *Compare from here* narrates a span of them — which is the case that matters, since
@@ -544,8 +571,10 @@ app scrolled sideways, carrying the toolbar off screen).
   unsigned bundle already builds (`pnpm tauri build`).
 - *Shared-review web service* — weeks of work (codiff's Cloudflare equivalent) and
   questionable value before there is a second user.
-- *Hunk-level squash/split* — needs a scripted diff-editor shim or jj-lib; file-level
-  `squash`/`absorb` covers most of the need today.
+- *Hunk-level **squash*** — the split shipped (see above) and `jj squash -i` speaks the
+  same diff-editor protocol, so the shim is already written; what is missing is only the
+  plan-building for a two-change selection. File-level `squash`/`absorb` covers most of
+  the need today.
 - *Full-file syntax highlighting* — expand-context lines are deliberately untokenized;
   proper highlighting wants the whole file through shiki, which needs a highlight cache
   rework.

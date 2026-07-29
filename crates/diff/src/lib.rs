@@ -11,13 +11,15 @@
 //! Both run [`spans::add_word_spans`] so the UI gets intra-line word emphasis. Span offsets are
 //! **UTF-16 code units** to match JavaScript string indexing.
 
+pub mod apply;
 mod parse;
 mod spans;
 pub mod worktree;
 
+pub use apply::{apply_selected_hunks, ApplyError, PlanHunk, PlanLine};
 pub use parse::parse_git_patch;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -121,7 +123,7 @@ impl Line {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LineKind {
     Context,

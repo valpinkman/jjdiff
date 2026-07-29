@@ -5,7 +5,15 @@ import { virtualize, virtualizerRef } from '@lit-labs/virtualizer/virtualize.js'
 import { HighlightStore } from './highlight.js';
 import type { Comment, CommentSide, FilePatch, Line } from './ipc.js';
 import { renderLineContent } from './render-line.js';
-import { buildRows, type DiffLayout, type Expansion, type HlRef, type Row } from './rows.js';
+import {
+  buildRows,
+  selectionUnits,
+  supportsHunkSelection,
+  type DiffLayout,
+  type Expansion,
+  type HlRef,
+  type Row,
+} from './rows.js';
 
 /**
  * Virtualized diff renderer.
@@ -28,8 +36,16 @@ export class PatchView extends LitElement {
   @property({ type: Boolean }) canMarkViewed = false;
   /** Mutable changes a working-copy file can be squashed into ("move to change"). */
   @property({ attribute: false }) squashTargets: { changeId: string; label: string }[] = [];
-  /** Paths with unresolved conflicts in the shown revision. */
-  @property({ attribute: false }) conflicted: ReadonlySet<string> = new Set();
+  /** Conflicted paths → jj's description of the conflict ("2-sided conflict"). */
+  @property({ attribute: false }) conflicted: ReadonlyMap<string, string> = new Map();
+  /**
+   * Split selection: the picked units, or null when not selecting.
+   *
+   * Null rather than an empty set, because "no checkboxes on screen" and "no
+   * boxes ticked" are different states and the second is a legitimate place to
+   * be while deciding.
+   */
+  @property({ attribute: false }) selection: ReadonlySet<string> | null = null;
   /** Active walkthrough step's hunk ids; null = show everything. */
   @property({ attribute: false }) hunkFilter: ReadonlySet<string> | null = null;
   /** Find-in-diffs query; null when search is closed. */
@@ -64,6 +80,14 @@ export class PatchView extends LitElement {
   private visibleFile: string | null = null;
   /** The file whose header is currently pinned, or null when it is on screen. */
   @state() private stuck: FilePatch | null = null;
+  /** Whether the pinned header is all that is left of its card — see `updateStuckClosing`. */
+  @state() private stuckClosing = false;
+  /** Row index of the pinned card's closing row; -1 when it has none. */
+  private stuckFoot = -1;
+  /** Row index of the next card's header — what pushes the pinned bar out. */
+  private stuckNext = -1;
+  /** Rows the virtualizer currently has mounted, from `visibilityChanged`. */
+  private range = { first: 0, last: 0 };
   private searchMatches: number[] = [];
   private highlights = new HighlightStore();
 
@@ -112,6 +136,17 @@ export class PatchView extends LitElement {
       this.codeCols = widestLine(this.rows);
       if (this.cursor !== null && this.cursor >= this.rows.length) {
         this.cursor = null;
+      }
+      // The pinned header holds a `FilePatch` captured by a *scroll* event, and
+      // nothing else ever reassigns it. When the diff changes underneath it —
+      // a file discarded, squashed away, split out, or filtered out by a
+      // walkthrough step — it would go on naming a file that is no longer in
+      // the diff until the next scroll, which for a short diff may never come.
+      // Re-resolving by path also refreshes its +/− counts, which were pinned
+      // to the old object too.
+      if (this.stuck) {
+        const path = this.stuck.path;
+        this.stuck = this.files.find((file) => file.path === path) ?? null;
       }
     }
     if (changed.has('files') || changed.has('layout') || changed.has('wordWrap')) {
@@ -269,6 +304,73 @@ export class PatchView extends LitElement {
     }
   }
 
+  /**
+   * Move to the next or previous conflict and report where it landed.
+   *
+   * The target is the `<<<<<<<` line that opens each conflict region, not the
+   * file — a file can hold several, and stopping at its header would leave the
+   * reviewer to find them by scrolling, which is the job being automated. Files
+   * jj flagged but whose contents were not diffed (too large, binary) have no
+   * marker to land on, so their header stands in; missing them out entirely
+   * would make the count in the banner disagree with what the button can reach.
+   */
+  moveToConflict(direction: 1 | -1): { path: string; index: number; total: number } | null {
+    const stops: number[] = [];
+    let inConflictedFile = false;
+    // The header standing in for the file, until a real marker inside it turns
+    // up and takes its place. Held per file, and only the first marker spends it.
+    let placeholder: number | null = null;
+    this.rows.forEach((row, index) => {
+      if (row.kind === 'file') {
+        inConflictedFile = this.conflicted.has(row.file.path);
+        placeholder = inConflictedFile ? index : null;
+        if (inConflictedFile) stops.push(index);
+        return;
+      }
+      if (!inConflictedFile || !conflictOpener(row)) return;
+      if (placeholder !== null) {
+        stops.splice(stops.indexOf(placeholder), 1);
+        placeholder = null;
+      }
+      stops.push(index);
+    });
+    if (stops.length === 0) return null;
+
+    const from = this.cursor ?? -1;
+    const next =
+      direction === 1
+        ? (stops.find((index) => index > from) ?? stops[0]!)
+        : ([...stops].reverse().find((index) => index < from) ?? stops[stops.length - 1]!);
+    this.cursor = next;
+    this.scrollToRow(next);
+    for (let index = next; index >= 0; index--) {
+      const owner = this.rows[index];
+      if (owner?.kind === 'file') {
+        return { path: owner.file.path, index: stops.indexOf(next) + 1, total: stops.length };
+      }
+    }
+    return null;
+  }
+
+  // ---- Split selection ----
+
+  /** Whether every / any selectable unit of a file is picked. */
+  private fileSelection(file: FilePatch): { all: boolean; some: boolean } {
+    const units = selectionUnits(file);
+    const picked = units.filter((unit) => this.selection?.has(unit)).length;
+    return { all: picked === units.length, some: picked > 0 };
+  }
+
+  private emitSelect(units: string[], selected: boolean) {
+    this.dispatchEvent(
+      new CustomEvent('select-units', {
+        bubbles: true,
+        composed: true,
+        detail: { units, selected },
+      }),
+    );
+  }
+
   /** The revset to fetch file bytes at; null = working copy (on-disk). */
   private revsetForFile(_fileIndex: number): string | null {
     return this.revset;
@@ -328,10 +430,28 @@ export class PatchView extends LitElement {
   }
 
   private scrollToRow(index: number, block: 'center' | 'start' = 'center') {
+    // `element(i)` is NOT a DOM node — it is a scroll handle the virtualizer
+    // hands out so you can target rows it has not rendered, and the only thing
+    // on it is `scrollIntoView`. Anything needing real geometry has to find the
+    // rendered node itself; see `cardEdge`.
     const host = this.querySelector('.jj-patch') as
       | (HTMLElement & { [virtualizerRef]?: { element(i: number): { scrollIntoView(o?: object): void } | undefined } })
       | null;
     host?.[virtualizerRef]?.element(index)?.scrollIntoView({ block });
+  }
+
+  /**
+   * A rendered card edge, found by path rather than by row index.
+   *
+   * Row index cannot be mapped to a child element: the virtualizer renders a
+   * window of rows, and some row kinds emit more than one top-level node (a
+   * code line and the comment composer under it), so the nth child is not the
+   * nth row. Both edges carry `data-path`, which is unambiguous.
+   */
+  private cardEdge(kind: '.file-header' | '.file-end', path: string): HTMLElement | null {
+    return this.querySelector<HTMLElement>(
+      `.jj-patch > ${kind}[data-path="${CSS.escape(path)}"]`,
+    );
   }
 
   /**
@@ -349,6 +469,7 @@ export class PatchView extends LitElement {
     // yielded undefined and fell back to 0, so this always reported the first
     // file in the diff no matter where the viewport was.
     const first = (event as Event & { first?: number }).first ?? 0;
+    this.range = { first, last: (event as Event & { last?: number }).last ?? first };
     // Walk back to the file header owning the topmost visible row.
     for (let index = Math.min(first, this.rows.length - 1); index >= 0; index--) {
       const row = this.rows[index];
@@ -356,6 +477,9 @@ export class PatchView extends LitElement {
         // `index === first` means the header itself is the topmost row, so it is
         // still on screen and nothing needs pinning.
         this.stuck = index < first ? row.file : null;
+        this.stuckFoot = this.stuck ? this.footRow(index) : -1;
+        this.stuckNext = this.stuck ? this.nextCardRow(index) : -1;
+        this.updateStuckGeometry();
         if (this.visibleFile !== row.file.path) {
           this.visibleFile = row.file.path;
           this.dispatchEvent(
@@ -370,7 +494,107 @@ export class PatchView extends LitElement {
       }
     }
     this.stuck = null;
+    this.stuckFoot = -1;
+    this.stuckNext = -1;
+    this.stuckClosing = false;
   };
+
+  /** The row index of a card's closing row, or -1 when it has none (collapsed). */
+  private footRow(fileRow: number): number {
+    for (let index = fileRow + 1; index < this.rows.length; index++) {
+      const kind = this.rows[index]?.kind;
+      if (kind === 'file-end') return index;
+      // A collapsed (viewed) file has no foot — its header is already the whole
+      // card, and `.viewed` rounds it all round without any of this.
+      if (kind === 'file' || kind === 'gap') return -1;
+    }
+    return -1;
+  }
+
+  /** The row index of the next card's header, or -1 when this is the last. */
+  private nextCardRow(fileRow: number): number {
+    for (let index = fileRow + 1; index < this.rows.length; index++) {
+      if (this.rows[index]?.kind === 'file') return index;
+    }
+    return -1;
+  }
+
+  /**
+   * Where the pinned bar sits and whether it has to close itself.
+   *
+   * Two separate things, measured rather than inferred from row indices — the
+   * bar *overlays* the top of the scroller, so anything phrased in terms of the
+   * first visible row is a bar-height out of date by construction.
+   *
+   * **Push.** A pinned header must be shoved out of the way by the card coming
+   * up behind it, not left hovering over it. Once the next card's top edge
+   * reaches the bar's bottom, the bar rides up with it and off the top — the
+   * standard sticky-header handover, and the thing that makes the pinned bar
+   * feel attached to the list rather than painted on the window.
+   *
+   * **Closing.** Rounding the bottom corners happens earlier, when the card's
+   * own foot passes under the bar: at that point the bar is the last piece of
+   * that card on screen, so it stops being a lid and becomes the whole card.
+   * The two moments are one gap-row apart, which is why they are measured
+   * against different things.
+   *
+   * Rows outside the rendered range have no element to measure, so the visible
+   * range answers those: above it has certainly passed, below it certainly has
+   * not.
+   */
+  private updateStuckGeometry() {
+    const bar = this.querySelector('.stuck-holder') as HTMLElement | null;
+    const pane = this.pane;
+    if (!this.stuck || !bar || !pane) {
+      if (this.stuckClosing) this.stuckClosing = false;
+      return;
+    }
+    const barBox = bar.getBoundingClientRect();
+    const paneTop = pane.getBoundingClientRect().top;
+    // `offsetHeight`, not the rect: the rect is the *pushed* box, and feeding
+    // that back in would make the push chase its own tail.
+    const barHeight = bar.offsetHeight;
+
+    // The next card is what shoves this one out. Not rendered yet means it is
+    // still far below, so nothing is pushing.
+    //
+    // The gap counts: the bar has to come to rest one gap-row *above* the next
+    // card, not flush against it. Landing flush makes two cards touch, which is
+    // the one thing the gap row exists to prevent — and it is the pinned bar,
+    // not the card behind it, that has to give way. Measured off a real gap
+    // rather than hard-coded, since the height is a CSS decision.
+    // Clamped at bar + gap: that is the point where the bar has cleared the top
+    // entirely, and stopping at the bar's height alone would let the last few
+    // pixels of travel eat the gap it just spent the whole handover holding.
+    const gap = this.querySelector<HTMLElement>('.jj-patch > .file-gap')?.offsetHeight ?? 0;
+    const next = this.stuckNext >= 0 ? this.rows[this.stuckNext] : undefined;
+    const nextHeader =
+      next?.kind === 'file' ? this.cardEdge('.file-header', next.file.path) : null;
+    const push = nextHeader
+      ? Math.max(
+          -(barHeight + gap),
+          Math.min(0, nextHeader.getBoundingClientRect().top - paneTop - barHeight - gap),
+        )
+      : 0;
+    bar.style.setProperty('--jj-stuck-push', `${push}px`);
+
+    // Rounding is the card's own foot passing under the bar, one gap-row before
+    // the push begins. An unrendered foot is answered by the row range: above
+    // it has certainly passed, below it certainly has not.
+    const foot = this.stuck ? this.cardEdge('.file-end', this.stuck.path) : null;
+    let closing: boolean;
+    if (this.stuckFoot < 0) {
+      closing = false;
+    } else if (foot) {
+      closing = foot.getBoundingClientRect().bottom <= barBox.bottom;
+    } else {
+      closing = this.stuckFoot < this.range.first;
+    }
+    if (closing !== this.stuckClosing) this.stuckClosing = closing;
+  }
+
+  /** Scrolling slides rows under the bar without changing the rendered range. */
+  private onScroll = () => this.updateStuckGeometry();
 
   private rowClasses(index: number): string {
     const classes: string[] = [];
@@ -420,12 +644,18 @@ export class PatchView extends LitElement {
     // into its shadow root, which would cut them off from theme.css and break cross-row text
     // selection — the whole reason this component is light DOM.
     return html`${this.stuck
-        ? html`<div class="file-header stuck" data-path=${this.stuck.path}>
-            ${this.renderFileHeaderBody(this.stuck, this.viewed.has(this.stuck.path))}
+        ? html`<div class="stuck-holder">
+            <div
+              class="file-header stuck ${this.stuckClosing ? 'closing' : ''}"
+              data-path=${this.stuck.path}
+            >
+              ${this.renderFileHeaderBody(this.stuck, this.viewed.has(this.stuck.path))}
+            </div>
           </div>`
         : nothing}
       <div
         class="jj-patch ${this.layout} ${this.wordWrap ? 'wrap' : 'nowrap'}"
+        @scroll=${this.onScroll}
         @visibilityChanged=${this.onVisibilityChanged}
       >
         ${virtualize({
@@ -444,7 +674,25 @@ export class PatchView extends LitElement {
    * same place with the same shape whether or not you have scrolled past it.
    */
   private renderFileHeaderBody(file: FilePatch, isViewed: boolean) {
+    const selection = this.selection ? this.fileSelection(file) : null;
     return html`
+      ${selection
+        ? html`<input
+            class="split-check file"
+            type="checkbox"
+            title=${
+              supportsHunkSelection(file)
+                ? 'Include every hunk of this file in the split'
+                : 'Include this file in the split (it cannot be divided further)'
+            }
+            aria-label=${`Include ${file.path} in the split`}
+            .checked=${selection.all}
+            .indeterminate=${selection.some && !selection.all}
+            @click=${(event: Event) => event.stopPropagation()}
+            @change=${(event: Event) =>
+              this.emitSelect(selectionUnits(file), (event.target as HTMLInputElement).checked)}
+          />`
+        : nothing}
       <span class="file-status ${file.status}">${file.status}</span>
       <span class="file-path"
         >${file.oldPath ? html`${file.oldPath} → ` : nothing}${file.path}</span
@@ -453,7 +701,11 @@ export class PatchView extends LitElement {
         >${file.added ? html`<span class="plus">+${file.added}</span>` : nothing}
         ${file.removed ? html`<span class="minus">−${file.removed}</span>` : nothing}</span
       >
-      ${this.conflicted.has(file.path) ? html`<span class="conflict-badge">conflict</span>` : nothing}
+      ${this.conflicted.has(file.path)
+        ? html`<span class="conflict-badge" title=${this.conflicted.get(file.path) || 'Unresolved conflict'}
+            >${this.conflicted.get(file.path) || 'conflict'}</span
+          >`
+        : nothing}
       ${this.canSquash
         ? html`<select
             class="file-action"
@@ -512,8 +764,27 @@ export class PatchView extends LitElement {
           ${this.renderFileHeaderBody(file, isViewed)}
         </div>`;
       }
-      case 'hunk':
-        return html`<div class="hunk-header ${extra}">${row.label}</div>`;
+      case 'hunk': {
+        const file = this.files[row.fileIndex];
+        // Only where the file can actually be divided: elsewhere the header's
+        // box already decides for the whole file, and a second control saying
+        // the same thing invites the belief that they differ.
+        const pickable = this.selection !== null && !!file && supportsHunkSelection(file);
+        return html`<div class="hunk-header ${extra}">
+          ${pickable
+            ? html`<input
+                class="split-check"
+                type="checkbox"
+                title="Move this hunk into the split-off change"
+                aria-label=${`Include hunk ${row.hunkId} in the split`}
+                .checked=${this.selection!.has(row.hunkId)}
+                @change=${(event: Event) =>
+                  this.emitSelect([row.hunkId], (event.target as HTMLInputElement).checked)}
+              />`
+            : nothing}
+          <span class="hunk-label">${row.label}</span>
+        </div>`;
+      }
       case 'expander':
         return html`<button
           class="expander ${extra}"
@@ -542,8 +813,11 @@ export class PatchView extends LitElement {
           .oldPath=${row.oldPath}
           .revset=${this.revsetForFile(row.fileIndex)}
         ></jj-image-view>`;
+      case 'gap':
+        return html`<div class="file-gap"></div>`;
       case 'file-end':
-        return html`<div class="file-end"></div>`;
+        // `data-path` so the pinned bar can measure this edge — see `cardEdge`.
+        return html`<div class="file-end" data-path=${this.files[row.fileIndex]?.path ?? ''}></div>`;
       case 'markdown':
         return html`<div class="markdown-preview" .innerHTML=${row.html}></div>`;
       case 'comments':
@@ -791,10 +1065,43 @@ function relativeAge(iso: string): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-/** jj materialized-conflict markers: `<<<<<<<`, `%%%%%%%`, `+++++++`, `|||||||`, `=======`, `>>>>>>>`, `\\\\\\\`. */
-const CONFLICT_MARKER = /^(<{7}|>{7}|={7}|\|{7}|%{7}|\+{7}|\\{7})(\s|$)/;
+/**
+ * jj materialized-conflict markers, and which part of a conflict each opens.
+ *
+ * jj already names its sides in the marker text — `+++++++ <commit> "<desc>"`
+ * and `%%%%%%% diff from: … / to: …`, where git writes a bare `<<<<<<< HEAD` —
+ * so the job here is not to invent labels but to stop seven kinds of fence
+ * reading as one undifferentiated colour. The fences bound the region, a
+ * `+++++++` line introduces a side given verbatim, and `%%%%%%%` with its
+ * `\\\\\\\` continuation introduces one given as a diff from the base.
+ */
+const CONFLICT_MARKERS: { pattern: RegExp; role: string }[] = [
+  { pattern: /^<{7}(\s|$)/, role: 'start' },
+  { pattern: /^>{7}(\s|$)/, role: 'end' },
+  { pattern: /^\+{7}(\s|$)/, role: 'side' },
+  { pattern: /^%{7}(\s|$)/, role: 'base' },
+  { pattern: /^\\{7}(\s|$)/, role: 'base' },
+  // git-style markers: jj does not emit these, but a merge tool run over a jj
+  // tree can leave them behind, and they are still a conflict to read.
+  { pattern: /^\|{7}(\s|$)/, role: 'base' },
+  { pattern: /^={7}(\s|$)/, role: 'side' },
+];
 
-const markerClass = (text: string) => (CONFLICT_MARKER.test(text) ? 'conflict-marker' : '');
+const markerClass = (text: string): string => {
+  const marker = CONFLICT_MARKERS.find(({ pattern }) => pattern.test(text));
+  return marker ? `conflict-marker ${marker.role}` : '';
+};
+
+/** Whether a row is the `<<<<<<<` line opening a conflict region. */
+function conflictOpener(row: Row): boolean {
+  const text =
+    row.kind === 'unified'
+      ? row.line.text
+      : row.kind === 'split'
+        ? (row.left?.text ?? row.right?.text ?? null)
+        : null;
+  return text !== null && /^<{7}(\s|$)/.test(text);
+}
 
 function rowMatches(row: Row, query: string): boolean {
   switch (row.kind) {
@@ -823,6 +1130,7 @@ declare global {
     'expand-context': CustomEvent<{ path: string; hunkId: string; direction: 'up' | 'down' }>;
     'visible-file': CustomEvent<{ path: string }>;
     'toggle-markdown': CustomEvent<{ path: string }>;
+    'select-units': CustomEvent<{ units: string[]; selected: boolean }>;
     'add-comment': CustomEvent<{ path: string; side: CommentSide; line: number; lineText: string; body: string; parentId: number | null }>;
     'resolve-comment': CustomEvent<{ id: number; value: boolean }>;
     'delete-comment': CustomEvent<{ id: number; value: boolean }>;

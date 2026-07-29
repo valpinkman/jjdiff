@@ -169,19 +169,23 @@ values; there are no others.
 | Ramp | Tokens | Use |
 |---|---|---|
 | Space | `--jj-s-1…8` = 4, 6, 8, 12, 16, 20, 28, 40 | 4pt, doubling at the top |
-| Radius | surfaces `0`; controls `--jj-r-pill` | see below — binary, not a ramp |
+| Radius | surfaces `--jj-r-md/lg` = 6, 8; controls `--jj-r-pill` | see below — two families, not a ramp |
 | Type | `--jj-text-xs/sm/base/md/lg/title` = 11, 12, 13, 14, 16, 22 | one `title` per view |
 | Elevation | `--jj-shadow-xs/card/raised/pop` | Each is a contact shadow plus a diffuse one, tinted to the page |
 | Duration | `--jj-t-1…4` = 120, 180, 260, 420ms | Paired with a curve, below |
 
-**Radius is binary, not a ramp: surfaces are square, controls are pills.** Anything you
-put things *into* — a card, a panel, a popover, a pane — has no radius and no border, and
-is told apart from its neighbour by its background. Anything you *press or type into* is
-fully round. The middle ground (a 16px card holding 9px buttons, each with its own
-hairline) is what made the app read as boxes inside boxes: at any point on screen there
-were three nested frames and none of them meant anything. The `--jj-r-xs/sm/chip` names
-alias `--jj-r-pill` and `--jj-r-md/lg/xl` are `0`, so a ramp can return without touching
-every rule.
+**Two families, not a ramp: controls are pills, surfaces are softened.** Anything you
+*press or type into* is fully round (`--jj-r-xs/sm/chip` all alias `--jj-r-pill`).
+Anything you put things *into* — a card, a panel, a pane — gets a small radius: `8px`
+for a card on the page, `6px` for the file cards inside the diff, so nesting reads as
+nesting rather than as two unrelated shapes.
+
+Surfaces still carry **no border**; they are told apart from the page by background and
+shadow. That is the part that matters and it has not changed. The earlier rule here was
+that surfaces are square, and its diagnosis — a 16px card holding 9px buttons, each with
+its own hairline, made the app read as boxes inside boxes — was about *nesting and
+hairlines*, not about radius as such. Three nested frames at every point on screen is the
+failure; rounding the one edge each surface already has is not.
 
 **Elevation is a ladder, not a set of options.** `raised` is the hover state of `card`;
 nothing skips a step, and `pop` belongs only to things that genuinely float. In dark, a
@@ -191,11 +195,18 @@ top edge — that is what reads as height on a dark page.
 ## 5. Component Stylings
 
 - **The main pane is a page and everything on it is a card** — the change detail, the
-  describe box, every banner, the diff pane itself. Each gets `--jj-surface` and
-  `--jj-shadow-card`, no border and no radius, with the page showing between them. They
-  used to run edge to edge with a rule under each, and the pane read as a stack of
-  dividers: a form, not a workspace. The shadow is the only thing left saying "in front
-  of", which is one signal instead of three.
+  describe box, every banner. Each gets `--jj-surface`, `--jj-shadow-card` and
+  `--jj-r-lg`, no border, with the page showing between them. They used to run edge to
+  edge with a rule under each, and the pane read as a stack of dividers: a form, not a
+  workspace. The shadow is the only thing left saying "in front of", which is one signal
+  instead of three.
+- **The diff pane is the exception: a container of cards, not a card.** It has no
+  background, no shadow and no radius; the *file* cards are the objects, and the space
+  between them is the page. It was a panel-coloured slab for a while, with the file cards
+  sitting on it — which made the gap between two files a third colour that meant nothing,
+  neither page nor card. The sidebar is the same call for the same reason: it is
+  navigation, not content, so it is a transparent column and the rows carry their own
+  hover and selected fills.
 - **A card is header then content.** The header is `.chip` + a heading stack (title over
   the identity line) + right-aligned meta + the fold chevron. Both the change detail and
   the describe box are built this way, so a card the user has not met before is already
@@ -232,13 +243,19 @@ top edge — that is what reads as height on a dark page.
   neighbours on one strip; a fill that blinks on somewhere else does not.
 - **Tags:** pill-shaped, soft-filled, sentence case. Bookmarks amber, states neutral,
   conflicts red.
-- **File sections run full-bleed inside the diff pane** — header, hunks, code, footer,
-  no side borders and no radius, because the pane is already a card and an inset gutter
-  drew a second frame around every file. The gap between files lives in the header's
-  **transparent top border**, never a margin (virtualizers measure `offsetHeight`), and
-  the header's own hairlines are *inset shadows*: a real `border-left` runs the full
-  height of the element, including that transparent strip, which left two orphaned 1px
-  ticks floating above every card.
+- **A file is a card inside the diff pane** — `--jj-r-md` on the header's top corners
+  and the footer's bottom ones, full-bleed horizontally (no side gutter: the pane is not
+  a frame, so an inset one would draw a second edge around every file). The header
+  carries a hairline **under** it as well as over: the header is the file's identity and
+  its actions, the code is the content, and with no rule between them the diff's first
+  line reads as part of the title bar.
+- **The gap between files is a row of its own** (`.file-gap`), never a margin and never a
+  transparent border. A margin is height the virtualizer cannot see — it measures
+  `offsetHeight`, so rows drift out of position as you scroll. A transparent border can
+  be measured but cannot be *rounded*: `background-clip: padding-box` clips the surface
+  to a box whose corner radius is the border radius minus the border width, so an 18px
+  strip flattens any radius under it. All the card's hairlines are *inset shadows* for a
+  related reason — they follow the radius instead of squaring off the corner.
 - **Menus** — repo switcher, file context menu, the change's More overflow — are one
   component in three places: `--jj-r-md`, `--jj-shadow-pop`, and `jj-pop`, which unfolds
   the panel downward out of the control that opened it.
@@ -277,6 +294,18 @@ top edge — that is what reads as height on a dark page.
   inside click *retargeted to the host* and reads it as an outside one — every overlay
   closed the moment you touched anything in it, which presented as a filter box that
   would not focus and a radio that would not take. Test `composedPath()[0] === this`.
+- **An overlay with a text field owns the keyboard while it is open.** Handle keys on
+  the panel and stop propagation; a window-level listener is for Escape alone. Retargeting
+  again: the app's global handler decides "is someone typing" from the event's target, and
+  by the time the event reaches window that target is the overlay host, not the input two
+  shadow roots down — so `j`, `k`, `c` and `v` would scroll the diff behind the dialog
+  while you filter it.
+- **A mode announces itself in a bar and can be left from there.** Picking hunks to split
+  puts checkboxes on rows that are otherwise read-only, which is exactly the kind of change
+  that needs a visible reason: an accented bar states what is selected, offers All/None,
+  and carries both Cancel and the action. Escape leaves it. Where the mode's action cannot
+  succeed — nothing picked, or everything — the button is disabled with the reason in its
+  title, rather than deferring to an error from jj that names neither.
 - **Hierarchy beats completeness in a row of controls.** Four verbs stay out; the rest go
   behind one overflow, with anything destructive below a rule at the bottom. Nine
   buttons in a row is nine decisions of equal weight, and the one that erases a commit

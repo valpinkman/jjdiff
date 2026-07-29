@@ -10,6 +10,7 @@ mod config;
 mod editor;
 mod forge;
 mod menu;
+mod split;
 mod viewed;
 pub mod walkthrough;
 
@@ -22,7 +23,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
-use jjdiff_vcs::{BookmarkStatus, Change, EvologEntry, Operation, Outcome, Repo};
+use jjdiff_vcs::{BookmarkStatus, Change, ConflictedFile, EvologEntry, Operation, Outcome, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
@@ -548,6 +549,53 @@ async fn split_paths(
     run_mutation(&app, &state, repo, move |repo| repo.split_paths(&revset, &paths)).await
 }
 
+/// Hunk-level split: the selected hunks become their own change, the rest stay.
+///
+/// The plan travels to a child process rather than being applied here, because
+/// the only seam jj offers for a partial selection is its diff editor — see
+/// [`split`] and [`Repo::split_with_diff_editor`]. The temp file holding it is
+/// moved into the blocking closure so it outlives the `jj` call and is deleted
+/// however that call ends.
+#[tauri::command]
+async fn split_hunks(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    revset: String,
+    plan: split::SplitPlan,
+    message: String,
+    allow_immutable: bool,
+) -> Result<Outcome, String> {
+    plan.divides()?;
+    let repo = repo_handle(&state, &window)?.allowing_immutable(allow_immutable);
+    let program = std::env::current_exe()
+        .map_err(|error| format!("cannot resolve the jjdiff binary to run as a diff editor: {error}"))?;
+
+    let mut file = tempfile::Builder::new()
+        .prefix("jjdiff-split-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|error| format!("cannot write the split plan: {error}"))?;
+    serde_json::to_writer(&mut file, &plan)
+        .map_err(|error| format!("cannot write the split plan: {error}"))?;
+    use std::io::Write;
+    file.flush().map_err(|error| format!("cannot write the split plan: {error}"))?;
+
+    let edit_args = vec![
+        "--apply-split-plan".to_string(),
+        file.path().to_string_lossy().into_owned(),
+        // jj substitutes these with the two directories it checked out.
+        "$left".to_string(),
+        "$right".to_string(),
+    ];
+    run_mutation(&app, &state, repo, move |repo| {
+        let outcome = repo.split_with_diff_editor(&revset, &program, &edit_args, &message);
+        drop(file);
+        outcome
+    })
+    .await
+}
+
 #[tauri::command]
 async fn abandon_change(
     app: AppHandle,
@@ -763,9 +811,9 @@ async fn conflicts(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     revset: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<ConflictedFile>, String> {
     let repo = repo_handle(&state, &window)?;
-    blocking(move || vcs(repo.conflicted_paths(&revset))).await
+    blocking(move || vcs(repo.conflicts(&revset))).await
 }
 
 #[tauri::command]
@@ -1568,6 +1616,7 @@ pub fn run(args: Args) {
             import_walkthrough,
             edit_change,
             split_paths,
+            split_hunks,
             abandon_change,
             duplicate_change,
             backout_change,

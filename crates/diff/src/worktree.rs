@@ -48,7 +48,7 @@ pub fn diff_worktree(
         collect_tree(&tree, &mut base, &mut conflicted).map_err(|e| gix_err(&e))?;
     }
 
-    let worktree = collect_worktree(repo_root)?;
+    let worktree = collect_worktree(repo_root, global_excludes(&repo).as_deref())?;
 
     let mut patches = Vec::new();
 
@@ -172,9 +172,43 @@ fn collect_tree(
     Ok(())
 }
 
+/// git's global ignore file (`core.excludesFile`), resolved through the repo's
+/// own config so `~` and `$XDG_CONFIG_HOME` are expanded the way git expands
+/// them.
+///
+/// This has to be resolved and handed to the walker explicitly. `ignore` will
+/// find it on its own, but the matcher it builds for it is anchored to the
+/// **process's current directory** rather than to the directory being walked —
+/// so the rules applied only when jjdiff happened to be launched from the repo
+/// root. Everywhere else (`pnpm tauri dev` runs from `src-tauri/`, a bundled
+/// `.app` from `/`) globally-ignored files showed up in the diff that `jj st`
+/// does not list, which reads as jjdiff and jj disagreeing about the change.
+fn global_excludes(repo: &gix::Repository) -> Option<std::path::PathBuf> {
+    let config = repo.config_snapshot();
+    let path = config.trusted_path("core.excludesFile").ok()??.to_owned();
+    path.exists().then_some(path)
+}
+
+/// The global excludes as a matcher **rooted at the repo**, which is the whole
+/// point: both `WalkBuilder`'s own global handling and its `add_ignore` build
+/// their matcher against the empty path, i.e. the process's current directory,
+/// so neither matches a path under the repo unless the two happen to coincide.
+fn global_matcher(root: &Path, excludes: Option<&Path>) -> Option<ignore::gitignore::Gitignore> {
+    let excludes = excludes?;
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    if builder.add(excludes).is_some() {
+        return None; // unreadable or malformed — ignore rules are best-effort
+    }
+    builder.build().ok()
+}
+
 /// Gitignore-aware walk → path → file size. Skips `.git`, `.jj`, and symlinks.
-fn collect_worktree(root: &Path) -> Result<BTreeMap<String, u64>, DiffError> {
+fn collect_worktree(
+    root: &Path,
+    global_excludes: Option<&Path>,
+) -> Result<BTreeMap<String, u64>, DiffError> {
     let mut files = BTreeMap::new();
+    let global = global_matcher(root, global_excludes);
     let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
         .filter_entry(|entry| {
@@ -189,6 +223,13 @@ fn collect_worktree(root: &Path) -> Result<BTreeMap<String, u64>, DiffError> {
         let Some(file_type) = entry.file_type() else { continue };
         if !file_type.is_file() {
             continue;
+        }
+        if let Some(global) = &global {
+            // `_or_any_parents` so a globally-ignored *directory* takes its
+            // contents with it, the way git treats one.
+            if global.matched_path_or_any_parents(entry.path(), false).is_ignore() {
+                continue;
+            }
         }
         let Ok(metadata) = entry.metadata() else { continue };
         let Ok(relative) = entry.path().strip_prefix(root) else { continue };
@@ -446,6 +487,67 @@ mod tests {
             .unwrap();
         let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
         (tmp, base)
+    }
+
+    /// The global excludes file must be honoured, and honoured the same way
+    /// wherever the process happens to be standing.
+    ///
+    /// This is not hypothetical: `ignore`'s own global handling anchors its
+    /// matcher to the current directory, so jjdiff applied `core.excludesFile`
+    /// only when launched from the repo root. `pnpm tauri dev` runs from
+    /// `src-tauri/` and a bundled `.app` from `/`, so the shipped app listed
+    /// files `jj st` does not — the two tools disagreeing about what is in the
+    /// change. Hence the cwd loop rather than a single call.
+    #[test]
+    fn global_excludes_apply_from_any_working_directory() {
+        if Command::new("jj").arg("--version").output().is_err() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let (tmp, base) = fixture();
+        let root = tmp.path();
+
+        // A global excludes file, declared where git declares one. It goes in
+        // the *git* config, not jj's: gix is what resolves it, and a colocated
+        // repo is where jjdiff finds it.
+        let excludes = root.join("global-ignore");
+        std::fs::write(&excludes, "secret*.txt\n").unwrap();
+        let out = Command::new("git")
+            .args(["config", "--local", "core.excludesFile", excludes.to_str().unwrap()])
+            .current_dir(root)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        std::fs::write(root.join("secret-notes.txt"), "private\n").unwrap();
+
+        // `diff_worktree` takes an absolute root, so the only thing varying is
+        // where the *process* stands — which must not matter. cwd is
+        // process-global and these tests run threaded, so it is restored
+        // before any assertion can panic out from under the other tests.
+        let elsewhere = std::env::temp_dir();
+        let mut runs: Vec<(std::path::PathBuf, Vec<String>)> = Vec::new();
+        let previous = std::env::current_dir().unwrap();
+        for cwd in [root, elsewhere.as_path()] {
+            std::env::set_current_dir(cwd).unwrap();
+            let files = diff_worktree(root, Some(&base), WorktreeDiffOptions::default());
+            runs.push((
+                cwd.to_path_buf(),
+                files.unwrap_or_default().into_iter().map(|file| file.path).collect(),
+            ));
+        }
+        std::env::set_current_dir(previous).unwrap();
+
+        for (cwd, paths) in runs {
+            assert!(
+                !paths.iter().any(|path| path == "secret-notes.txt"),
+                "globally-excluded file leaked when run from {}: {paths:?}",
+                cwd.display()
+            );
+            assert!(
+                paths.iter().any(|path| path == "fresh.txt"),
+                "unrelated files must survive: {paths:?}"
+            );
+        }
     }
 
     #[test]

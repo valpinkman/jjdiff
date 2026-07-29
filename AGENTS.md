@@ -40,5 +40,6 @@ ui/             — Lit frontend (light-DOM code pane)
 - `--ignore-working-copy` is only used for reads — mutations bypass it to match user's own `jj` snapshot semantics.
 - Span offsets in `Line.spans` are **UTF-16 code units** (to match JS `String` indexing).
 - The `IN_TAURI` check (`'__TAURI_INTERNALS__' in window`) gates all IPC calls — frontend must handle the mock path for `pnpm dev`.
-- An overlay's backdrop test is `event.composedPath()[0] === this`. Bound to the host, a listener sees inside clicks retargeted to the host, so `event.target === this` closes the overlay on any click it receives.
+- An overlay's backdrop test is `event.composedPath()[0] === this`. Bound to the host, a listener sees inside clicks retargeted to the host, so `event.target === this` closes the overlay on any click it receives. The same retargeting means an overlay with a text field must handle keys on its panel and `stopPropagation()`, or the app's single-key review shortcuts fire while you type.
 - `Repo::op_diff` returns jj's prose for display, not a structure: `jj op diff` has no `json()` form. Don't write a parser for it.
+- Hunk-level split works by jjdiff *being* jj's diff editor: `jj split --tool` re-enters the binary as `--apply-split-plan <plan> $left $right`. The plan comes from the diff on screen, and `apply_selected_hunks` refuses it unless applying every hunk reproduces the right side exactly.
