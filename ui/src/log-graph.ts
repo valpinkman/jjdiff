@@ -174,6 +174,13 @@ export class LogGraph extends LitElement {
       background: var(--jj-removed-bg);
       color: var(--jj-removed-fg);
     }
+    /* A workspace is a place, not a ref — neutral rather than the bookmark colour, so the
+       eye does not read a name@ tag as something publishable. */
+    .tag.workspace {
+      background: var(--jj-surface-2);
+      color: var(--jj-fg-muted);
+      font-family: var(--jj-mono);
+    }
     .desc {
       flex: 1;
       min-width: 0;
@@ -227,6 +234,8 @@ export class LogGraph extends LitElement {
 
   @property({ attribute: false }) changes: Change[] = [];
   @property() selected: string | null = null;
+  /** The workspace this window is showing — the one whose `name@` tag is left off. */
+  @property() workspace: string | null = null;
   /**
    * Whether rows can be dragged onto each other to rebase. Off while the graph
    * is showing something a rebase makes no sense against.
@@ -402,6 +411,19 @@ export class LogGraph extends LitElement {
           />
         </svg>
         ${change.bookmarks.map((bookmark) => html`<span class="tag">${bookmark}</span>`)}
+        ${
+          // `name@`, as jj writes it in its own log — for every workspace holding this
+          // commit *except* this window's own. That one is already marked by the dot and
+          // its halo, and labelling it too would put a tag on one row of every repo,
+          // including the overwhelming majority that have a single workspace.
+          change.workspaces
+            .filter((name) => name !== this.workspace)
+            .map(
+              (name) => html`<span class="tag workspace" title="Checked out in the ${name} workspace"
+                >${name}@</span
+              >`,
+            )
+        }
         ${change.conflict ? html`<span class="tag warn">×</span>` : nothing}
         <span class="desc ${summary ? '' : 'empty-desc'}">
           ${summary || (change.workingCopy ? 'working copy' : '(no description)')}

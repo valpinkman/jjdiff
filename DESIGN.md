@@ -343,6 +343,14 @@ top edge — that is what reads as height on a dark page.
   disabled with the reason in its title, rather than deferring to an error from jj that
   names neither. One bar serves both verbs, and says which one it is in every label it
   carries, down to the checkbox tooltips: the same tick means two different things.
+- **A destination is a qualifier on a verb, not a separate verb.** "Work on this change" and
+  "New change on top" keep acting on the workspace you are in, with no extra click; the same
+  entries repeated *in* another workspace sit beside them rather than in a Workspaces group.
+  The question is still which change to work on — where is an adjective on it.
+- **List the broken state; do not hide it.** A workspace whose directory has been deleted is
+  still a record jj keeps and still holds its name, so the pane shows it, dashed and labelled,
+  with the one action it has left. Filtering it out would make the pane agree with the
+  filesystem and disagree with jj, which is the half the user cannot fix.
 - **A gesture that rewrites history proposes, it does not act.** Dragging a change onto
   another in the log is the one route in that can start a rebase by accident — everything
   else is a menu item or a filled-in picker — so the drop opens a confirmation naming both

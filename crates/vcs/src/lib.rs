@@ -11,10 +11,10 @@
 mod change;
 mod runner;
 
-pub use change::{BookmarkStatus, Change, EvologEntry, Operation, Signature};
+pub use change::{BookmarkStatus, Change, EvologEntry, Operation, Signature, Workspace};
 pub use runner::JjRunner;
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub const MIN_JJ_VERSION: (u32, u32) = (0, 33); // json() template support
 
@@ -61,11 +61,22 @@ pub struct ConflictedFile {
     pub description: String,
 }
 
-/// A discovered, colocated jj repository. Cheap to clone (two paths) — commands clone it out
-/// of app state so blocking jj work can run off the main thread.
+/// A discovered, colocated jj *workspace*. Cheap to clone (three paths) — commands clone it
+/// out of app state so blocking jj work can run off the main thread.
+///
+/// The three paths are one path in the ordinary repo and three different ones the moment a
+/// second workspace exists, which is why they are named apart rather than derived from each
+/// other at the point of use. See [`Repo::discover`].
 #[derive(Clone)]
 pub struct Repo {
+    /// The workspace: where the files are, and what `@` means. `jj root`.
     root: PathBuf,
+    /// The shared `.jj/repo`, which every workspace of a repo points at. The op log lives
+    /// here, so this — not `root` — is what the op watcher watches.
+    repo_dir: PathBuf,
+    /// The colocated `.git`, shared by every workspace. gix reads objects from here while
+    /// the files being diffed come from `root`.
+    git_dir: PathBuf,
     runner: JjRunner,
     /// Opt-in to rewriting commits jj has marked immutable. Off by default and
     /// never persisted — see [`Repo::allowing_immutable`].
@@ -95,12 +106,75 @@ fn toml_string(value: &str) -> String {
     out
 }
 
+/// Resolve `..` and `.` without touching the filesystem.
+///
+/// Lexical on purpose. The only relative paths run through here are jj's own internal
+/// pointers, and the result has to be *comparable* — two workspaces of one repo must
+/// produce the identical string for the repo they share, and a repo with one workspace must
+/// produce exactly the root `jj root` reported, or every stored review key changes meaning.
+/// `canonicalize` would resolve symlinks and break both properties.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The `.jj/repo` this workspace belongs to.
+///
+/// A directory in the workspace `jj git init` made, and a *file* holding a relative path to
+/// that one in every workspace `jj workspace add` made since.
+fn resolve_repo_dir(root: &Path) -> Result<PathBuf> {
+    let jj = root.join(".jj");
+    let entry = jj.join("repo");
+    if entry.is_dir() {
+        return Ok(entry);
+    }
+    let pointer = std::fs::read_to_string(&entry).map_err(|error| {
+        VcsError::Parse(format!("cannot read {}: {error}", entry.display()))
+    })?;
+    Ok(normalize(&jj.join(pointer.trim())))
+}
+
+/// The git directory behind `repo_dir`, if the repo is colocated.
+///
+/// `store/git_target` names it, and where it lands is the whole of the colocation question:
+/// a colocated repo points *out* of `.jj` at a real `.git` beside the work, and a
+/// non-colocated one points at `.jj/repo/store/git`, the bare repo jj keeps to itself.
+/// `None` means the second, which is the case jjdiff cannot work with — gix would open it
+/// happily and find no working tree to diff against.
+fn resolve_git_dir(repo_dir: &Path) -> Option<PathBuf> {
+    let store = repo_dir.join("store");
+    let target = std::fs::read_to_string(store.join("git_target")).ok()?;
+    let target = Path::new(target.trim());
+    let resolved =
+        if target.is_absolute() { target.to_path_buf() } else { normalize(&store.join(target)) };
+    (!resolved.starts_with(repo_dir)).then_some(resolved)
+}
+
 /// Template producing one JSON object per revision (JSONL). Field names match
 /// [`change::LogRecord`]. `\"` escapes are jj template-language escapes, not Rust's.
-const LOG_TEMPLATE: &str = r#""{\"commit\":" ++ json(self) ++ ",\"empty\":" ++ json(empty) ++ ",\"conflict\":" ++ json(conflict) ++ ",\"immutable\":" ++ json(immutable) ++ ",\"working_copy\":" ++ json(current_working_copy) ++ ",\"bookmarks\":" ++ json(bookmarks.map(|b| b.name())) ++ "}\n""#;
+/// `working_copies` is mapped to bare names rather than passed to `json()` whole: the
+/// keyword yields a full workspace object per entry, commit and signatures included, which
+/// would repeat most of the record for a label.
+const LOG_TEMPLATE: &str = r#""{\"commit\":" ++ json(self) ++ ",\"empty\":" ++ json(empty) ++ ",\"conflict\":" ++ json(conflict) ++ ",\"immutable\":" ++ json(immutable) ++ ",\"working_copy\":" ++ json(current_working_copy) ++ ",\"bookmarks\":" ++ json(bookmarks.map(|b| b.name())) ++ ",\"workspaces\":" ++ json(working_copies.map(|w| w.name())) ++ "}\n""#;
 
 impl Repo {
-    /// Find the jj workspace containing `path` and verify it is colocated.
+    /// Find the jj workspace containing `path` and verify its repo is colocated.
+    ///
+    /// The colocation test is on the *repo's git store*, not on the workspace having a
+    /// `.git` of its own. It used to be the latter, which was the same question right up
+    /// until a second workspace existed: `jj workspace add` gives the new tree a `.jj` and
+    /// nothing else, so every secondary workspace of a perfectly colocated repo failed the
+    /// old check. Asking the store where its git directory is answers the question that was
+    /// always meant — is there a real `.git` behind this — for both.
     pub fn discover(path: &Path) -> Result<Repo> {
         let runner = JjRunner::new(path.to_path_buf());
         let root = match runner.read(&["root"]) {
@@ -110,14 +184,48 @@ impl Repo {
             }
             Err(other) => return Err(other),
         };
-        if !root.join(".git").exists() {
-            return Err(VcsError::NotColocated(root));
-        }
-        Ok(Repo { runner: JjRunner::new(root.clone()), root, allow_immutable: false })
+        let repo_dir = resolve_repo_dir(&root)?;
+        let git_dir = resolve_git_dir(&repo_dir).ok_or_else(|| VcsError::NotColocated(root.clone()))?;
+        Ok(Repo {
+            runner: JjRunner::new(root.clone()),
+            root,
+            repo_dir,
+            git_dir,
+            allow_immutable: false,
+        })
     }
 
+    /// The workspace root: where this workspace's files are.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The shared `.jj/repo` behind this workspace.
+    pub fn repo_dir(&self) -> &Path {
+        &self.repo_dir
+    }
+
+    /// The colocated `.git` behind this workspace — objects, not files.
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
+    /// The identity every workspace of one repository shares: the directory holding the
+    /// shared `.jj`.
+    ///
+    /// This is what review state keys on, not [`Self::root`]. Viewed flags, comments and
+    /// walkthroughs are keyed by change id precisely so they survive the change moving, and
+    /// a change checked out in another workspace is the same change — filing its review
+    /// state under the tree it happens to sit in would undo that.
+    ///
+    /// In a repo with one workspace this *is* `root`, byte for byte, which is what lets the
+    /// key change without migrating anybody's existing state.
+    pub fn review_key(&self) -> PathBuf {
+        self.repo_dir
+            .parent()
+            .and_then(|jj| jj.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone())
     }
 
     /// A handle whose *rewriting* commands carry `--ignore-immutable`.
@@ -611,7 +719,17 @@ impl Repo {
     /// the reason is structural: proposal heads live outside `refs/heads/*`
     /// (`refs/pull/N/head`, `refs/merge-requests/N/head`) and `jj git fetch`
     /// takes bookmark globs, not refspecs. Safe because [`Repo::discover`]
-    /// guarantees the repo is colocated — the `.git` directory is right there.
+    /// guarantees the repo is colocated — [`Repo::git_dir`] is a real `.git`.
+    ///
+    /// The git directory is named explicitly rather than reached by running git *in* the
+    /// workspace, because a secondary workspace has no `.git` above it: git started there
+    /// would walk out of the tree and fetch into whatever repository it found first, or none.
+    ///
+    /// The working directory still has to be set, and to the git directory's own parent
+    /// rather than to this workspace. `--git-dir` says where to fetch *into*; it says
+    /// nothing about how to read a remote given as a relative path, which git resolves
+    /// against the process's working directory. That is the colocated tree — where such a
+    /// remote was written down — for every workspace of the repo alike.
     ///
     /// The head lands on a namespaced bookmark so jj can address it as an
     /// ordinary revset, the user can see where it came from, and deleting it is
@@ -620,8 +738,10 @@ impl Repo {
     pub fn fetch_forge_ref(&self, remote: &str, remote_ref: &str, bookmark: &str) -> Result<String> {
         let refspec = format!("+{remote_ref}:refs/heads/{bookmark}");
         let output = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&self.git_dir)
             .args(["fetch", remote, &refspec])
-            .current_dir(&self.root)
+            .current_dir(self.git_dir.parent().unwrap_or(&self.root))
             .output()
             .map_err(VcsError::Io)?;
         if !output.status.success() {
@@ -666,9 +786,80 @@ impl Repo {
         self.mutate(&["op", "revert", operation])
     }
 
+    // -- Workspaces --
+
+    /// Every workspace attached to this repo, with its working-copy commit and its path.
+    ///
+    /// Two sources, because jj answers the two halves separately: `workspace list` knows the
+    /// names and commits, `workspace root --name` knows the directories — one process per
+    /// workspace, which is why this is resolved once per refresh rather than per render.
+    ///
+    /// Which one is *current* falls out of those same paths rather than costing another
+    /// call: jj has no "what am I called" command, and the handle already knows its root.
+    ///
+    /// A workspace whose directory has been deleted keeps its record and loses its path.
+    /// That is not an error to propagate but the state jjdiff most needs to show, since the
+    /// only way out of it is the `forget` this list is what offers.
+    pub fn workspaces(&self) -> Result<Vec<Workspace>> {
+        let out = self.runner.read(&["workspace", "list", "-T", r#"json(self) ++ "\n""#])?;
+        out.lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let (name, change) = change::parse_workspace(line)?;
+                let path = self
+                    .runner
+                    .read(&["workspace", "root", "--name", &name])
+                    .ok()
+                    .map(|path| path.trim_end().to_string());
+                let current = path.as_deref().is_some_and(|path| Path::new(path) == self.root);
+                Ok(Workspace { name, path, current, change })
+            })
+            .collect()
+    }
+
+    /// `jj workspace add` — a new working copy at `path`.
+    ///
+    /// `revisions` is jj's `-r`, and it does **not** mean "check this out": the new
+    /// workspace's working copy is created *on top of* those revisions, exactly as
+    /// `jj new` would. Empty means "beside this workspace's own working copy", sharing its
+    /// parents. Checking a specific change out into a new workspace is therefore two steps —
+    /// add, then [`Self::edit`] on a handle for the new path — and conflating them would
+    /// silently give the reviewer a fresh empty change instead of the one they picked.
+    pub fn workspace_add(&self, path: &Path, name: &str, revisions: &[String]) -> Result<Outcome> {
+        let path = path.to_string_lossy();
+        let mut args: Vec<&str> = vec!["workspace", "add", "--name", name];
+        for revision in revisions {
+            args.push("-r");
+            args.push(revision);
+        }
+        args.push(&path);
+        self.mutate(&args)
+    }
+
+    /// `jj workspace forget` — stop tracking a workspace's working copy.
+    ///
+    /// Deliberately does not touch the directory, because jj does not: the files stay, and
+    /// removing them is a separate decision made above this (see `workspaces.rs` in the
+    /// app). Undo restores the record, never the tree.
+    pub fn workspace_forget(&self, name: &str) -> Result<Outcome> {
+        self.mutate(&["workspace", "forget", name])
+    }
+
+    /// `jj workspace update-stale` — re-point a workspace whose working-copy commit was
+    /// rewritten out from under it, which is the ordinary consequence of editing in one
+    /// workspace a change another one had checked out.
+    pub fn workspace_update_stale(&self) -> Result<Outcome> {
+        self.mutate(&["workspace", "update-stale"])
+    }
+
     /// Directory whose contents change whenever an operation lands (watch target).
+    ///
+    /// Hangs off the shared repo, not this workspace: the op log is repo-wide, and a
+    /// secondary workspace has no `op_heads` of its own to watch — the old path went
+    /// *through* `.jj/repo`, which there is a file, so the watcher failed to start and the
+    /// window simply never refreshed.
     pub fn op_heads_dir(&self) -> PathBuf {
-        self.root.join(".jj").join("repo").join("op_heads").join("heads")
+        self.repo_dir.join("op_heads").join("heads")
     }
 }
 
@@ -740,6 +931,166 @@ mod tests {
             Err(VcsError::NotARepo(_)) => {}
             other => panic!("expected NotARepo, got {other:?}", other = other.err()),
         }
+    }
+
+    /// Colocation is a property of the repo's git *store*, not of the directory
+    /// having a `.git`. jj's own default is colocated now, so the case this has
+    /// to keep rejecting is the explicit opt-out — whose store points inward at
+    /// `.jj/repo/store/git`, a bare repo with no working tree to diff against.
+    #[test]
+    fn discover_rejects_a_repo_whose_git_store_is_jjs_own() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let out = Command::new("jj")
+            .args(["--config", "signing.behavior=drop", "--config", "git.colocate=false"])
+            .args(["git", "init", "."])
+            .current_dir(tmp.path())
+            .env("JJ_USER", "Test")
+            .env("JJ_EMAIL", "test@example.com")
+            .output()
+            .expect("jj runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        match Repo::discover(tmp.path()) {
+            Err(VcsError::NotColocated(_)) => {}
+            other => panic!("expected NotColocated, got {other:?}", other = other.err()),
+        }
+    }
+
+    /// The three paths, in the repo where they are all the same. Stated as a
+    /// test because the next one is only meaningful against it.
+    #[test]
+    fn one_workspace_resolves_all_three_paths_to_the_same_place() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+        let root = repo.root().to_path_buf();
+
+        assert_eq!(repo.repo_dir(), root.join(".jj").join("repo"));
+        assert_eq!(repo.git_dir(), root.join(".git"));
+        assert_eq!(repo.op_heads_dir(), root.join(".jj/repo/op_heads/heads"));
+        // The no-migration claim, asserted rather than assumed: every viewed
+        // flag, comment and walkthrough anyone has already stored is filed under
+        // this string, and it must not have moved.
+        assert_eq!(repo.review_key(), root, "the review key is still the workspace root");
+    }
+
+    /// List, add and forget, plus the two things the list has to get right that
+    /// jj does not state directly: which workspace is the calling one, and which
+    /// no longer exists on disk.
+    #[test]
+    fn workspaces_round_trip_through_add_list_and_forget() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_repo(&main);
+        let repo = Repo::discover(&main).unwrap();
+
+        let only = repo.workspaces().unwrap();
+        assert_eq!(only.len(), 1);
+        assert!(only[0].current, "the one workspace is the current one");
+        assert_eq!(only[0].path.as_deref(), Some(repo.root().to_string_lossy().as_ref()));
+
+        let build = tmp.path().join("build");
+        repo.workspace_add(&build, "build", &[]).unwrap();
+
+        let both = repo.workspaces().unwrap();
+        assert_eq!(both.len(), 2);
+        let added = both.iter().find(|w| w.name == "build").expect("listed");
+        assert!(!added.current, "it is not the workspace we are asking from");
+        // Resolved on both sides: jj reports the real path and the temp dir is
+        // reached through a symlink on macOS. What matters is the directory, not
+        // the spelling — and `current` above is the assertion that jj spells
+        // `root` and `workspace root` the same way, which is what it turns on.
+        assert_eq!(
+            added.path.as_deref().map(|path| std::fs::canonicalize(path).unwrap()),
+            Some(std::fs::canonicalize(&build).unwrap())
+        );
+        assert_ne!(
+            added.change.commit_id,
+            repo.working_copy().unwrap().commit_id,
+            "a workspace of its own gets a working copy of its own"
+        );
+
+        // `working_copies` names the holder, which is what tags the graph row.
+        let held = repo.log(&added.change.change_id).unwrap();
+        assert_eq!(held[0].workspaces, vec!["build".to_string()]);
+
+        // A deleted directory keeps its record and loses its path — the state the
+        // list exists to make actionable, since `forget` is the only way out.
+        std::fs::remove_dir_all(&build).unwrap();
+        let orphaned = repo.workspaces().unwrap();
+        let missing = orphaned.iter().find(|w| w.name == "build").expect("still recorded");
+        assert!(missing.path.is_none(), "jj can no longer resolve it");
+
+        repo.workspace_forget("build").unwrap();
+        let after = repo.workspaces().unwrap();
+        assert_eq!(after.len(), 1, "forgotten");
+    }
+
+    /// A workspace `jj workspace add` created: files of its own, no `.git`, and
+    /// a `.jj/repo` that is a *file* pointing at the repo it was added to.
+    ///
+    /// Everything jjdiff needs from a repo has to come out of that indirection,
+    /// and each of these used to be silently wrong — `discover` refused the
+    /// workspace outright, and had it not, the op watcher would have watched a
+    /// path through a file and never fired.
+    #[test]
+    fn a_secondary_workspace_resolves_to_the_repo_it_was_added_to() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_repo(&main);
+        let primary = Repo::discover(&main).unwrap();
+
+        let out = Command::new("jj")
+            .args(["--config", "signing.behavior=drop"])
+            .args(["workspace", "add", "--name", "build", "../build"])
+            .current_dir(&main)
+            .env("JJ_USER", "Test")
+            .env("JJ_EMAIL", "test@example.com")
+            .output()
+            .expect("jj runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        let secondary = Repo::discover(&tmp.path().join("build")).unwrap();
+
+        assert_ne!(secondary.root(), primary.root(), "its own files");
+        assert!(!secondary.root().join(".git").exists(), "and no .git of its own");
+        assert_eq!(secondary.repo_dir(), primary.repo_dir(), "one repo behind both");
+        assert_eq!(secondary.git_dir(), primary.git_dir(), "one git store behind both");
+        assert_eq!(secondary.op_heads_dir(), primary.op_heads_dir(), "one op log to watch");
+        assert!(secondary.op_heads_dir().is_dir(), "and it is a real directory");
+        assert_eq!(
+            secondary.review_key(),
+            primary.review_key(),
+            "review state follows the change between workspaces, not the tree it sits in"
+        );
+
+        // `@` is workspace-relative: each one has its own working copy.
+        assert_ne!(
+            secondary.working_copy().unwrap().commit_id,
+            primary.working_copy().unwrap().commit_id,
+            "each workspace has its own working-copy commit"
+        );
     }
 
     #[test]

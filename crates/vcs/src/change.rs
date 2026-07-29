@@ -16,8 +16,17 @@ pub struct Change {
     pub empty: bool,
     pub conflict: bool,
     pub immutable: bool,
+    /// Whether this is *the calling workspace's* working copy. Workspace-relative, so two
+    /// workspaces of one repo disagree about it, correctly.
     pub working_copy: bool,
     pub bookmarks: Vec<String>,
+    /// Every workspace holding this commit as its working copy, by name.
+    ///
+    /// Includes the calling one, so this is a superset of `working_copy` rather than the
+    /// other workspaces alone. Empty in the ordinary single-workspace repo, which is what
+    /// keeps the graph unchanged there.
+    #[serde(default)]
+    pub workspaces: Vec<String>,
 }
 
 impl Change {
@@ -43,6 +52,10 @@ struct LogRecord {
     immutable: bool,
     working_copy: bool,
     bookmarks: Vec<String>,
+    /// Absent from records written before workspaces were surfaced; an old walkthrough or
+    /// a hand-built fixture should not fail to parse over a field that means "none".
+    #[serde(default)]
+    workspaces: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +91,62 @@ pub(crate) fn parse_bookmark_status(line: &str) -> Result<BookmarkStatus> {
         .map_err(|error| VcsError::Parse(format!("bad bookmark record: {error}; line: {line}")))
 }
 
+/// One workspace attached to the repo: a working copy of its own, at a path of its own.
+///
+/// jj's `jj workspace list` reports the name and the working-copy commit but not the path,
+/// which comes from `jj workspace root --name`. That call is also the only reliable way to
+/// learn a workspace's directory has been deleted — jj keeps the record either way — so a
+/// `path` of `None` is not missing information but the answer to a different question, and
+/// the one action such a workspace still has is `forget`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub name: String,
+    /// Where it lives; `None` when jj can no longer resolve it — the directory is gone.
+    pub path: Option<String>,
+    /// Whether this is the workspace the reading `Repo` is bound to.
+    pub current: bool,
+    /// Its working-copy commit.
+    pub change: Change,
+}
+
+/// Wire format of `jj workspace list -T 'json(self)'`.
+#[derive(Deserialize)]
+struct WorkspaceRecord {
+    name: String,
+    target: CommitInfo,
+}
+
+/// Parse one `jj workspace list` record.
+///
+/// The commit comes back as a bare `json(self)` with none of the flags `LOG_TEMPLATE`
+/// carries — no `empty`, no `conflict`, no `immutable`. Rather than run a second log per
+/// workspace to fill them in, they are left at their defaults and the caller treats this
+/// `Change` as identity plus description, which is all a workspace row shows. `working_copy`
+/// is set from the workspace's own point of view, since that is unambiguously what it is.
+pub(crate) fn parse_workspace(line: &str) -> Result<(String, Change)> {
+    let record: WorkspaceRecord = serde_json::from_str(line)
+        .map_err(|error| VcsError::Parse(format!("bad workspace record: {error}; line: {line}")))?;
+    let commit = record.target;
+    Ok((
+        record.name.clone(),
+        Change {
+            change_id: commit.change_id,
+            commit_id: commit.commit_id,
+            parents: commit.parents,
+            description: commit.description,
+            author: commit.author,
+            committer: commit.committer,
+            empty: false,
+            conflict: false,
+            immutable: false,
+            working_copy: true,
+            bookmarks: Vec::new(),
+            workspaces: vec![record.name],
+        },
+    ))
+}
+
 /// One predecessor version of a change, from `jj evolog`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,7 +172,8 @@ pub(crate) fn parse_evolog_record(line: &str) -> Result<EvologEntry> {
 pub(crate) fn parse_record(line: &str) -> Result<Change> {
     let record: LogRecord = serde_json::from_str(line)
         .map_err(|error| VcsError::Parse(format!("bad log record: {error}; line: {line}")))?;
-    let LogRecord { commit, empty, conflict, immutable, working_copy, bookmarks } = record;
+    let LogRecord { commit, empty, conflict, immutable, working_copy, bookmarks, workspaces } =
+        record;
     Ok(Change {
         change_id: commit.change_id,
         commit_id: commit.commit_id,
@@ -116,6 +186,7 @@ pub(crate) fn parse_record(line: &str) -> Result<Change> {
         immutable,
         working_copy,
         bookmarks,
+        workspaces,
     })
 }
 

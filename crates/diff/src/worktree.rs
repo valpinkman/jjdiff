@@ -26,18 +26,27 @@ pub struct WorktreeDiffOptions {
     pub ignore_whitespace: bool,
 }
 
-/// Diff the working tree at `repo_root` against `base_commit` (git hex; `None` = empty tree).
+/// Diff the working tree at `worktree` against `base_commit` (git hex; `None` = empty tree).
+///
+/// `git_dir` and `worktree` are the same directory in the ordinary case and deliberately
+/// separate parameters anyway: a jj workspace added with `jj workspace add` holds the files
+/// but no `.git` at all, and reads its objects from the repo it was added to. Objects,
+/// excludes and the base tree come from `git_dir`; every path walked and every byte compared
+/// comes from `worktree`.
 pub fn diff_worktree(
-    repo_root: &Path,
+    git_dir: &Path,
+    worktree: &Path,
     base_commit: Option<&str>,
     options: WorktreeDiffOptions,
 ) -> Result<Vec<FilePatch>, DiffError> {
-    // The repo-wide reads name the root rather than a file: there is no one path
-    // they are about, and the operation is what tells them apart.
-    let root = repo_root.display().to_string();
+    // The repo-wide reads name the git directory rather than a file: there is no one path
+    // they are about, and the operation is what tells them apart. It is `git_dir` and not
+    // the worktree because every error carrying it comes from reading an object, and in a
+    // secondary workspace those two are different directories.
+    let root = git_dir.display().to_string();
 
     let repo =
-        gix::open(repo_root).map_err(|e| DiffError::gix(&root, "opening the repository", e))?;
+        gix::open(git_dir).map_err(|e| DiffError::gix(&root, "opening the repository", e))?;
     let mut base = BTreeMap::new();
     let mut conflicted: Vec<String> = Vec::new();
     if let Some(hex) = base_commit {
@@ -54,8 +63,10 @@ pub fn diff_worktree(
         collect_tree(&root, &tree, &mut base, &mut conflicted)?;
     }
 
-    let mut worktree = collect_worktree(repo_root, global_excludes(&repo).as_deref())?;
-    restore_tracked(repo_root, &base, &mut worktree);
+    // Both take the worktree, not the git directory: one walks the files, and the other
+    // stats the ones the walk never visited.
+    let mut on_disk_files = collect_worktree(worktree, global_excludes(&repo).as_deref())?;
+    restore_tracked(worktree, &base, &mut on_disk_files);
 
     let mut patches = Vec::new();
 
@@ -68,21 +79,21 @@ pub fn diff_worktree(
         ));
     }
 
-    let mut paths: Vec<&String> = base.keys().chain(worktree.keys()).collect();
+    let mut paths: Vec<&String> = base.keys().chain(on_disk_files.keys()).collect();
     paths.sort();
     paths.dedup();
 
     for path in paths {
         let entry = base.get(path);
-        let on_disk = worktree.get(path);
+        let on_disk = on_disk_files.get(path);
         let patch = match (entry, on_disk) {
             (Some(oid), None) => diff_pair(&repo, path, Some(*oid), None, options)?,
-            (None, Some(size)) => diff_pair(&repo, path, None, Some((repo_root, *size)), options)?,
+            (None, Some(size)) => diff_pair(&repo, path, None, Some((worktree, *size)), options)?,
             (Some(oid), Some(size)) => {
-                if unchanged(&repo, *oid, repo_root, path, *size)? {
+                if unchanged(&repo, *oid, worktree, path, *size)? {
                     continue;
                 }
-                diff_pair(&repo, path, Some(*oid), Some((repo_root, *size)), options)?
+                diff_pair(&repo, path, Some(*oid), Some((worktree, *size)), options)?
             }
             (None, None) => unreachable!(),
         };
@@ -606,7 +617,8 @@ mod tests {
         let previous = std::env::current_dir().unwrap();
         for cwd in [root, elsewhere.as_path()] {
             std::env::set_current_dir(cwd).unwrap();
-            let files = diff_worktree(root, Some(&base), WorktreeDiffOptions::default());
+            let files =
+                diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default());
             runs.push((
                 cwd.to_path_buf(),
                 files.unwrap_or_default().into_iter().map(|file| file.path).collect(),
@@ -685,7 +697,7 @@ mod tests {
         let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
 
         // Nothing has been touched, so nothing may be reported.
-        let clean = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        let clean = diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default()).unwrap();
         assert!(
             clean.is_empty(),
             "an untouched worktree reported changes: {:?}",
@@ -695,7 +707,7 @@ mod tests {
         // Edited, they diff like anything else — not as add/delete pairs.
         std::fs::write(root.join("tools/settings.json"), "{\"a\": 2}\n").unwrap();
         std::fs::write(root.join("keep.data"), "changed\n").unwrap();
-        let edited = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        let edited = diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default()).unwrap();
         let mut seen: Vec<(&str, FileStatus)> =
             edited.iter().map(|f| (f.path.as_str(), f.status)).collect();
         seen.sort_by_key(|(path, _)| *path);
@@ -707,7 +719,7 @@ mod tests {
         // And a tracked-but-ignored file that is genuinely gone is still a
         // deletion — the fix restores what is on disk, it does not invent it.
         std::fs::remove_file(root.join("tools/settings.json")).unwrap();
-        let removed = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        let removed = diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default()).unwrap();
         assert_eq!(
             removed
                 .iter()
@@ -721,7 +733,7 @@ mod tests {
         std::fs::write(root.join("keep.data.bak"), "noise\n").unwrap();
         std::fs::write(root.join("tools/scratch.json"), "{}\n").unwrap();
         std::fs::write(root.join("plain2.txt"), "two\n").unwrap();
-        let untracked = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        let untracked = diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default()).unwrap();
         let paths: Vec<&str> = untracked.iter().map(|f| f.path.as_str()).collect();
         assert!(!paths.contains(&"tools/scratch.json"), "ignored file leaked: {paths:?}");
         assert!(paths.contains(&"plain2.txt"), "unignored file lost: {paths:?}");
@@ -756,7 +768,7 @@ mod tests {
         std::fs::create_dir_all(root.join("vendor/ours")).unwrap();
         std::fs::write(root.join("vendor/ours/mine.txt"), "ours\n").unwrap();
 
-        let paths: Vec<String> = diff_worktree(root, Some(&base), WorktreeDiffOptions::default())
+        let paths: Vec<String> = diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default())
             .unwrap()
             .into_iter()
             .map(|file| file.path)
@@ -782,7 +794,8 @@ mod tests {
         let root = tmp.path();
 
         let patches =
-            diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+            diff_worktree(&root.join(".git"), root, Some(&base), WorktreeDiffOptions::default())
+                .unwrap();
         let by_path: BTreeMap<&str, &FilePatch> =
             patches.iter().map(|p| (p.path.as_str(), p)).collect();
 
@@ -815,6 +828,63 @@ mod tests {
             .unwrap();
         let top = String::from_utf8_lossy(&out.stdout);
         assert!(top.contains("commit"), "unexpected top operation: {top}");
+    }
+
+    /// The same live diff from a workspace that has no `.git` of its own.
+    ///
+    /// This is why the git directory and the working tree are separate
+    /// parameters. A workspace added with `jj workspace add` holds files and a
+    /// `.jj` and nothing else; its objects live in the repo it was added to. Ask
+    /// gix to open the workspace and there is nothing there to open, which is
+    /// how every secondary workspace would have failed to show a diff at all.
+    #[test]
+    fn diffs_a_workspace_that_has_no_git_directory_of_its_own() {
+        if Command::new("jj").arg("--version").output().is_err() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        jj(&main, &["git", "init", "--colocate", "."]);
+        std::fs::write(main.join("shared.txt"), "one\ntwo\n").unwrap();
+        jj(&main, &["commit", "-m", "base"]);
+        jj(&main, &["workspace", "add", "--name", "build", "../build"]);
+
+        let workspace = tmp.path().join("build");
+        assert!(!workspace.join(".git").exists(), "premise: the workspace has no .git");
+
+        // An edit in the *workspace*, against the base the workspace sits on.
+        std::fs::write(workspace.join("shared.txt"), "one\nTWO\n").unwrap();
+        let out = Command::new("jj")
+            .args(["--ignore-working-copy", "--color=never", "log", "--no-graph", "-r", "@-", "-T", "commit_id"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        let patches = diff_worktree(
+            &main.join(".git"),
+            &workspace,
+            Some(&base),
+            WorktreeDiffOptions::default(),
+        )
+        .unwrap();
+
+        let edit = patches.iter().find(|p| p.path == "shared.txt").expect("the edit is seen");
+        assert_eq!(edit.status, FileStatus::Modified);
+        assert_eq!((edit.added, edit.removed), (1, 1));
+        let removed = edit.hunks[0].lines.iter().find(|l| l.kind == LineKind::Removed).unwrap();
+        assert_eq!(removed.text, "two");
+
+        // And still no operation, from either tree's point of view.
+        let out = Command::new("jj")
+            .args(["--ignore-working-copy", "op", "log", "--no-graph", "-n", "1", "-T", "description"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        let top = String::from_utf8_lossy(&out.stdout);
+        assert!(top.contains("workspace"), "unexpected top operation: {top}");
     }
 
     #[test]

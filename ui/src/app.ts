@@ -34,6 +34,13 @@ import {
   setBookmark,
   splitHunks,
   squashHunks,
+  createWorkspace,
+  forgetWorkspace,
+  updateStaleWorkspace,
+  checkoutInWorkspace,
+  getWorkspacePath,
+  suggestWorkspaceName,
+  type Workspace,
   splitPaths,
   undo,
   describeChange,
@@ -114,6 +121,7 @@ import {
   iconFetch,
   iconFiles,
   iconGraph,
+  iconWorkspaces,
   iconInfo,
   iconSearch,
   iconSparkle,
@@ -1672,6 +1680,7 @@ export class App extends LitElement {
       || this.versionsOpen
       || this.rebasing !== null
       || this.diagram !== null
+      || this.resolving !== null
     );
   }
 
@@ -2248,6 +2257,145 @@ export class App extends LitElement {
       : nothing}`;
   }
 
+  // ---- Workspaces ----
+
+  private get workspaces(): Workspace[] {
+    return this.repo?.workspaces ?? [];
+  }
+
+  /**
+   * The workspace pane: every working copy of this repo, what it holds, and the way in.
+   *
+   * A workspace whose directory is gone is listed rather than hidden. jj keeps the record
+   * either way, and the record is the problem — it is what makes the name unavailable and
+   * what `jj workspace list` keeps reporting — so the pane has to be the place you can see
+   * it and be rid of it.
+   */
+  private renderWorkspaces() {
+    const workspaces = this.workspaces;
+    return html`<div class="workspaces">
+      <button
+        class="tool workspace-new"
+        ?disabled=${!!this.busy}
+        title="jj workspace add — a second working copy of this repository"
+        @click=${() => void this.createWorkspaceHere()}
+      >
+        New workspace…
+      </button>
+      ${workspaces.length === 0
+        ? html`<div class="ops-empty">No workspaces loaded.</div>`
+        : workspaces.map((workspace) => {
+            const summary = workspace.change.description.split('\n')[0];
+            return html`<div class="workspace-item ${workspace.current ? 'here' : ''} ${
+              workspace.path ? '' : 'missing'
+            }">
+              <div class="workspace-head">
+                <span class="name">${workspace.name}</span>
+                ${workspace.current ? html`<span class="badge">this window</span>` : nothing}
+                ${workspace.path ? nothing : html`<span class="badge warn">directory gone</span>`}
+              </div>
+              <div class="workspace-change">
+                <code>${workspace.change.changeId.slice(0, 8)}</code>
+                <span class="${summary ? '' : 'empty-desc'}">${summary || '(no description)'}</span>
+              </div>
+              ${workspace.path ? html`<div class="workspace-path">${workspace.path}</div>` : nothing}
+              <div class="workspace-actions">
+                ${workspace.current || !workspace.path
+                  ? nothing
+                  : html`<button
+                      class="tool"
+                      title="Show this workspace in this window"
+                      @click=${() => void this.openWorkspace(workspace)}
+                    >
+                      Open
+                    </button>`}
+                ${workspace.current
+                  ? nothing
+                  : html`<button
+                      class="tool danger"
+                      title="jj workspace forget — stop tracking this working copy"
+                      @click=${() => void this.forgetWorkspaceAt(workspace)}
+                    >
+                      Forget…
+                    </button>`}
+              </div>
+            </div>`;
+          })}
+    </div>`;
+  }
+
+  /** Show another workspace in this window — the same switch as opening a repository. */
+  private async openWorkspace(workspace: Workspace) {
+    if (!workspace.path) return;
+    await this.run(async () => {
+      await openRepository(workspace.path!);
+      await this.refresh();
+    });
+  }
+
+  /**
+   * Create a workspace beside this one.
+   *
+   * `jj workspace add` with no `-r` puts the new working copy on the same parents as this
+   * one's, which is what "another tree to work in" means. Checking a *particular* change out
+   * into a new tree is the checkout menu's job, not this button's.
+   */
+  private async createWorkspaceHere(revisions: string[] = [], forChange?: Change) {
+    const suggestion = await suggestWorkspaceName(forChange?.description ?? '').catch(() => '');
+    const name = await askText({
+      heading: 'New workspace',
+      detail:
+        'A second working copy of this repository, with its own working-copy commit. jjdiff puts it under the directory configured by [workspace] root.',
+      placeholder: 'e.g. build',
+      value: suggestion,
+      confirmLabel: 'Create',
+    });
+    if (!name?.trim()) return;
+    const where = await getWorkspacePath(name.trim()).catch(() => null);
+    if (!where) {
+      this.actionError =
+        'No directory is configured for workspaces — set [workspace] root in ~/.config/jjdiff/config.toml.';
+      return;
+    }
+    const ok = await askConfirm({
+      heading: `Create a workspace at ${where}?`,
+      detail:
+        'A full second checkout of this repository lands there. Undoable from the Ops tab — though the undo removes the record, not the files.',
+      confirmLabel: 'Create',
+    });
+    if (!ok) return;
+    await this.command('workspace', () => createWorkspace(name.trim(), revisions));
+    return name.trim();
+  }
+
+  /**
+   * Forget a workspace, and offer to delete its directory when jjdiff made it.
+   *
+   * Two questions because jj keeps them separate: forgetting is a repo operation and
+   * undoable, deleting is a filesystem operation and is not. Asking them as one would make
+   * the undo a lie.
+   */
+  private async forgetWorkspaceAt(workspace: Workspace) {
+    const ok = await askConfirm({
+      heading: `Forget the "${workspace.name}" workspace?`,
+      detail: workspace.path
+        ? `jj stops tracking its working copy. The files at ${workspace.path} stay where they are.`
+        : 'Its directory is already gone; this clears the record jj is still keeping.',
+      confirmLabel: 'Forget',
+    });
+    if (!ok) return;
+    let deleteFiles = false;
+    if (workspace.generated) {
+      deleteFiles = await askConfirm({
+        heading: 'Delete its files too?',
+        detail: `jjdiff created ${workspace.path}, so it can remove it. This part is not undoable — the operation log restores the workspace record, never the tree.`,
+        confirmLabel: 'Forget and delete',
+        danger: true,
+      });
+    }
+    await this.command('workspace', () => forgetWorkspace(workspace.name, deleteFiles));
+  }
+
   private select(change: Change) {
     this.selected = change.changeId;
     this.focusPath = null;
@@ -2817,6 +2965,84 @@ export class App extends LitElement {
       this.detailView = false;
       return outcome;
     });
+  }
+
+  /**
+   * `jj edit` / `jj new`, in a workspace that is not this one.
+   *
+   * The two verbs differ in more than a flag once a *new* workspace is the destination, and
+   * conflating them is the trap jj's own `-r` sets: `jj workspace add -r X` does not check X
+   * out, it makes X the parent of a fresh commit. So "work on this change here" is add then
+   * edit, while "new change on top of it" is the single `add -r`.
+   *
+   * The window follows, because a checkout you cannot see is a checkout you will forget you
+   * made.
+   */
+  private async checkoutElsewhere(mode: 'edit' | 'new', workspace: Workspace | 'new') {
+    const change = this.selectedChange;
+    if (!change) return;
+    if (mode === 'edit' && !(await this.confirmImmutableRewrite(change, 'Work on'))) return;
+
+    if (workspace === 'new') {
+      // `add -r` for `new`, because that is exactly what it does; a bare `add` for `edit`,
+      // which then needs the edit as a second step.
+      const name = await this.createWorkspaceHere(
+        mode === 'new' ? [change.changeId] : [],
+        change,
+      );
+      if (!name || this.actionError) return;
+      if (mode === 'edit') {
+        await this.command('edit', () =>
+          checkoutInWorkspace(name, change.changeId, 'edit', change.immutable),
+        );
+        // A workspace that exists but does not hold the change is not what was asked for,
+        // and following the window to it would present the failure as a success.
+        if (this.actionError) return;
+      }
+      const created = this.workspaces.find((w) => w.name === name);
+      if (created) await this.openWorkspace(created);
+      return;
+    }
+
+    const held = change.workspaces.filter((name) => name !== workspace.name);
+    if (held.length) {
+      const ok = await askConfirm({
+        heading: `That change is already checked out in ${held.join(', ')}.`,
+        detail:
+          'jj allows the same commit to be the working copy of two workspaces. Nothing breaks, but edits in one will show up as the other going stale, which is confusing enough to be worth saying first.',
+        confirmLabel: 'Check it out anyway',
+      });
+      if (!ok) return;
+    }
+    await this.command(mode, () =>
+      checkoutInWorkspace(workspace.name, change.changeId, mode, change.immutable),
+    );
+    if (!this.actionError) await this.openWorkspace(workspace);
+  }
+
+  /** Palette entries for "…in another workspace", one per destination. */
+  private checkoutCommands(change: Change | null): Command[] {
+    if (!change) return [];
+    const others = this.workspaces.filter((workspace) => !workspace.current && workspace.path);
+    const entries: Command[] = [];
+    for (const [mode, verb] of [
+      ['edit', 'Work on This Change'],
+      ['new', 'New Change on Top'],
+    ] as const) {
+      for (const workspace of others) {
+        entries.push({
+          id: `jj-${mode}-in-${workspace.name}`,
+          label: `${verb} in "${workspace.name}"`,
+          run: () => void this.checkoutElsewhere(mode, workspace),
+        });
+      }
+      entries.push({
+        id: `jj-${mode}-in-new`,
+        label: `${verb} in a New Workspace…`,
+        run: () => void this.checkoutElsewhere(mode, 'new'),
+      });
+    }
+    return entries;
   }
 
   private async abandonSelected() {
@@ -3448,6 +3674,10 @@ export class App extends LitElement {
     add('Change', [
       !!change && { id: 'jj-edit', label: 'Work on This Change (jj edit)', run: () => this.editSelected() },
       { id: 'jj-new', label: 'New Change on Top (jj new)', run: () => this.newOnSelected() },
+      // The same two verbs, aimed elsewhere. They sit next to their defaults rather than in
+      // a Workspaces group: the question is which change to work on, and *where* is a
+      // qualifier on it.
+      ...this.checkoutCommands(change),
       isWc && { id: 'jj-absorb', label: 'Absorb Into Ancestors (jj absorb)', run: () => this.runAbsorb() },
       !!change && { id: 'jj-rebase', label: 'Rebase…  (jj rebase)', run: () => void this.rebaseSelected() },
       !!change && { id: 'jj-split', label: 'Split File Out (jj split)', run: () => this.splitSelectedFiles() },
@@ -3492,6 +3722,21 @@ export class App extends LitElement {
       { id: 'jj-fetch', label: 'Fetch (jj git fetch)', run: () => this.runFetch() },
       { id: 'jj-push', label: 'Push (jj git push)', run: () => this.runPush() },
       { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => void this.createBookmark() },
+      {
+        id: 'jj-workspace-new',
+        label: 'New Workspace…  (jj workspace add)',
+        run: () => void this.createWorkspaceHere(),
+      },
+      this.workspaces.length > 1 && {
+        id: 'jj-workspace-pane',
+        label: 'Show Workspaces',
+        run: () => this.selectTab('workspaces'),
+      },
+      {
+        id: 'jj-workspace-stale',
+        label: 'Update Stale Workspace (jj workspace update-stale)',
+        run: () => void this.command('workspace', () => updateStaleWorkspace()),
+      },
       {
         id: 'refresh',
         label: 'Reload Repository',
@@ -3739,9 +3984,25 @@ export class App extends LitElement {
         <span class="repo-menu-root">
           <button class="repo-button" @click=${this.toggleRepoMenu} title=${this.repo.root}>
             <span class="chip accent">${folderIcon(false)}</span>
-            <span class="root">${basename(this.repo.root)}</span>
+            <span class="root">${this.repo.repoName || basename(this.repo.root)}</span>
             <span class="fold-chevron ${this.repoMenuOpen ? 'up' : ''}">${iconChevron}</span>
           </button>
+          ${
+            // Which working copy of that repo you are standing in. Beside the repo name
+            // rather than folded into it, because they answer different questions and a
+            // second workspace makes them different words — and it is a button, since
+            // "which tree am I in" and "show me the trees" are the same thought.
+            this.repo.workspace
+              ? html`<button
+                  class="workspace-chip ${this.sidebarTab === 'workspaces' ? 'here' : ''}"
+                  title=${`Workspace "${this.repo.workspace}" — ${this.repo.root}\nShow every working copy of this repository`}
+                  @click=${() => this.selectTab('workspaces')}
+                >
+                  ${iconWorkspaces}
+                  <span class="name">${this.repo.workspace}</span>
+                </button>`
+              : nothing
+          }
           ${this.repoMenuOpen
             ? html`<div class="repo-menu">
                 ${this.recentRepos.map(
@@ -3900,11 +4161,14 @@ export class App extends LitElement {
                 .changes=${this.filteredGraph}
                 .selected=${selectedId}
                 .canRebase=${!this.busy}
+                .workspace=${this.repo?.workspace ?? null}
                 @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
                 @rebase-drop=${(event: CustomEvent<{ source: Change; destination: Change }>) =>
                   void this.rebaseByDrop(event.detail.source, event.detail.destination)}
               ></jj-log-graph>
               </div>`
+          : this.sidebarTab === 'workspaces'
+            ? this.renderWorkspaces()
           : this.sidebarTab === 'review'
             ? html`<div class="review-list">
                 <button class="tool review-export" @click=${() => void this.copyReviewMarkdown()}>
@@ -5115,18 +5379,20 @@ const CAMEL: Record<string, string> = {
 };
 
 /** Sidebar panes. `walkthrough` doubles as the guided-review switch — see `selectTab`. */
-type SidebarTab = 'stack' | 'files' | 'walkthrough' | 'review';
+type SidebarTab = 'stack' | 'files' | 'walkthrough' | 'review' | 'workspaces';
 
 /**
  * The rail, in order. Ordered by how far from the code each pane sits: the
  * commit graph, then that commit's files, then the guided reading of them, then
- * the comments left on them.
+ * the comments left on them — and last the workspaces, which are not about this
+ * change at all but about which copy of the repository you are standing in.
  */
 const RAIL_PANES: { id: SidebarTab; label: string; icon: TemplateResult }[] = [
   { id: 'stack', label: 'Log', icon: iconGraph },
   { id: 'files', label: 'Files', icon: iconFiles },
   { id: 'walkthrough', label: 'Steps', icon: iconSparkle },
   { id: 'review', label: 'Review', icon: iconComment },
+  { id: 'workspaces', label: 'Trees', icon: iconWorkspaces },
 ];
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;

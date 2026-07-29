@@ -68,6 +68,11 @@ It and `--diff` compute that diff through the same `compute_diff` the app uses, 
 
 **Light DOM above the diff pane.** `jj-app` and `jj-patch-view` override `createRenderRoot()` to return `this`. A shadow root anywhere above a diff row severs `theme.css` from it and breaks cross-row text selection — this shipped as a real bug. Shadow DOM is fine for leaf widgets (file tree, command bar, walkthrough panel).
 
+**A backtick inside a `css` tagged template ends it.** Twice now, both times in a comment
+explaining a rule (`` `draggable` ``, `` `build@` ``), and the failure is 30 lines of
+"';' expected" pointing at the *class body* rather than at the comment. Write marker syntax
+in CSS comments without backticks.
+
 **No margins on virtualized rows.** All rows across all files are one flat `virtualize()` list; the virtualizer measures `offsetHeight`, so gaps must come from padding or transparent borders inside the row.
 
 **`IN_TAURI` gates all IPC.** `ipc.ts` checks `'__TAURI_INTERNALS__' in window` and falls back to `mock.ts` via dynamic import, so `pnpm dev` works in a plain browser with no jj repo. New IPC wrappers need a mock arm or the browser path breaks.
@@ -77,6 +82,57 @@ It and `--diff` compute that diff through the same `compute_diff` the app uses, 
 `crates/vcs` and `crates/diff` tests shell out to real `jj`. They skip themselves when `jj` isn't installed, and serialize through a `JJ_LOCK` mutex — concurrent `jj git init` is flaky. New jj-backed tests must take that guard and set `signing.behavior=drop` plus `JJ_USER`/`JJ_EMAIL`, as the existing ones do.
 
 CI is split in two (`.github/workflows/`): `crates.yml` for the pure crates (fast, caches a pinned `jj-cli` build), `app.yml` for the Tauri app + UI bundle (pulls the GTK/WebKit stack).
+
+## A `Repo` is a workspace, and three paths are not one path
+
+`Repo::discover` resolves **three** directories that coincide only in a repo with a single
+workspace, and naming them apart is what makes jj workspaces work at all:
+
+- **`root`** — the workspace (`jj root`): where the files are, what `@` means.
+- **`repo_dir`** — the shared `.jj/repo`. A *directory* in the workspace `jj git init` made,
+  and a **file** holding a relative path to it in every workspace `jj workspace add` made
+  since. `op_heads_dir()` hangs off this; built from `root` it would path through a file and
+  the op watcher would silently never fire.
+- **`git_dir`** — from `<repo_dir>/store/git_target`. gix reads objects here while
+  `diff_worktree` walks files in `root`, which is why that function takes both.
+
+**Colocation is a property of the store, not of the directory.** The old test was
+`root.join(".git").exists()`, which was the same question until a second workspace existed —
+`jj workspace add` gives the new tree a `.jj` and nothing else, so every secondary workspace
+of a perfectly colocated repo failed it. Now: resolve `git_target` and reject it if it points
+*inside* `.jj/repo` (jj's own bare store, `git.colocate=false`). Colocation is jj's default
+now, so that opt-out is the case the check still has to catch.
+
+**`review_key()` is the repo, `root()` is the workspace.** Viewed flags, comments,
+"last reviewed" and walkthroughs key on the former, so review state follows a change between
+workspaces — which is the whole point of keying on change ids. In a single-workspace repo it
+is byte-identical to `root`, so nothing anyone already stored changed meaning. `emit_repo_changed`
+matches on it too: the op log is repo-wide, so a commit in one workspace makes every other
+window stale.
+
+`fetch_forge_ref` passes `--git-dir` *and* sets the working directory to that git dir's
+parent — `--git-dir` says where to fetch into, and says nothing about resolving a remote
+given as a relative path, which git does against the cwd.
+
+## Workspaces are places, and jjdiff owns only the ones it made
+
+`jj workspace add`'s `-r` does **not** check a revision out: it makes those revisions the
+*parents* of a new working-copy commit, exactly like `jj new`. So "work on this change in a
+new workspace" is `add` then `edit`, while "new change on top of it in a new workspace" is
+the single `add -r`. `checkoutElsewhere` in `app.ts` keeps them apart; conflating them hands
+the reviewer an empty change instead of the one they picked.
+
+Generated workspaces live at `<[workspace] root>/<repo dirname>/<name>`, defaulting to
+`~/.jjdiff/workspaces`. That prefix is the whole of `workspaces::is_generated`, which decides
+whether jjdiff may **delete** a directory. `jj workspace forget` never touches the disk, so
+removing files is jjdiff's own act and it performs it only inside the directory it owns — a
+workspace the user made is forgotten and left exactly where it is. The forget is undoable and
+the deletion is not, which is why they are two questions and the deletion happens second.
+
+`WorkspaceView.generated` is computed in the backend and sent to the UI rather than
+re-derived there: the rule depends on a config value, and a second copy of "may I remove this
+directory" in TypeScript is a second chance to get it wrong. `forget_workspace` re-checks it
+regardless — the flag shapes the affordance, the backend is the guarantee.
 
 ## Windows own their repo
 
@@ -152,11 +208,11 @@ Use `askText` / `askConfirm` from `ui/src/prompt.ts` instead. They also work in 
 
 **An overlay's backdrop test is `event.composedPath()[0] === this`, never `event.target === this`.** The scrim is the host element and the listener is bound to the host, so an event from inside the shadow root is *retargeted to the host* and a click on the panel is indistinguishable from a click on the scrim. All five overlays that existed at the time (command bar, prompt, theme picker, shortcuts sheet, evolog drawer) had this and dismissed on any click they received — the theme picker's filter box could not be clicked, and the version radios did nothing.
 
-That test, the window Escape listener and the panel-level `stopPropagation()` are written once, in `ui/src/overlay.ts`, and all eight overlays extend its `OverlayElement`. It is a base class and a set of `CSSResult`s — **never a custom element**, because these mount above the diff pane and a shadow root there severs `theme.css` from the rows. What it deliberately does not own is the way out: `dismiss()` is abstract, because the paths are not interchangeable — most dispatch `close`, `jj-theme-picker` must re-emit `preview-theme` first or the last hovered palette stays applied, and `jj-prompt` resolves the promise `askText` is waiting on. `escapeOnWindow` is off for the three whose Escape belongs elsewhere: the palette and the prompt answer it on the panel and stop it there, and the shortcuts sheet is opened *and closed* by `App.onGlobalKey`, so a listener of its own would be a second one closing it on the same keystroke.
+That test, the window Escape listener and the panel-level `stopPropagation()` are written once, in `ui/src/overlay.ts`, and all nine overlays extend its `OverlayElement`. It is a base class and a set of `CSSResult`s — **never a custom element**, because these mount above the diff pane and a shadow root there severs `theme.css` from the rows. What it deliberately does not own is the way out: `dismiss()` is abstract, because the paths are not interchangeable — most dispatch `close`, `jj-theme-picker` must re-emit `preview-theme` first or the last hovered palette stays applied, and `jj-prompt` resolves the promise `askText` is waiting on. `escapeOnWindow` is off for the three whose Escape belongs elsewhere: the palette and the prompt answer it on the panel and stop it there, and the shortcuts sheet is opened *and closed* by `App.onGlobalKey`, so a listener of its own would be a second one closing it on the same keystroke.
 
 On the app side the question is asked once: `App.overlayOpen` is the single guard `onGlobalKey` returns on, replacing two hand-maintained flag lists that had already drifted (the theme picker was in one and not the other, the evolog drawer in neither). An open overlay therefore swallows the walkthrough arrows and the Escape chain as well as the single-letter review keys — before, arrowing the palette also stepped the walkthrough behind it, and Escape in the theme picker closed the picker *and* ended the review. The shortcuts sheet is the one overlay deliberately outside the getter, since `?` toggles it and Escape closes it from inside that same handler; `jj-prompt` is outside it too, having no flag on `App` — it mounts itself from `ask()` and stops every key on its panel. Adding a new overlay means adding its flag to that getter, and to nothing else.
 
-The same retargeting bites the keyboard, and worse: **an overlay with a text field must handle keys on its panel and `stopPropagation()`**, as `jj-prompt`, `jj-command-bar`, `jj-rebase-picker` and `jj-conflict-resolver` do. `App.onGlobalKey` decides an event is typing by looking at `event.target.tagName`, and by the time the event reaches window that target is the *host element*, not the input two shadow roots down — so `j`, `k`, `c` and `v` typed into a filter box would scroll the diff behind the dialog. A window-level listener is still right for Escape alone, since a click on the scrim moves focus off the panel.
+The same retargeting bites the keyboard, which is what `OverlayElement.onPanelKey` is for: **an overlay with a text field binds it on the panel**, because `App.onGlobalKey` decides an event is typing by looking at `event.target.tagName`, and by the time the event reaches window that target is the *host element*, not the input two shadow roots down — so `j`, `k`, `c` and `v` typed into a filter box would scroll the diff behind the dialog. It lets Escape through on purpose, since the window listener owns that and a click on the scrim moves focus off the panel anyway.
 
 Same class of gap: **`target="_blank"` does nothing** — there is no tab to open. Outbound links go through the `open_url` command (`editor::open_url`), which hands the URL to the OS and refuses any scheme that isn't http/https.
 

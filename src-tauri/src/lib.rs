@@ -14,6 +14,7 @@ mod menu;
 mod resolve;
 mod split;
 mod viewed;
+mod workspaces;
 pub mod walkthrough;
 
 use std::collections::HashMap;
@@ -25,7 +26,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
-use jjdiff_vcs::{BookmarkStatus, Change, ConflictedFile, EvologEntry, Operation, Outcome, Repo};
+use jjdiff_vcs::{
+    BookmarkStatus, Change, ConflictedFile, EvologEntry, Operation, Outcome, Repo, Workspace,
+};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
@@ -55,7 +58,7 @@ impl LaunchOptions {
     /// Construct from an already-parsed [`Args`]. `main.rs` parses argv once
     /// and passes it here; headless commands have already been dispatched.
     pub fn from_args(args: &Args) -> LaunchOptions {
-        let repo_path = args.repo_or_cwd();
+        let repo_path = args.workspace_or_repo();
         LaunchOptions {
             repo_path,
             revset: args.revset.clone(),
@@ -126,7 +129,7 @@ fn remember_repo(state: &tauri::State<'_, AppState>, root: &str) {
 /// window must not make every other window reload.
 fn attach_repo(app: &AppHandle, label: &str, repo: &Repo) -> Vec<RepoWatcher> {
     if let Some(window) = app.get_webview_window(label) {
-        let _ = window.set_title(&window_title(repo.root()));
+        let _ = window.set_title(&window_title(repo));
     }
     let mut watchers = Vec::new();
     let notify = |app: &AppHandle, label: &str| {
@@ -155,9 +158,20 @@ fn attach_repo(app: &AppHandle, label: &str, repo: &Repo) -> Vec<RepoWatcher> {
     watchers
 }
 
-fn window_title(root: &Path) -> String {
-    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    format!("jjdiff — {name}")
+/// `jjdiff — codiff`, or `jjdiff — codiff [build]` for a workspace that is not the repo's
+/// own directory.
+///
+/// The suffix is derived from the paths rather than asked of jj, because titling a window
+/// should not cost a subprocess — and because the question it answers is "is this the tree I
+/// think it is", which the directory names answer directly. A repo with one workspace is
+/// titled exactly as before.
+fn window_title(repo: &Repo) -> String {
+    let name_of = |path: &Path| path.file_name().map(|n| n.to_string_lossy().into_owned());
+    let repo_name = name_of(&repo.review_key()).unwrap_or_default();
+    match name_of(repo.root()) {
+        Some(workspace) if workspace != repo_name => format!("jjdiff — {repo_name} [{workspace}]"),
+        _ => format!("jjdiff — {repo_name}"),
+    }
 }
 
 /// Bind `repo` to `label`, replacing whatever that window held before (the old
@@ -186,6 +200,11 @@ fn window_for_repo(state: &AppState, root: &Path) -> Option<String> {
 #[serde(rename_all = "camelCase")]
 struct RepoState {
     root: PathBuf,
+    /// The *repository's* name, which is the workspace's only until a second workspace
+    /// exists. `root`'s basename is the workspace directory, so a header built from it would
+    /// call the repo `build` while showing `build`'s contents — the one place the two names
+    /// differ is exactly the place it matters.
+    repo_name: String,
     jj_version: String,
     working_copy: Change,
     stack: Vec<Change>,
@@ -194,6 +213,27 @@ struct RepoState {
     /// Ahead/behind for every bookmark tracking a remote. Empty on a repo with
     /// no remotes, which is not an error — it is most repos jjdiff opens.
     bookmarks: Vec<BookmarkStatus>,
+    /// Every workspace attached to this repo, this one included. Always at least one, so
+    /// the pane can tell "one workspace" from "not loaded yet".
+    workspaces: Vec<WorkspaceView>,
+    /// Which of them this window is showing. `None` only if jj and jjdiff disagree about
+    /// the root, which should not happen and is not worth failing a refresh over.
+    workspace: Option<String>,
+}
+
+/// A workspace as the UI sees it: jj's facts, plus the one thing only jjdiff knows.
+///
+/// `generated` decides whether the UI offers to *delete* a workspace's files or only to
+/// forget it. It is computed here rather than in the frontend because the rule depends on
+/// the configured root, and a second copy of that rule in TypeScript would be a second
+/// chance to get "may I remove this directory" wrong. The backend enforces it again on the
+/// way in regardless — this flag shapes the affordance, `forget_workspace` is the guarantee.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceView {
+    #[serde(flatten)]
+    workspace: Workspace,
+    generated: bool,
 }
 
 #[derive(Serialize)]
@@ -210,6 +250,19 @@ struct Interdiff {
     files: Vec<FilePatch>,
     from_commit: String,
     to_commit: String,
+}
+
+/// The key review state is filed under.
+///
+/// Every workspace of a repository shares it, which is the point: viewed flags, comments,
+/// "last reviewed" and walkthroughs are keyed by change id so they survive the change being
+/// rewritten, and a change checked out in a second workspace is the same change. Filing them
+/// under the tree it happens to sit in would undo that for no gain.
+///
+/// It is the workspace root itself in a repo with one workspace, so nothing anyone has
+/// already stored changes meaning.
+fn review_key(repo: &Repo) -> String {
+    repo.review_key().to_string_lossy().into_owned()
 }
 
 /// Clone the (cheap) repo handle for the calling window, discovering it on
@@ -236,7 +289,7 @@ fn repo_handle(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Re
 
 /// The repo half of every review-state key: viewed flags, reviewed commits,
 /// walkthroughs (`ReviewStore`) and comments (`CommentStore`) are all stored
-/// under the string form of the window's repo root.
+/// under the string form of the window's **repository**.
 ///
 /// One function because the format is a stored contract — a site that spelled
 /// it differently, by canonicalising the path or by using the launch path
@@ -244,7 +297,13 @@ fn repo_handle(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Re
 /// key that user's review state under a name nothing else reads, and their
 /// notes and viewed flags would simply be gone.
 ///
-/// It reads the root off the repo already bound to the window, so a command
+/// The repository, not the workspace: [`Repo::review_key`] resolves the directory holding
+/// the shared `.jj`, so a change reviewed in one workspace keeps its comments and viewed
+/// flags when it is checked out in another — which is the whole point of keying review state
+/// on change ids. In a repo with one workspace it *is* the root, byte for byte, so nothing
+/// stored under the old spelling moved.
+///
+/// It reads that off the repo already bound to the window, so a command
 /// that needs nothing else runs no subprocess; only a window whose repo has not
 /// been discovered yet falls through to [`repo_handle`].
 fn repo_key(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Result<String, String> {
@@ -254,10 +313,10 @@ fn repo_key(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Resul
         .expect("windows lock")
         .get(window.label())
         .and_then(|entry| entry.repo.as_ref())
-        .map(|repo| repo.root().to_string_lossy().into_owned());
+        .map(review_key);
     match bound {
         Some(key) => Ok(key),
-        None => Ok(repo_handle(state, window)?.root().to_string_lossy().into_owned()),
+        None => Ok(review_key(&repo_handle(state, window)?)),
     }
 }
 
@@ -342,8 +401,27 @@ async fn repo_state(
     let repo = repo_handle(&state, &window)?;
     let graph_revset = revset.unwrap_or_else(|| "ancestors(@ | bookmarks())".to_string());
     blocking(move || {
+        // Tolerated rather than propagated, for the same reason as bookmarks below: a
+        // repo whose workspace list cannot be read is still perfectly reviewable.
+        let generated_root = config::load().workspace.resolved_root();
+        let listed = repo.workspaces().unwrap_or_default();
+        let workspace = listed.iter().find(|w| w.current).map(|w| w.name.clone());
+        let workspaces: Vec<WorkspaceView> = listed
+            .into_iter()
+            .map(|workspace| WorkspaceView {
+                generated: workspace.path.as_deref().is_some_and(|path| {
+                    workspaces::is_generated(generated_root.as_deref(), Path::new(path))
+                }),
+                workspace,
+            })
+            .collect();
         Ok(RepoState {
             root: repo.root().to_path_buf(),
+            repo_name: repo
+                .review_key()
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             jj_version: vcs(repo.jj_version())?,
             working_copy: vcs(repo.working_copy())?,
             stack: vcs(repo.stack())?,
@@ -352,6 +430,8 @@ async fn repo_state(
             // be read is still perfectly reviewable, and failing the whole
             // repo_state call would black out the window over a badge.
             bookmarks: repo.bookmark_statuses().unwrap_or_default(),
+            workspaces,
+            workspace,
         })
     })
     .await
@@ -374,6 +454,7 @@ pub(crate) fn compute_diff(
         None => {
             let base = vcs(repo.working_copy_parent())?;
             jjdiff_diff::worktree::diff_worktree(
+                repo.git_dir(),
                 repo.root(),
                 base.as_deref(),
                 jjdiff_diff::worktree::WorktreeDiffOptions { ignore_whitespace },
@@ -460,16 +541,22 @@ async fn interdiff(
     .await
 }
 
-/// Tell every window bound to `root` that the repo moved. Scoped by repo rather
-/// than by window: a mutation is visible to all windows showing that repo, and
+/// Tell every window showing the repository identified by `key` that it moved. Scoped by
+/// repo rather than by window: a mutation is visible to all windows showing that repo, and
 /// to none of the others.
-fn emit_repo_changed(app: &AppHandle, state: &AppState, root: &Path) {
+///
+/// `key` is a [`Repo::review_key`] — the *repository*, not the workspace. The op log is
+/// repo-wide, so a commit made in one workspace changes what every other one is looking at,
+/// and a window showing a second workspace would otherwise sit on a stale graph until
+/// something happened to touch its own tree. Matching on the workspace root was the same
+/// thing right up until there was more than one.
+fn emit_repo_changed(app: &AppHandle, state: &AppState, key: &Path) {
     let labels: Vec<String> = state
         .windows
         .lock()
         .expect("windows lock")
         .iter()
-        .filter(|(_, window)| window.repo.as_ref().is_some_and(|repo| repo.root() == root))
+        .filter(|(_, window)| window.repo.as_ref().is_some_and(|repo| repo.review_key() == key))
         .map(|(label, _)| label.clone())
         .collect();
     for label in labels {
@@ -489,9 +576,9 @@ async fn run_mutation<F>(
 where
     F: FnOnce(&Repo) -> jjdiff_vcs::Result<Outcome> + Send + 'static,
 {
-    let root = repo.root().to_path_buf();
+    let key = repo.review_key();
     let outcome = blocking(move || vcs(task(&repo))).await?;
-    emit_repo_changed(app, state, &root);
+    emit_repo_changed(app, state, &key);
     Ok(outcome)
 }
 
@@ -1194,6 +1281,163 @@ async fn discover(path: String) -> Result<Repo, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Where a new workspace called `name` would be created, and whether jjdiff can.
+///
+/// Asked before creating one so the UI can show the path in the confirmation rather than
+/// report it afterwards — a second checkout of a repo is a large thing to appear somewhere
+/// unannounced.
+#[tauri::command]
+async fn workspace_path(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    name: String,
+) -> Result<String, String> {
+    let repo = repo_handle(&state, &window)?;
+    let root = workspace_root()?;
+    Ok(workspaces::generated_path(&root, &repo.review_key(), &name)
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// The configured parent for generated workspaces.
+fn workspace_root() -> Result<PathBuf, String> {
+    config::load().workspace.resolved_root().ok_or_else(|| {
+        "no directory is configured for workspaces — set `[workspace] root` in ~/.config/jjdiff/config.toml".to_string()
+    })
+}
+
+/// A workspace name nobody has to invent: derived from the change, unique in this repo.
+#[tauri::command]
+async fn suggest_workspace_name(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    description: String,
+) -> Result<String, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || {
+        let taken: Vec<String> =
+            repo.workspaces().unwrap_or_default().into_iter().map(|w| w.name).collect();
+        Ok(workspaces::suggest_name(&description, &taken))
+    })
+    .await
+}
+
+/// Create a workspace. `revisions` are jj's `-r` — parents for its new working copy, *not* a
+/// checkout; see [`Repo::workspace_add`].
+#[tauri::command]
+async fn create_workspace(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    revisions: Vec<String>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state, &window)?;
+    let path = workspaces::generated_path(&workspace_root()?, &repo.review_key(), &name);
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    run_mutation(&app, &state, repo, move |repo| {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(jjdiff_vcs::VcsError::Io)?;
+        }
+        repo.workspace_add(&path, &name, &revisions)
+    })
+    .await
+}
+
+/// Stop tracking a workspace, and — only if jjdiff created it — remove its directory.
+///
+/// The two halves are separate because jj keeps them separate: `jj workspace forget` never
+/// touches the disk. `delete_files` is therefore a decision the UI has to have put to
+/// someone, and it is refused outright for a tree jjdiff did not create, wherever the caller
+/// claims it is. The forget is undoable and the deletion is not, which is why the deletion
+/// happens second: an undo after a failed forget would otherwise restore a record pointing
+/// at files that are gone.
+#[tauri::command]
+async fn forget_workspace(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    name: String,
+    delete_files: bool,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state, &window)?;
+    if repo.workspaces().unwrap_or_default().iter().any(|w| w.current && w.name == name) {
+        return Err("this window is showing that workspace — open another one first".into());
+    }
+    let generated_root = config::load().workspace.resolved_root();
+    let path = repo
+        .workspaces()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|w| w.name == name)
+        .and_then(|w| w.path)
+        .map(PathBuf::from);
+    let remove = delete_files
+        && path
+            .as_deref()
+            .is_some_and(|path| workspaces::is_generated(generated_root.as_deref(), path));
+    if delete_files && !remove {
+        return Err(
+            "jjdiff only deletes workspaces it created; this one is forgotten but left on disk"
+                .into(),
+        );
+    }
+    let outcome = run_mutation(&app, &state, repo, move |repo| repo.workspace_forget(&name)).await?;
+    if remove {
+        if let Some(path) = path {
+            std::fs::remove_dir_all(&path)
+                .map_err(|error| format!("forgotten, but {} could not be removed: {error}", path.display()))?;
+        }
+    }
+    Ok(outcome)
+}
+
+/// `jj workspace update-stale` for the workspace this window is showing.
+#[tauri::command]
+async fn update_stale_workspace(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state, &window)?;
+    run_mutation(&app, &state, repo, |repo| repo.workspace_update_stale()).await
+}
+
+/// Run `jj edit`/`jj new` in *another* workspace.
+///
+/// No new verb: a workspace is a `Repo`, so this discovers one for its path and calls the
+/// same `edit`/`new_change` the current window uses. What it cannot do is act on a workspace
+/// whose directory is gone, which is why the path is resolved rather than assumed.
+#[tauri::command]
+async fn checkout_in_workspace(
+    app: AppHandle,
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    workspace: String,
+    revset: String,
+    mode: String,
+    allow_immutable: bool,
+) -> Result<Outcome, String> {
+    let repo = repo_handle(&state, &window)?;
+    let target = repo
+        .workspaces()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|w| w.name == workspace)
+        .ok_or_else(|| format!("no workspace called {workspace}"))?;
+    let path = target
+        .path
+        .ok_or_else(|| format!("the directory for {workspace} is gone — forget it or restore it"))?;
+    let elsewhere = discover(path).await?.allowing_immutable(allow_immutable);
+    run_mutation(&app, &state, elsewhere, move |repo| match mode.as_str() {
+        "new" => repo.new_change(&[revset]),
+        _ => repo.edit(&revset),
+    })
+    .await
+}
+
 /// Point the calling window at another repository (must be a colocated jj repo).
 #[tauri::command]
 async fn open_repository(
@@ -1211,9 +1455,9 @@ async fn open_repository(
         walkthrough_file: None,
         pull_request: None,
     };
-    let root = repo.root().to_path_buf();
+    let key = repo.review_key();
     bind_window(&app, &state, window.label(), repo, launch);
-    emit_repo_changed(&app, &state, &root);
+    emit_repo_changed(&app, &state, &key);
     Ok(())
 }
 
@@ -1257,7 +1501,7 @@ fn spawn_window(
         *next += 1;
         format!("repo-{next}")
     };
-    let title = window_title(repo.root());
+    let title = window_title(&repo);
     state.windows.lock().expect("windows lock").insert(
         label.clone(),
         WindowState { launch, repo: Some(repo.clone()), watchers: Vec::new() },
@@ -1465,7 +1709,7 @@ async fn open_pull_request(
     number: u32,
 ) -> Result<OpenedPullRequest, String> {
     let repo = repo_handle(&state, &window)?;
-    let root = repo.root().to_path_buf();
+    let key = repo.review_key();
     let opened = blocking(move || {
         let client = forge_client(&repo)?;
         let pull_request = client.pull_request(number)?;
@@ -1492,7 +1736,7 @@ async fn open_pull_request(
     })
     .await?;
     // The fetch created a bookmark, so the graph changed.
-    emit_repo_changed(&app, &state, &root);
+    emit_repo_changed(&app, &state, &key);
     Ok(opened)
 }
 
@@ -1757,6 +2001,12 @@ pub fn run(args: Args) {
             conflicts,
             conflict_content,
             resolve_conflict,
+            workspace_path,
+            suggest_workspace_name,
+            create_workspace,
+            forget_workspace,
+            update_stale_workspace,
+            checkout_in_workspace,
             review_status,
             set_viewed,
             mark_reviewed,

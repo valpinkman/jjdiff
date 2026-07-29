@@ -727,6 +727,47 @@ jj-app > header .spacer {
 jj-app .repo-menu-root {
   position: relative;
   display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-1);
+}
+
+/* Which working copy of the repo you are in. Deliberately quieter than the repo name
+   beside it — in the overwhelming majority of repos it will read "default" forever, and a
+   permanent label should not compete with the masthead it qualifies. */
+jj-app .workspace-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  padding: 3px 10px 3px 8px;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-pill);
+  background: none;
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-mono);
+  font-size: var(--jj-text-xs);
+  cursor: pointer;
+  transition:
+    background-color var(--jj-t-2) var(--jj-ease-out),
+    border-color var(--jj-t-2) var(--jj-ease-out);
+}
+
+jj-app .workspace-chip svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.8;
+}
+
+jj-app .workspace-chip:hover {
+  background: var(--jj-wash);
+  border-color: var(--jj-border-strong);
+  color: var(--jj-fg);
+}
+
+/* Lit while its pane is open, so the chip and the rail agree about where you are. */
+jj-app .workspace-chip.here {
+  background: var(--jj-accent-soft);
+  border-color: var(--jj-accent-line);
+  color: var(--jj-accent);
 }
 
 jj-app .repo-button {
@@ -2728,6 +2769,105 @@ jj-app .conflict-position {
   font-size: var(--jj-text-xs);
   color: var(--jj-removed-fg);
   white-space: nowrap;
+}
+
+/* ---- Workspaces pane ----
+   A list of places, not of changes: each row is a directory you could be standing in, so
+   the path is shown rather than hidden behind the name. */
+
+jj-app .workspaces {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jj-s-2);
+  padding: var(--jj-s-3);
+  overflow-y: auto;
+}
+
+jj-app .workspace-new {
+  align-self: stretch;
+  justify-content: center;
+}
+
+jj-app .workspace-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jj-s-1);
+  padding: var(--jj-s-3);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+}
+
+/* The one you are in gets the same cursor bar as a selected log row — selection is one
+   shape everywhere in this app. */
+jj-app .workspace-item.here {
+  box-shadow: inset 2px 0 0 var(--jj-accent);
+  background: var(--jj-accent-soft);
+}
+
+jj-app .workspace-item.missing {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+jj-app .workspace-head {
+  display: flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+}
+
+jj-app .workspace-head .name {
+  font-weight: 650;
+  color: var(--jj-fg);
+}
+
+jj-app .workspace-head .badge {
+  font-size: var(--jj-text-xs);
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-surface-2);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .workspace-head .badge.warn {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .workspace-change {
+  display: flex;
+  align-items: baseline;
+  gap: var(--jj-s-2);
+  min-width: 0;
+  font-size: var(--jj-text-sm);
+  color: var(--jj-fg-soft);
+}
+
+jj-app .workspace-change span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+jj-app .workspace-change .empty-desc {
+  color: var(--jj-fg-faint);
+  font-style: italic;
+}
+
+/* Wrapped rather than truncated: a workspace path is the thing you would paste into a
+   terminal, and half of one is no use for that. */
+jj-app .workspace-path {
+  font-family: var(--jj-mono);
+  font-size: var(--jj-text-xs);
+  color: var(--jj-fg-faint);
+  word-break: break-all;
+}
+
+jj-app .workspace-actions {
+  display: flex;
+  gap: var(--jj-s-2);
+  margin-top: var(--jj-s-1);
 }
 
 /* Picking hunks is a mode, and a mode has to look like one — the accent border

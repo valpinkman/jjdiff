@@ -12,6 +12,45 @@ pub struct Config {
     pub walkthrough: WalkthroughConfig,
     pub describe: DescribeConfig,
     pub editor: EditorConfig,
+    pub workspace: WorkspaceConfig,
+}
+
+/// `[workspace]` — where jjdiff puts the working copies it creates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WorkspaceConfig {
+    /// Parent directory for generated workspaces; each lands at
+    /// `<root>/<repo dirname>/<workspace name>`.
+    ///
+    /// Under `~` rather than beside the repo on purpose: a workspace is a whole second
+    /// checkout, and scattering them next to the work turns every project directory into a
+    /// list of near-duplicates. Keeping them in one place also gives "is this one ours?" a
+    /// definite answer, which is what decides whether jjdiff will delete a directory
+    /// (`workspaces.rs`) rather than only forget it.
+    pub root: String,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        WorkspaceConfig { root: "~/.jjdiff/workspaces".into() }
+    }
+}
+
+impl WorkspaceConfig {
+    /// The configured root with `~` expanded, or `None` when `HOME` is unset and the setting
+    /// needs it — in which case jjdiff has nowhere of its own to put a workspace and says so
+    /// rather than inventing a relative path next to whatever the cwd happens to be.
+    pub fn resolved_root(&self) -> Option<PathBuf> {
+        let raw = self.root.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let Some(rest) = raw.strip_prefix('~') else {
+            return Some(PathBuf::from(raw));
+        };
+        let home = std::env::var_os("HOME")?;
+        Some(PathBuf::from(home).join(rest.trim_start_matches('/')))
+    }
 }
 
 /// `[describe]` — how the agent writes commit messages.

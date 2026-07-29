@@ -30,10 +30,17 @@ const change = (partial: Partial<Change> & Pick<Change, 'changeId' | 'descriptio
   immutable: false,
   workingCopy: false,
   bookmarks: [],
+  workspaces: [],
   ...partial,
 });
 
-const wc = change({ changeId: 'wcwcwcwcwcwcwcwcwcwc', description: '', workingCopy: true, empty: false });
+const wc = change({
+  changeId: 'wcwcwcwcwcwcwcwcwcwc',
+  description: '',
+  workingCopy: true,
+  empty: false,
+  workspaces: ['default'],
+});
 
 const retry = change({
   changeId: 'qpalzmwoskxn12345678',
@@ -60,6 +67,9 @@ const sidebranch = change({
   changeId: 'featurexyzfeaturexyz',
   description: 'Experiment: streaming parser',
   bookmarks: ['streaming'],
+  // Held by another workspace, so the graph shows the `streaming@` tag without this
+  // window's own working copy being involved — the case the tag exists for.
+  workspaces: ['streaming'],
 });
 
 // Parent wiring (commit ids) so the graph has a real fork: streaming branches off trunk1.
@@ -72,6 +82,7 @@ trunk2.parents = [];
 
 export const mockRepoState: RepoState = {
   root: '/Users/dev/projects/example',
+  repoName: 'example',
   jjVersion: '0.43.0 (mock)',
   workingCopy: wc,
   stack: [wc, retry, pool],
@@ -84,6 +95,22 @@ export const mockRepoState: RepoState = {
     { name: 'streaming', remote: 'origin', ahead: 0, behind: 3 },
     { name: 'main', remote: 'origin', ahead: 0, behind: 0 },
   ],
+  // Three workspaces, because one would exercise none of the pane: the current one, a
+  // second holding a different change, and one whose directory has been deleted — the
+  // state whose only remaining action is to forget it.
+  workspaces: [
+    // Not generated: the repo's own directory is never one jjdiff may delete.
+    { name: 'default', path: '/Users/dev/projects/example', current: true, change: wc, generated: false },
+    {
+      name: 'streaming',
+      path: '/Users/dev/.jjdiff/workspaces/example/streaming',
+      current: false,
+      change: sidebranch,
+      generated: true,
+    },
+    { name: 'stale-build', path: null, current: false, change: pool, generated: false },
+  ],
+  workspace: 'default',
 };
 
 export const mockFiles: FilePatch[] = [

@@ -581,6 +581,63 @@ first file in the diff no matter where you had scrolled), and a `1fr` grid track
 minimum being `min-content` (so the diff pushed the shell wider than the window and the whole
 app scrolled sideways, carrying the toolbar off screen).
 
+### D2 — jj workspaces ✅ DONE
+
+Also not in the original plan. jj workspaces are git worktrees done properly — several
+working copies attached to one repo, each with its own working-copy commit — and jjdiff
+could not open one at all. The use is jj's own: keep reviewing in one tree while a build
+runs in another, and check a proposal out somewhere that is not the tree you are mid-edit in.
+
+**Most of it was smaller than it looked, and one part was bigger.** `Repo` was already a
+workspace handle and windows were already one-per-`Repo`, so "open a workspace" was nearly
+"open a repo", which shipped in C5. But `Repo` conflated three directories that coincide only
+while a repo has one workspace, and every one of the three failed *quietly*:
+
+- **`discover` rejected every secondary workspace.** The colocation test was
+  `root.join(".git").exists()`, and `jj workspace add` gives the new tree a `.jj` and nothing
+  else. Colocation is now read off the repo's git store (`store/git_target`) and rejected only
+  when it points *inside* `.jj/repo` — jj's own bare backend. That is the question the old
+  test was always asking, and since jj colocates by default now, `git.colocate=false` is the
+  case it still has to catch.
+- **The op watcher would have watched a path through a file.** A secondary workspace's
+  `.jj/repo` is a *file* holding a relative path to the real one, so `op_heads_dir` had to
+  hang off the resolved repo directory. Built from the workspace root it fails to start, and a
+  watcher that fails to start is a window that simply never refreshes.
+- **`diff_worktree` had one parameter for two jobs.** It opened gix on the same path it
+  walked for files; a workspace has files and no `.git`. Objects, excludes and the base tree
+  now come from `git_dir`, every path walked from the worktree.
+
+`review_key()` is the consequence worth stating: review state keys on the *repository*, not
+the workspace, so a comment survives the change being checked out in another tree — which is
+what keying on change ids was for. In a single-workspace repo it is byte-identical to the
+root, so nothing anyone had already stored changed meaning. `repo-changed` moved to the same
+key, fixing a bug the feature exposed rather than caused: the op log is repo-wide, so a commit
+in one workspace leaves every other window stale.
+
+On top of that, the ordinary features: a **Trees** pane listing every workspace with its
+working-copy commit, its path, and the two states jj states nowhere directly — which one is
+*this* window, and which have had their directory deleted out from under the record. `name@`
+tags in the log for commits another workspace holds, as jj's own log writes them. Creation
+under `~/.jjdiff/workspaces/<repo>/<name>` (`[workspace] root`), with names derived from the
+change description. And `jjdiff -W <name>`, which redirects the headless `--diff` and
+`--print-hunks` as well as the window — a flag that moved one and not the other would have
+the script and the window silently reading different trees.
+
+Two things the plan called out as traps, both real:
+
+- **`jj workspace add -r X` does not check X out.** It makes X the *parent* of a new
+  working-copy commit, exactly as `jj new` would. So "work on this change in a new workspace"
+  is `add` then `edit`, and only "new change on top of it" is the single `add -r`. Conflating
+  them hands the reviewer an empty change instead of the one they picked.
+- **`jj workspace forget` never touches the disk.** Removing the files is therefore jjdiff's
+  own act, and it performs it only inside the directory it owns — a workspace the user made
+  is forgotten and left where it is. Forgetting is undoable and deleting is not, so they are
+  two questions rather than one, and the deletion happens second: an undo after a failed
+  forget would otherwise restore a record pointing at files that are gone.
+
+Deliberate cut: `--sparse-patterns` is not exposed. jj's default is right and a fourth radio
+would cost more than it returns.
+
 ### Suggested order
 
 1. **C1** ✅ — nothing else is reachable from a terminal without it, and it is a day or two.
@@ -589,7 +646,8 @@ app scrolled sideways, carrying the toolbar off screen).
 4. **C5** ✅ — polish, can be interleaved whenever.
 5. **C4** ✅ — only when reviewing others' PRs actually matters to you.
 6. **D1** ✅ — unplanned, and taken once the surface stopped moving.
-7. **C6** — probably never, and that is fine.
+7. **D2** ✅ — also unplanned; the workspace support jj had all along and jjdiff refused.
+8. **C6** — probably never, and that is fine.
 
 ## Risks specific to Phase 2
 

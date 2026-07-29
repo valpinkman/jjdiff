@@ -1,7 +1,8 @@
-import { css, html, LitElement, nothing } from 'lit';
+import { css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import type { ConflictedContent, ConflictPiece, ConflictRegion } from './ipc.js';
+import { OverlayElement, overlayChrome, panelButton, panelHeader } from './overlay.js';
 
 /** Lines of agreed text shown either side of a region before eliding the rest. */
 const CONTEXT = 3;
@@ -30,25 +31,16 @@ const CONTEXT = 3;
  * Shadow DOM: leaf widget, no cross-boundary selection (DESIGN.md §6).
  */
 @customElement('jj-conflict-resolver')
-export class ConflictResolver extends LitElement {
-  static override styles = css`
+export class ConflictResolver extends OverlayElement {
+  static override styles = [
+    overlayChrome,
+    panelHeader,
+    panelButton,
+    css`
+    /* Taller than the shared chrome's 9vh: a conflicted file is a list of
+       regions to read, and every centimetre of panel is one less scroll. */
     :host {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
       padding-top: 6vh;
-      background: rgb(0 0 0 / 0.22);
-      backdrop-filter: blur(3px) saturate(0.9);
-      -webkit-backdrop-filter: blur(3px) saturate(0.9);
-      z-index: 110;
-      animation: scrim-in var(--jj-t-2, 180ms) ease-out;
-    }
-    @keyframes scrim-in {
-      from {
-        opacity: 0;
-      }
     }
     .panel {
       display: flex;
@@ -62,25 +54,6 @@ export class ConflictResolver extends LitElement {
       overflow: hidden;
       font-family: var(--jj-sans);
       animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
-    }
-    @keyframes pop {
-      from {
-        opacity: 0;
-        transform: translateY(-10px) scale(0.965);
-      }
-    }
-    header {
-      display: flex;
-      align-items: baseline;
-      gap: 10px;
-      padding: 16px 20px 12px;
-    }
-    h2 {
-      margin: 0;
-      font-size: var(--jj-text-title, 20px);
-      font-weight: 650;
-      letter-spacing: -0.02em;
-      color: var(--jj-fg);
     }
     .subject {
       min-width: 0;
@@ -236,34 +209,8 @@ export class ConflictResolver extends LitElement {
     .spacer {
       flex: 1;
     }
-    button.action {
-      font-size: var(--jj-text-base, 13px);
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-pill, 999px);
-      background: var(--jj-surface);
-      color: var(--jj-fg);
-      padding: 7px 16px;
-      cursor: pointer;
-    }
-    button.action:hover:not(:disabled) {
-      border-color: var(--jj-border-strong);
-    }
-    button.action.primary {
-      background: var(--jj-primary);
-      color: var(--jj-primary-fg);
-      border-color: transparent;
-    }
-    button.action:disabled {
-      opacity: 0.45;
-      cursor: default;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      :host,
-      .panel {
-        animation: none;
-      }
-    }
-  `;
+  `,
+  ];
 
   @property() path = '';
   /** jj's description of the conflict's shape ("2-sided conflict"). */
@@ -279,44 +226,10 @@ export class ConflictResolver extends LitElement {
    */
   @state() private settled = new Map<number, { choice: string; lines: string[] }>();
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-    window.addEventListener('keydown', this.onEscape);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    window.removeEventListener('keydown', this.onEscape);
-    super.disconnectedCallback();
-  }
-
-  private onBackdrop = (event: MouseEvent) => {
-    // Retargeting: an event from inside the shadow root reports the host as its
-    // target, so only the composed path can tell the scrim from the panel.
-    if (event.composedPath()[0] === this) this.dispatchEvent(new Event('close'));
-  };
-
-  /** Escape once focus has left the panel; inside it, `onKey` handles the key. */
-  private onEscape = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
+  /** The backdrop and window Escape both arrive here, from `OverlayElement`. */
+  protected override dismiss() {
     this.dispatchEvent(new Event('close'));
-  };
-
-  /**
-   * Bound to the panel and stopping propagation: `App.onGlobalKey` decides an
-   * event is typing from `event.target.tagName`, and by the time this one
-   * reaches the window its target is the host, not the textarea two shadow
-   * roots down. Without this, typing a resolution scrolls the diff behind it.
-   */
-  private onKey = (event: KeyboardEvent) => {
-    event.stopPropagation();
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      this.dispatchEvent(new Event('close'));
-    }
-  };
+  }
 
   private get regions(): ConflictRegion[] {
     return (this.content?.pieces ?? []).filter(
@@ -474,7 +387,7 @@ ${region.base.lines.length ? region.base.lines.join('\n') : '(nothing was here)'
   protected override render() {
     const regions = this.regions;
     const open = regions.length - this.settled.size;
-    return html`<div class="panel" @keydown=${this.onKey}>
+    return html`<div class="panel" @keydown=${this.onPanelKey}>
       <header>
         <h2>Resolve conflict</h2>
         <span class="subject">${this.path}${this.shape ? ` · ${this.shape}` : ''}</span>
@@ -501,9 +414,9 @@ ${region.base.lines.length ? region.base.lines.join('\n') : '(nothing was here)'
               : `${open} of ${regions.length} region${regions.length === 1 ? '' : 's'} still open — every one has to be settled.`}
         </span>
         <span class="spacer"></span>
-        <button class="action" @click=${() => this.dispatchEvent(new Event('close'))}>Cancel</button>
+        <button class="btn" @click=${() => this.dismiss()}>Cancel</button>
         <button
-          class="action primary"
+          class="btn primary"
           ?disabled=${this.busy || regions.length === 0 || open > 0}
           @click=${this.confirm}
         >

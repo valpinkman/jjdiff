@@ -18,8 +18,31 @@ export interface Change {
   empty: boolean;
   conflict: boolean;
   immutable: boolean;
+  /** Whether this is *this window's* working copy — workspace-relative, so two windows on
+   *  two workspaces of one repo correctly disagree. */
   workingCopy: boolean;
   bookmarks: string[];
+  /** Every workspace holding this commit, by name. Empty in a single-workspace repo. */
+  workspaces: string[];
+}
+
+/**
+ * One working copy attached to the repo. `path` is null when jj can no longer resolve it —
+ * the directory was deleted while the record stayed — and the only action such a workspace
+ * has left is to be forgotten.
+ */
+export interface Workspace {
+  name: string;
+  path: string | null;
+  /** Whether this is the workspace this window is showing. */
+  current: boolean;
+  change: Change;
+  /**
+   * Whether jjdiff created it, and may therefore offer to delete its directory. Decided by
+   * the backend against the configured `[workspace] root`, so the rule lives in one place;
+   * `forgetWorkspace` re-checks it regardless.
+   */
+  generated: boolean;
 }
 
 /**
@@ -38,6 +61,9 @@ export interface BookmarkStatus {
 
 export interface RepoState {
   root: string;
+  /** The repository's name. Differs from `root`'s basename only in a secondary workspace,
+   *  where the basename is the workspace's directory rather than the repo's. */
+  repoName: string;
   jjVersion: string;
   workingCopy: Change;
   stack: Change[];
@@ -45,6 +71,10 @@ export interface RepoState {
   graph: Change[];
   /** Tracking state per bookmark; empty when the repo has no remotes. */
   bookmarks: BookmarkStatus[];
+  /** Every workspace attached to this repo, this one included — so always at least one. */
+  workspaces: Workspace[];
+  /** The name of the one this window is showing. */
+  workspace: string | null;
 }
 
 export type FileStatus = 'added' | 'deleted' | 'modified' | 'renamed';
@@ -513,6 +543,49 @@ export const gitPush = (options: {
         operation: 'mock-op',
         pullRequestUrl: 'https://example.test/pulls/new?sourceBranch=demo',
       });
+
+// -- Workspaces --
+
+/** Where a workspace called `name` would be created, for the confirmation to name. */
+export const getWorkspacePath = (name: string): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('workspace_path', { name })
+    : Promise.resolve(`~/.jjdiff/workspaces/demo/${name}`);
+/** A name derived from a change's description, unique in this repo. */
+export const suggestWorkspaceName = (description: string): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('suggest_workspace_name', { description })
+    : Promise.resolve(description.split('\n')[0]?.toLowerCase().replace(/\W+/g, '-') || 'workspace');
+/**
+ * `jj workspace add`. `revisions` is jj's `-r`: the new working copy is created *on top of*
+ * them, not checked out to them — see `checkoutInWorkspace` for the other thing.
+ */
+export const createWorkspace = (name: string, revisions: string[] = []): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('create_workspace', { name, revisions })
+    : mockOutcome('Workspace created.');
+/**
+ * `jj workspace forget`, plus the directory when jjdiff created it. jj never removes files
+ * itself, so `deleteFiles` is a separate decision and is refused for a tree jjdiff did not
+ * make.
+ */
+export const forgetWorkspace = (name: string, deleteFiles: boolean): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('forget_workspace', { name, deleteFiles })
+    : mockOutcome('Workspace forgotten.');
+export const updateStaleWorkspace = (): Promise<Outcome> =>
+  IN_TAURI ? invoke<Outcome>('update_stale_workspace') : mockOutcome('Workspace updated.');
+/** Run `jj edit` (mode `edit`) or `jj new` (mode `new`) in another workspace. */
+export const checkoutInWorkspace = (
+  workspace: string,
+  revset: string,
+  mode: 'edit' | 'new',
+  allowImmutable = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('checkout_in_workspace', { workspace, revset, mode, allowImmutable })
+    : mockOutcome('Checked out elsewhere.');
+
 // -- Operation log / undo --
 export const getOperationLog = (limit = 100): Promise<Operation[]> =>
   IN_TAURI ? invoke<Operation[]>('operation_log', { limit }) : mock((m) => m.mockOperations);

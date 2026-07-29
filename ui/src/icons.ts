@@ -98,3 +98,8 @@ export const iconFiles = icon(svg`
 /** Review: comments on a line. */
 export const iconComment = icon(svg`
   <path d="M14 9.7a1.5 1.5 0 0 1-1.5 1.5H5.2L2 14V3.5A1.5 1.5 0 0 1 3.5 2h9a1.5 1.5 0 0 1 1.5 1.5v6.2Z" />`);
+
+/** Workspaces: two checkouts of one repository, side by side. */
+export const iconWorkspaces = icon(svg`
+  <rect x="2" y="3.2" width="5.4" height="9.6" rx="1.2" />
+  <rect x="8.6" y="3.2" width="5.4" height="9.6" rx="1.2" />`);

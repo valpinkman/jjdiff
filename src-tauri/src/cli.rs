@@ -39,6 +39,10 @@ pub struct Args {
     /// The forge is inferred from the remote, so both spellings are accepted
     /// on either forge and only the number matters here.
     pub pull_request: Option<u32>,
+    /// `jjdiff --workspace build` — open a named workspace of the repo rather than the
+    /// directory this was run from. Resolved against jj rather than guessed at, since a
+    /// workspace can be anywhere and only jj knows where.
+    pub workspace: Option<String>,
     /// A headless command selected on argv. `None` means "launch the GUI".
     pub headless: Option<Headless>,
 }
@@ -79,6 +83,7 @@ impl Args {
         let mut walkthrough = false;
         let mut walkthrough_file: Option<PathBuf> = None;
         let mut pull_request: Option<u32> = None;
+        let mut workspace: Option<String> = None;
         let mut headless: Option<Headless> = None;
 
         // Helper: read the next value for a flag that takes one.
@@ -95,6 +100,9 @@ impl Args {
                 "-V" | "--version" => headless = Some(Headless::Version),
                 "-R" | "--repo" => {
                     repo_path = Some(PathBuf::from(want_value(&mut peekable, arg)?));
+                }
+                "-W" | "--workspace" => {
+                    workspace = Some(want_value(&mut peekable, arg)?);
                 }
                 "-w" | "--walkthrough" => walkthrough = true,
                 "--walkthrough-file" => {
@@ -152,7 +160,7 @@ impl Args {
             }
         }
 
-        Ok(Args { repo_path, revset, walkthrough, walkthrough_file, pull_request, headless })
+        Ok(Args { repo_path, revset, walkthrough, walkthrough_file, pull_request, workspace, headless })
     }
 
     /// Consume an optional positional value following a headless flag
@@ -169,6 +177,25 @@ impl Args {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// The directory to open: [`Self::repo_or_cwd`], redirected to a named workspace of that
+    /// repo when `--workspace` was given.
+    ///
+    /// Falls back to the original directory when the name resolves to nothing — a workspace
+    /// that was forgotten, or whose directory is gone. Opening the repo you asked about is a
+    /// better answer than refusing to start, and the workspace pane is where the discrepancy
+    /// is visible anyway.
+    pub fn workspace_or_repo(&self) -> PathBuf {
+        let base = self.repo_or_cwd();
+        let Some(name) = self.workspace.as_deref() else { return base };
+        jjdiff_vcs::Repo::discover(&base)
+            .ok()
+            .and_then(|repo| repo.workspaces().ok())
+            .and_then(|workspaces| workspaces.into_iter().find(|w| w.name == name))
+            .and_then(|workspace| workspace.path)
+            .map(PathBuf::from)
+            .unwrap_or(base)
     }
 }
 
@@ -198,6 +225,7 @@ jjdiff — a fast, minimal diff viewer for Jujutsu colocated repos.
 USAGE:
     jjdiff [revset]                Open a repo (defaults to cwd)
     jjdiff -R <path> [revset]      Open an explicit repo
+    jjdiff -W <name> [revset]      Open a named workspace of that repo
     jjdiff pr <number>             Review a GitHub pull request
     jjdiff -w [revset]             Open and generate a walkthrough
     jjdiff --walkthrough-file <f>  Open an agent-authored walkthrough
@@ -417,7 +445,10 @@ fn diff_files(
     revset: Option<&str>,
     ignore_whitespace: bool,
 ) -> Result<Vec<FilePatch>, String> {
-    let cwd = args.repo_or_cwd();
+    // `--workspace` applies here too. `--diff` and `--print-hunks` exist for scripts and
+    // agents, and a flag that redirected the window but not the script would be worse than
+    // no flag at all — the two would silently disagree about which tree they were reading.
+    let cwd = args.workspace_or_repo();
     let repo = Repo::discover(&cwd).map_err(|e| e.to_string())?;
     repo.check_version().map_err(|e| e.to_string())?;
     crate::compute_diff(&repo, revset, ignore_whitespace)
@@ -691,6 +722,17 @@ mod tests {
         );
         let short = Args::parse(&argv("--apply-split-plan /tmp/plan.json")).unwrap_err();
         assert!(matches!(short, ParseError::MissingValue(flag) if flag == "--apply-split-plan"));
+    }
+
+    #[test]
+    fn parses_a_named_workspace() {
+        let args = Args::parse(&argv("--workspace build")).unwrap();
+        assert_eq!(args.workspace.as_deref(), Some("build"));
+        assert_eq!(Args::parse(&argv("-W build trunk()..@")).unwrap().workspace.as_deref(), Some("build"));
+        // The revset still lands where it belongs rather than being eaten as the value.
+        assert_eq!(Args::parse(&argv("-W build trunk()..@")).unwrap().revset.as_deref(), Some("trunk()..@"));
+        let short = Args::parse(&argv("--workspace")).unwrap_err();
+        assert!(matches!(short, ParseError::MissingValue(flag) if flag == "--workspace"));
     }
 
     /// The same arrangement for `jj resolve`, which passes `$output` alone.
