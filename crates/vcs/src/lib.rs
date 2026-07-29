@@ -262,6 +262,22 @@ impl Repo {
             .collect()
     }
 
+    /// What an operation actually did, as jj's own narration: the commits it changed, where
+    /// the working copy moved, which bookmarks shifted. `from` is the earlier operation; with
+    /// `None`, `to` is compared against its own parent ("what did this one do").
+    ///
+    /// This is the one read that returns text rather than a structure, and deliberately so:
+    /// `jj op diff` accepts no `-T`, and it has no `json()` form to ask for. Parsing its
+    /// prose would be exactly what the templates invariant exists to prevent, so the string
+    /// is passed through for display — the same contract as a mutation's narration.
+    pub fn op_diff(&self, from: Option<&str>, to: &str) -> Result<String> {
+        let args = match from {
+            Some(from) => vec!["op", "diff", "--no-graph", "--from", from, "--to", to],
+            None => vec!["op", "diff", "--no-graph", "--operation", to],
+        };
+        self.runner.read(&args)
+    }
+
     /// Id of the operation at the head of the log — the one `undo` would reverse.
     pub fn current_operation(&self) -> Result<String> {
         Ok(self
@@ -656,6 +672,37 @@ mod tests {
         let oldest = &evolog[evolog.len() - 1];
         let patch = repo.interdiff(&oldest.commit_id, &wc.commit_id, false).unwrap();
         assert!(patch.contains("work.txt"), "interdiff should mention work.txt: {patch}");
+    }
+
+    #[test]
+    fn op_diff_narrates_a_single_operation_and_a_range() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+
+        repo.describe("@", "op diff subject").unwrap();
+        repo.new_change(&[]).unwrap();
+
+        let ops = repo.operations(10).unwrap();
+        let head = &ops[0];
+        assert_eq!(head.description, "new empty commit");
+
+        // A single operation, against its own parent.
+        let one = repo.op_diff(None, &head.id).unwrap();
+        assert!(one.contains("Changed commits"), "expected a commit section: {one}");
+
+        // A range spanning both mutations mentions the description the first one set.
+        let older = ops.iter().find(|op| op.description.starts_with("describe")).unwrap();
+        let range = repo.op_diff(Some(&older.id), &head.id).unwrap();
+        assert!(range.contains("op diff subject"), "range should span the describe: {range}");
+
+        // Reads never write: asking twice does not add an operation.
+        assert_eq!(repo.operations(10).unwrap().len(), ops.len());
     }
 
     #[test]

@@ -36,7 +36,7 @@ export class ImageView extends LitElement {
       max-width: 100%;
       border-radius: 6px;
       border: 1px solid var(--jj-border);
-      background: var(--jj-panel);
+      background: var(--jj-bg-panel);
     }
     .error {
       color: var(--jj-fg-muted);

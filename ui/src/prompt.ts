@@ -200,7 +200,10 @@ export class Prompt extends LitElement {
   }
 
   private onBackdrop = (event: MouseEvent) => {
-    if (event.target === this) this.done(false);
+    // `event.target` is retargeted to the host for a listener bound to the host,
+    // so an inside click reads as an outside one. The composed path's first
+    // entry is the real origin — the host itself only when the scrim was hit.
+    if (event.composedPath()[0] === this) this.done(false);
   };
 }
 

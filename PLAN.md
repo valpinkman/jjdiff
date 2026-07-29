@@ -277,8 +277,20 @@ is out of date before you push over it.
 - **Rebase destination picker** — currently a prompt for a revset; a graph-target picker
   (and eventually drag-to-rebase) is the better UI.
 - **Conflict resolution** — still terminal-only, for the reason given in M4.
-- **`jj op diff`** between two operations — the log lists operations but does not yet diff
-  a pair.
+- ~~**`jj op diff`**~~ ✅ **DONE.** Every row in the operation log answers "what did that
+  actually do": *What changed* narrates one operation against its parent, and pinning a row
+  as *Compare from here* narrates a span of them — which is the case that matters, since
+  what usually needs explaining is the last several operations rather than any one. This is
+  the single read that returns text instead of a structure, deliberately: `jj op diff` takes
+  no `-T` and has no `json()` form, so jjdiff displays its narration verbatim rather than
+  parsing prose, which is what the templates invariant exists to prevent.
+- ~~**Evolog drawer**~~ ✅ **DONE.** Every version a change has been — `jj evolog` — with an
+  interdiff between any two of them, reached from the change's overflow menu or the palette.
+  The A/B column selection is the wiki page-history idiom: A is the older side, and the
+  radios that would invert the direction are disabled rather than silently reordered. jj
+  excludes rebase noise, so the result is how the *change* differs, not how the commits do.
+  Two versions of one change is a comparison git cannot express at all — a rewritten commit
+  is garbage the moment nothing points at it.
 
 ### Proactive additions not in the original ask
 
@@ -287,8 +299,9 @@ is out of date before you push over it.
 - **Bookmark management** (M10) — not optional: `jj git push` has nothing to push without it.
 - **Fetch + ahead/behind** — a review tool that cannot see the remote's state is half-blind.
 - **PR creation by URL scraping** — forge-agnostic, no API integration (see above).
-- **Evolog drawer** — we already fetch evolog for interdiffs; exposing "this change has 6
-  versions, diff any two" is nearly free and has no git equivalent.
+- **Evolog drawer** ✅ — we already fetched evolog for interdiffs; exposing "this change has
+  6 versions, diff any two" was nearly free and has no git equivalent. Shipped; see *Still
+  open after Phase 2* above.
 - **Conflict resolution** — still deferred (GUI-spawned merge editors without a TTY hang more
   than they work), but M10 should at least offer `jj resolve --list` navigation and mark
   which side is which.
@@ -468,6 +481,43 @@ Codiff's Cloudflare service turns a walkthrough into a URL. It is the largest it
 (a service, a database, auth, retention) and the least useful while jjdiff has one user.
 Revisit only if people other than the author start reviewing with it.
 
+### D1 — Design system, named themes, app shell ✅ DONE
+
+Not in the original plan, and the largest single change since C4: the frontend had grown
+feature-first for seven milestones and looked it. Presentation and layout only — no IPC, no
+jj semantics; the two Rust changes are a config writer and the window chrome. The binding
+spec is [DESIGN.md](DESIGN.md), rewritten to match.
+
+- **A token layer.** Four named ramps (space, type, radius, elevation) and three motion
+  curves in `theme.css`. Nothing outside them, so a padding a pixel off is a bug rather than
+  a judgement call.
+- **Neutrals rebased on a zero-chroma grey ramp.** The old set was warm, and three
+  off-whites within 3% of each other made page → panel → card invisible. Grey also gets out
+  of the way of the green and red, which are the only colours here that mean anything — the
+  same reasoning makes the primary action neutral, so the accent goes back to meaning one
+  thing.
+- **Radius is binary: surfaces are square, controls are pills.** The middle ground was three
+  nested frames at every point on screen, none of which meant anything.
+- **Nineteen named palettes** (Catppuccin, Rosé Pine, Ayu, Nord, Tokyo Night, Gruvbox,
+  Everforest, Solarized, Dracula, One Dark, Kanagawa) in `ui/src/themes.ts`, each **derived**
+  from about a dozen seed colours rather than written out — hand-writing nineteen token sets
+  guarantees the twentieth token is defined in three of them. Every seed names a shiki theme
+  loaded on demand, because Nord chrome around GitHub-coloured code is the one thing that
+  would make the feature look fake. Chosen from a swatch picker with live hover preview;
+  persisted through a new `set_ui_theme`.
+- **An icon rail replaces the sidebar tabs**, which never fit four labels and two badges at a
+  readable size; the sidebar folds away entirely (⌘B) for review and guided steps.
+- **Every pane is a card**, including the diff, and the current file's header pins while you
+  are inside it so `viewed` stays reachable. `position: sticky` cannot work there — the
+  virtualizer positions rows absolutely — so it overlays from outside the scroller.
+- **Native title bar is an Overlay** with the title hidden and the header as the drag region.
+
+Six latent bugs surfaced on the way, the two worth naming being `visibilityChanged` carrying
+`first`/`last` as own properties rather than on `detail` (so the breadcrumb reported the
+first file in the diff no matter where you had scrolled), and a `1fr` grid track's automatic
+minimum being `min-content` (so the diff pushed the shell wider than the window and the whole
+app scrolled sideways, carrying the toolbar off screen).
+
 ### Suggested order
 
 1. **C1** ✅ — nothing else is reachable from a terminal without it, and it is a day or two.
@@ -475,7 +525,8 @@ Revisit only if people other than the author start reviewing with it.
 3. **C3** ✅ — a few days, removes two dead ends.
 4. **C5** ✅ — polish, can be interleaved whenever.
 5. **C4** ✅ — only when reviewing others' PRs actually matters to you.
-6. **C6** — probably never, and that is fine.
+6. **D1** ✅ — unplanned, and taken once the surface stopped moving.
+7. **C6** — probably never, and that is fine.
 
 ## Risks specific to Phase 2
 
@@ -491,17 +542,19 @@ Revisit only if people other than the author start reviewing with it.
 **Deferred, with reasons.**
 - *Signed macOS build + Homebrew tap* — blocked on an Apple Developer identity; the
   unsigned bundle already builds (`pnpm tauri build`).
-- *Forge PR review* — the repo now lives on tangled.sh, so the original `gh`-based design
-  no longer fits; wants a rethink against tangled's API rather than a port.
 - *Shared-review web service* — weeks of work (codiff's Cloudflare equivalent) and
   questionable value before there is a second user.
 - *Hunk-level squash/split* — needs a scripted diff-editor shim or jj-lib; file-level
   `squash`/`absorb` covers most of the need today.
-- *Line-anchored review comments* — designed (change-id keyed, like viewed flags) but not
-  built; would move the JSON store to SQLite.
 - *Full-file syntax highlighting* — expand-context lines are deliberately untokenized;
   proper highlighting wants the whole file through shiki, which needs a highlight cache
   rework.
+
+Two entries left this list by shipping rather than by being dropped: *line-anchored review
+comments* became **C2** (SQLite, anchored on change ids) and *forge PR review* became
+**C4** (`gh`, GitHub only). The forge entry also carried a stale premise — it said the repo
+had moved to tangled.sh and wanted a rethink against tangled's API; it is on GitHub, and C4
+was built against `gh`.
 
 ## Risks
 

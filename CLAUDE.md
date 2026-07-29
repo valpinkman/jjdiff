@@ -56,6 +56,8 @@ This is the product thesis, not an implementation detail. Viewed files, "last re
 
 **Structured output comes from `json()` templates**, never from parsing human-formatted `jj` output. Requires jj ≥ 0.33 (`MIN_JJ_VERSION`); `check_version` fails fast so you get a version error rather than a confusing template parse error. `JJDIFF_JJ_PATH` overrides the binary.
 
+`Repo::op_diff` is the one read that returns prose instead of a structure, and it is not an exception to that rule but a consequence of it: `jj op diff` takes no `-T` and has no `json()` form, so jjdiff shows its narration verbatim — the same contract as a mutation's summary — rather than parsing it. Don't add a parser for it; if the UI needs structure there, the answer is a jj feature request.
+
 **Repos must be colocated** (`.git` inside the workspace) — otherwise `VcsError::NotColocated`.
 
 **Span offsets in `Line.spans` are UTF-16 code units**, to match JS string indexing.
@@ -123,6 +125,8 @@ Every parser is tested against fixtures captured verbatim from real `gh` output 
 `alert()`, `confirm()` and `prompt()` do not work. wry's `WKUIDelegate` implements only the file-open panel, `windowWillClose` and media permissions, so on macOS `prompt()` returns `null`, `confirm()` returns `false`, and `alert()` does nothing — every action gated on one is a **silent no-op**, with no error anywhere. This shipped: abandon, discard, delete-bookmark, rebase and create-bookmark were all dead in the app while working fine in `pnpm dev`.
 
 Use `askText` / `askConfirm` from `ui/src/prompt.ts` instead. They also work in the browser mock, which the native dialog plugin does not.
+
+**An overlay's backdrop test is `event.composedPath()[0] === this`, never `event.target === this`.** The scrim is the host element and the listener is bound to the host, so an event from inside the shadow root is *retargeted to the host* and a click on the panel is indistinguishable from a click on the scrim. All five overlays (command bar, prompt, theme picker, shortcuts sheet, evolog drawer) had this and dismissed on any click they received — the theme picker's filter box could not be clicked, and the version radios did nothing.
 
 Same class of gap: **`target="_blank"` does nothing** — there is no tab to open. Outbound links go through the `open_url` command (`editor::open_url`), which hands the URL to the OS and refuses any scheme that isn't http/https.
 

@@ -131,7 +131,7 @@ and hovering one applies it live.
 It cannot be used here and should not be attempted: it is React source built on Radix
 React primitives, Tailwind and `class-variance-authority`, and Radix has no
 web-component equivalent. Tailwind would also only reach half of this app — the shell and
-diff pane are light DOM, but the six leaf widgets are shadow roots that document CSS
+diff pane are light DOM, but every leaf widget is a shadow root that document CSS
 cannot cross. The Lit ports that exist are single-maintainer packages, and adopting one
 would mean replacing widgets jjdiff already has.
 
@@ -271,7 +271,12 @@ top edge — that is what reads as height on a dark page.
 - Code pane and everything above it in the DOM tree is **light DOM** — document CSS
   must reach diff rows, and text selection must cross row boundaries. Shadow DOM is
   allowed only for leaf widgets with no cross-boundary selection (file tree, command
-  bar, walkthrough panel, orbs).
+  bar, walkthrough panel, orbs, and the overlays).
+- **An overlay dismisses on a click that landed on its scrim, not on any click it
+  receives.** The scrim is the host element, so a listener bound to the host sees an
+  inside click *retargeted to the host* and reads it as an outside one — every overlay
+  closed the moment you touched anything in it, which presented as a filter box that
+  would not focus and a radio that would not take. Test `composedPath()[0] === this`.
 - **Hierarchy beats completeness in a row of controls.** Four verbs stay out; the rest go
   behind one overflow, with anything destructive below a rule at the bottom. Nine
   buttons in a row is nine decisions of equal weight, and the one that erases a commit

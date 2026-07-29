@@ -22,7 +22,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use jjdiff_diff::FilePatch;
-use jjdiff_vcs::{BookmarkStatus, Change, Operation, Outcome, Repo};
+use jjdiff_vcs::{BookmarkStatus, Change, EvologEntry, Operation, Outcome, Repo};
 use jjdiff_watch::RepoWatcher;
 use viewed::ReviewStore;
 
@@ -393,6 +393,40 @@ async fn interdiff_since_reviewed(
     .await
 }
 
+/// Every recorded version of `change_id`, newest first — jj's evolog. Entry 0 is the
+/// change as it stands now; the rest are the commits it used to be.
+#[tauri::command]
+async fn change_versions(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+) -> Result<Vec<EvologEntry>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || vcs(repo.evolog(&change_id))).await
+}
+
+/// Interdiff between two arbitrary versions of a change — the evolog drawer's payload.
+/// Both commits may be hidden, which is exactly why they are addressed by commit id.
+#[tauri::command]
+async fn interdiff(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    from_commit: String,
+    to_commit: String,
+    ignore_whitespace: bool,
+) -> Result<Interdiff, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || {
+        let patch = vcs(repo.interdiff(&from_commit, &to_commit, ignore_whitespace))?;
+        Ok(Interdiff {
+            files: jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())?,
+            from_commit,
+            to_commit,
+        })
+    })
+    .await
+}
+
 /// Tell every window bound to `root` that the repo moved. Scoped by repo rather
 /// than by window: a mutation is visible to all windows showing that repo, and
 /// to none of the others.
@@ -676,6 +710,20 @@ async fn operation_log(
 ) -> Result<Vec<Operation>, String> {
     let repo = repo_handle(&state, &window)?;
     blocking(move || vcs(repo.operations(limit))).await
+}
+
+/// jj's own account of what an operation changed. `from` empty means "against its parent".
+/// Returned as text: `jj op diff` has no `json()` form, so this is narration to display,
+/// not output to parse.
+#[tauri::command]
+async fn operation_diff(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    from: Option<String>,
+    to: String,
+) -> Result<String, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || vcs(repo.op_diff(from.as_deref(), &to))).await
 }
 
 #[tauri::command]
@@ -1490,6 +1538,8 @@ pub fn run(args: Args) {
             repo_state,
             diff,
             interdiff_since_reviewed,
+            interdiff,
+            change_versions,
             describe,
             new_change,
             squash_paths,
@@ -1529,6 +1579,7 @@ pub fn run(args: Args) {
             git_push,
             remotes,
             operation_log,
+            operation_diff,
             undo,
             restore_operation,
             revert_operation,

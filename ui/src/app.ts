@@ -4,6 +4,7 @@ import { keyed } from 'lit/directives/keyed.js';
 import { repeat } from 'lit/directives/repeat.js';
 
 import './command-bar.js';
+import './evolog-drawer.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
@@ -16,6 +17,9 @@ import {
   deleteBookmark,
   duplicateChange,
   editChange,
+  getChangeVersions,
+  getInterdiff,
+  getOperationDiff,
   getOperationLog,
   getRemotes,
   gitFetch,
@@ -70,6 +74,7 @@ import {
   addComment,
   type BookmarkStatus,
   type Change,
+  type ChangeVersion,
   type Comment,
   type CommentSide,
   deleteComment,
@@ -103,6 +108,7 @@ import {
   iconWarn,
 } from './icons.js';
 import { formatShortcut, matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
+import { relativeTime as age } from './time.js';
 import { askConfirm, askText } from './prompt.js';
 import './patch-view.js';
 import type { PatchView } from './patch-view.js';
@@ -111,6 +117,9 @@ import './theme-picker.js';
 import { applyThemeTokens, isKnownTheme, THEMES } from './themes.js';
 import './walkthrough-panel.js';
 import type { DiffLayout } from './rows.js';
+
+/** Ages in the shell read as prose ("3h ago"); the log graph uses the compact form. */
+const relativeTime = (timestamp: string): string => age(timestamp, true);
 
 /** What the main pane shows for the selected change. */
 type ViewMode = 'full' | 'interdiff' | 'ops' | 'pr';
@@ -139,18 +148,6 @@ function descriptionBody(description: string): string {
 /** Compact relative age: now, 5m, 3h, 2d. */
 function activityKey(entry: { createdAt: string; url: string }, index: number): string {
   return `${index}:${entry.url || entry.createdAt}`;
-}
-
-function relativeTime(timestamp: string): string {
-  const then = Date.parse(timestamp);
-  if (Number.isNaN(then)) return '';
-  const seconds = Math.max(0, (Date.now() - then) / 1000);
-  if (seconds < 60) return 'now';
-  const minutes = seconds / 60;
-  if (minutes < 60) return `${Math.floor(minutes)}m ago`;
-  const hours = minutes / 60;
-  if (hours < 24) return `${Math.floor(hours)}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
 }
 
 /**
@@ -242,7 +239,15 @@ export class App extends LitElement {
    * is clipped by that — the last entry, which is Abandon, was the one cut off.
    * Same arrangement as the file context menu.
    */
-  @state() private moreAt: { x: number; y: number } | null = null;
+  /**
+   * Anchor for the change's overflow menu, as a distance from the *right* edge.
+   *
+   * Left-anchored, it ran off the window: the button sits at the right of the
+   * detail card, and a 190px menu opening rightwards put most of every item
+   * outside the viewport, where a click hits nothing and the outside-click
+   * handler closes the menu instead. Every entry behind More was unreachable.
+   */
+  @state() private moreAt: { right: number; y: number } | null = null;
   @state() private recentRepos: string[] = [];
   @state() private searchOpen = false;
   @state() private searchQuery = '';
@@ -252,6 +257,24 @@ export class App extends LitElement {
   /** Last mutation's narration + the operation that would undo it. */
   @state() private lastOutcome: (Outcome & { pullRequestUrl?: string | null }) | null = null;
   @state() private operations: Operation[] = [];
+  /**
+   * jj's narration of one operation, keyed so a stale answer cannot land under
+   * the wrong row: `to` alone for "what did this do", `from..to` for a range.
+   */
+  @state() private opDiff: { key: string; text: string } | null = null;
+  /** The operation pinned as the older end of a comparison, if any. */
+  @state() private opCompareFrom: Operation | null = null;
+  /** Evolog drawer: every recorded version of the selected change. */
+  @state() private versionsOpen = false;
+  @state() private versions: ChangeVersion[] = [];
+  @state() private versionsLoading = false;
+  /**
+   * The two commits an interdiff is showing, when it came from the drawer rather
+   * than from "since I reviewed". Both modes render as `viewMode === 'interdiff'`;
+   * this is what tells them apart, so it must clear whenever the diff goes back
+   * to showing a change whole.
+   */
+  @state() private versionPair: { from: string; to: string } | null = null;
   @state() private busy: string | null = null;
   /** Revset scoping the Log graph; null = the default. */
   @state() private graphRevset: string | null = null;
@@ -1066,15 +1089,15 @@ export class App extends LitElement {
       return;
     }
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    this.moreAt = { x: rect.left, y: rect.bottom + 6 };
+    this.moreAt = { right: Math.max(8, window.innerWidth - rect.right), y: rect.bottom + 6 };
   };
 
-  private renderMoreMenu(change: Change, at: { x: number; y: number }) {
+  private renderMoreMenu(change: Change, at: { right: number; y: number }) {
     const pick = (run: () => void) => () => {
       this.moreAt = null;
       run();
     };
-    return html`<div class="more-menu" role="menu" style="left: ${at.x}px; top: ${at.y}px">
+    return html`<div class="more-menu" role="menu" style="right: ${at.right}px; top: ${at.y}px">
       <button
         role="menuitem"
         title=${
@@ -1106,6 +1129,15 @@ export class App extends LitElement {
         @click=${pick(() => void this.duplicateSelected())}
       >
         Duplicate
+      </button>
+      <!-- A read, sitting among rewrites, because it answers the question the
+           rewrites raise: what this change used to be before one of them. -->
+      <button
+        role="menuitem"
+        title="jj evolog — every version this change has been, and an interdiff between any two of them."
+        @click=${pick(() => this.openVersions())}
+      >
+        Versions…
       </button>
       <button
         role="menuitem"
@@ -1376,7 +1408,14 @@ export class App extends LitElement {
 
   private async loadDiff() {
     try {
-      if (this.viewMode === 'interdiff' && this.selectedChange && this.changedSinceReview) {
+      if (this.viewMode === 'interdiff' && this.versionPair) {
+        const interdiff = await getInterdiff(
+          this.versionPair.from,
+          this.versionPair.to,
+          this.ignoreWhitespace,
+        );
+        this.files = interdiff.files;
+      } else if (this.viewMode === 'interdiff' && this.selectedChange && this.changedSinceReview) {
         const interdiff = await getInterdiffSinceReviewed(
           this.selectedChange.changeId,
           this.ignoreWhitespace,
@@ -1386,9 +1425,11 @@ export class App extends LitElement {
         // Reviewing a proposal: the revset is the forge's own comparison
         // (merge base .. head), not a change the local repo selected.
         this.viewMode = 'full';
+        this.versionPair = null;
         this.files = await getDiff(this.prRevset, this.ignoreWhitespace);
       } else {
         this.viewMode = 'full';
+        this.versionPair = null;
         this.files = await getDiff(
           this.isWorkingCopySelected ? null : this.selected,
           this.ignoreWhitespace,
@@ -1754,6 +1795,13 @@ export class App extends LitElement {
   private async loadOperations() {
     try {
       this.operations = await getOperationLog(100);
+      // An undo or a restore rewrites the log out from under a pinned anchor.
+      // Left in place it would name an operation that is no longer there, and
+      // no row would offer to compare to it.
+      if (this.opCompareFrom && !this.operations.some((op) => op.id === this.opCompareFrom?.id)) {
+        this.opCompareFrom = null;
+        this.opDiff = null;
+      }
     } catch (error) {
       this.actionError = String(error);
     }
@@ -2024,12 +2072,72 @@ export class App extends LitElement {
 
   private showInterdiff() {
     this.viewMode = 'interdiff';
+    this.versionPair = null;
     void this.loadDiff();
   }
 
   private showFullDiff() {
     this.viewMode = 'full';
+    this.versionPair = null;
     void this.loadDiff();
+  }
+
+  /**
+   * Open the evolog drawer for the selected change.
+   *
+   * The list is fetched on open rather than with the change: most selections
+   * never ask for it, and it is another `jj` process each time.
+   */
+  private openVersions() {
+    const change = this.selectedChange;
+    if (!change) return;
+    this.versionsOpen = true;
+    this.versions = [];
+    this.versionsLoading = true;
+    void (async () => {
+      try {
+        this.versions = await getChangeVersions(change.changeId);
+      } catch (error) {
+        this.actionError = String(error);
+        this.versionsOpen = false;
+      } finally {
+        this.versionsLoading = false;
+      }
+    })();
+  }
+
+  private compareVersions(from: string, to: string) {
+    this.versionsOpen = false;
+    this.versionPair = { from, to };
+    this.viewMode = 'interdiff';
+    void this.loadDiff();
+  }
+
+  /**
+   * Load jj's account of what one operation (or a span of them) changed.
+   *
+   * Toggling: asking for the row already open closes it, so the button is its
+   * own dismiss and the log does not fill up with expanded prose.
+   */
+  private showOpDiff(to: Operation, from: Operation | null) {
+    const key = from ? `${from.id}..${to.id}` : to.id;
+    if (this.opDiff?.key === key) {
+      this.opDiff = null;
+      return;
+    }
+    this.opDiff = { key, text: 'Loading…' };
+    void (async () => {
+      try {
+        const text = await getOperationDiff(to.id, from?.id ?? null);
+        // A second request may have started while this one was in flight; only
+        // the row still asking for this key should receive it.
+        if (this.opDiff?.key === key) {
+          this.opDiff = { key, text: text.trim() || 'This operation changed nothing.' };
+        }
+      } catch (error) {
+        if (this.opDiff?.key === key) this.opDiff = { key, text: String(error) };
+      }
+    })();
   }
 
   private toggleLayout() {
@@ -2238,6 +2346,17 @@ export class App extends LitElement {
           this.viewMode = 'ops';
           void this.loadOperations();
         },
+      },
+      !!change && {
+        id: 'versions',
+        label: 'Compare Versions of This Change…',
+        hint: 'evolog',
+        run: () => this.openVersions(),
+      },
+      !!this.versionPair && {
+        id: 'versions-exit',
+        label: 'Stop Comparing Versions',
+        run: () => this.showFullDiff(),
       },
     ]);
 
@@ -2594,40 +2713,7 @@ export class App extends LitElement {
           ? this.renderProposalView(this.pullRequest)
           : nothing}
         ${this.viewMode === 'ops'
-          ? html`<div class="ops-view">
-              <div class="ops-header">
-                <h2>Operation Log</h2>
-                <button class="tool" @click=${() => (this.viewMode = 'full')}>Back to Diff</button>
-              </div>
-              ${this.operations.length === 0
-                ? html`<div class="ops-empty">No operations recorded yet.</div>`
-                : this.operations
-                    .filter((operation) => !operation.snapshot)
-                    .map(
-                      (operation, index) => html`<div class="op">
-                        <div class="op-head">
-                          <span class="op-when">${relativeTime(operation.time)}</span>
-                          ${index === 0
-                            ? html`<span class="op-current">current</span>`
-                            : nothing}
-                        </div>
-                        <div class="op-desc">${operation.description}</div>
-                        ${operation.args
-                          ? html`<code class="op-args">${operation.args}</code>`
-                          : nothing}
-                        <div class="op-actions">
-                          ${index === 0
-                            ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
-                            : html`<button
-                                class="tool"
-                                @click=${() => void this.restoreTo(operation)}
-                              >
-                                Restore here
-                              </button>`}
-                        </div>
-                      </div>`,
-                    )}
-            </div>`
+          ? this.renderOperationLog()
           : change && this.detailView
           ? html`<section class="detail ${this.detailCollapsed ? 'collapsed' : ''}">
               <header
@@ -2883,7 +2969,20 @@ export class App extends LitElement {
               >
             </div>`
           : nothing}
-        ${this.changedSinceReview
+        ${this.versionPair
+          ? html`<div class="banner">
+              <span class="chip">${iconInfo}</span>
+              <span>
+                Comparing two versions of this change —
+                <code>${this.versionPair.from.slice(0, 12)}</code> →
+                <code>${this.versionPair.to.slice(0, 12)}</code>. Rebase noise is excluded.
+              </span>
+              <span class="spacer"></span>
+              <button class="tool" @click=${this.openVersions}>Pick Versions</button>
+              <button class="tool" @click=${this.showFullDiff}>Full Diff</button>
+            </div>`
+          : nothing}
+        ${this.changedSinceReview && !this.versionPair
           ? html`<div class="banner">
               <span class="chip">${iconInfo}</span>
               <span>This change evolved since you reviewed it.</span>
@@ -3071,6 +3170,16 @@ export class App extends LitElement {
             @close=${() => (this.shortcutsOpen = false)}
           ></jj-shortcuts-help>`
         : nothing}
+      ${this.versionsOpen
+        ? html`<jj-evolog-drawer
+            .versions=${this.versions}
+            .changeId=${this.selectedChange?.changeId ?? ''}
+            ?loading=${this.versionsLoading}
+            @compare-versions=${(event: CustomEvent<{ from: string; to: string }>) =>
+              this.compareVersions(event.detail.from, event.detail.to)}
+            @close=${() => (this.versionsOpen = false)}
+          ></jj-evolog-drawer>`
+        : nothing}
       ${this.renderFileMenu()}
     `;
   }
@@ -3169,6 +3278,87 @@ export class App extends LitElement {
     if (!pr) return;
     this.viewMode = 'pr';
     if (this.prDetailsFor !== pr.number) void this.loadProposalDetails(pr);
+  }
+
+  /**
+   * The operation log, with jj's own account of what each operation did.
+   *
+   * "What changed" answers the question the log itself cannot: a row says
+   * `rebase commit 1da27fbb onto main`, and the diff says which commits moved,
+   * where the working copy went and which bookmarks followed. Comparing a pair
+   * covers the other case — several operations ago something went wrong, and
+   * what matters is the span, not any one step.
+   *
+   * Snapshots are filtered out here rather than in the query: they are jj's
+   * bookkeeping, they outnumber real operations, and none of them is a place
+   * you would want to restore to. `index` is therefore the position in the
+   * *filtered* list, which is what makes index 0 the current operation.
+   */
+  private renderOperationLog() {
+    const visible = this.operations.filter((operation) => !operation.snapshot);
+    const anchor = this.opCompareFrom;
+    return html`<div class="ops-view">
+      <div class="ops-header">
+        <h2>Operation Log</h2>
+        <span class="spacer"></span>
+        ${anchor
+          ? html`<span class="op-anchor"
+              >Comparing from <strong>${anchor.description}</strong>
+              <button class="tool" @click=${() => (this.opCompareFrom = null)}>Cancel</button>
+            </span>`
+          : nothing}
+        <button class="tool" @click=${() => (this.viewMode = 'full')}>Back to Diff</button>
+      </div>
+      ${visible.length === 0
+        ? html`<div class="ops-empty">No operations recorded yet.</div>`
+        : visible.map((operation, index) => {
+            const single = this.opDiff?.key === operation.id;
+            const spanKey = anchor ? `${anchor.id}..${operation.id}` : null;
+            const span = spanKey !== null && this.opDiff?.key === spanKey;
+            // An operation can only be compared *to* something newer than the
+            // anchor, and the log is newest first — so anything at or below the
+            // anchor's own row is not a comparison, it is the same point twice.
+            const anchorIndex = anchor ? visible.findIndex((entry) => entry.id === anchor.id) : -1;
+            const comparable = anchor !== null && index < anchorIndex;
+            return html`<div class="op ${single || span ? 'expanded' : ''}">
+              <div class="op-head">
+                <span class="op-when">${relativeTime(operation.time)}</span>
+                ${index === 0 ? html`<span class="op-current">current</span>` : nothing}
+                ${anchor?.id === operation.id
+                  ? html`<span class="op-current">comparing from</span>`
+                  : nothing}
+              </div>
+              <div class="op-desc">${operation.description}</div>
+              ${operation.args ? html`<code class="op-args">${operation.args}</code>` : nothing}
+              <div class="op-actions">
+                ${index === 0
+                  ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
+                  : html`<button class="tool" @click=${() => void this.restoreTo(operation)}>
+                      Restore here
+                    </button>`}
+                <button class="tool" @click=${() => this.showOpDiff(operation, null)}>
+                  ${single ? 'Hide changes' : 'What changed'}
+                </button>
+                ${comparable
+                  ? html`<button class="tool" @click=${() => this.showOpDiff(operation, anchor)}>
+                      ${span ? 'Hide comparison' : 'Compare to here'}
+                    </button>`
+                  : anchor?.id === operation.id
+                    ? nothing
+                    : html`<button
+                        class="tool"
+                        title="Pin this operation as the older end of a comparison"
+                        @click=${() => (this.opCompareFrom = operation)}
+                      >
+                        Compare from here
+                      </button>`}
+              </div>
+              ${single || span
+                ? html`<pre class="op-diff">${this.opDiff?.text}</pre>`
+                : nothing}
+            </div>`;
+          })}
+    </div>`;
   }
 
   /**

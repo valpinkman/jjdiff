@@ -192,6 +192,15 @@ export interface Interdiff {
   toCommit: string;
 }
 
+/** One recorded version of a change, from jj's evolog. Newest first; entry 0 is current. */
+export interface ChangeVersion {
+  commitId: string;
+  changeId: string;
+  description: string;
+  /** Committer timestamp (RFC 3339) — when this version was written. */
+  timestamp: string;
+}
+
 /** True inside the Tauri shell; false in a plain browser (`pnpm dev`), where fixtures serve. */
 const IN_TAURI = '__TAURI_INTERNALS__' in window;
 
@@ -248,6 +257,20 @@ export const getInterdiffSinceReviewed = (
   IN_TAURI
     ? invoke<Interdiff>('interdiff_since_reviewed', { changeId, ignoreWhitespace })
     : mock((m) => m.mockInterdiff);
+/** Every recorded version of a change — the evolog drawer's list. */
+export const getChangeVersions = (changeId: string): Promise<ChangeVersion[]> =>
+  IN_TAURI
+    ? invoke<ChangeVersion[]>('change_versions', { changeId })
+    : mock((m) => m.mockChangeVersions(changeId));
+/** Interdiff between two arbitrary versions of a change, addressed by commit id. */
+export const getInterdiff = (
+  fromCommit: string,
+  toCommit: string,
+  ignoreWhitespace: boolean,
+): Promise<Interdiff> =>
+  IN_TAURI
+    ? invoke<Interdiff>('interdiff', { fromCommit, toCommit, ignoreWhitespace })
+    : mock((m) => ({ ...m.mockInterdiff, fromCommit, toCommit }));
 const mockOutcome = (message: string): Promise<Outcome> =>
   Promise.resolve({ message, operation: 'mock-op' });
 
@@ -348,6 +371,15 @@ export const getRemotes = (): Promise<string[]> =>
 // -- Operation log / undo --
 export const getOperationLog = (limit = 100): Promise<Operation[]> =>
   IN_TAURI ? invoke<Operation[]>('operation_log', { limit }) : mock((m) => m.mockOperations);
+/**
+ * jj's narration of what an operation changed. `from` null compares the operation
+ * against its own parent. Text, not structure: `jj op diff` has no `json()` form,
+ * so this is displayed verbatim rather than parsed.
+ */
+export const getOperationDiff = (to: string, from: string | null = null): Promise<string> =>
+  IN_TAURI
+    ? invoke<string>('operation_diff', { from, to })
+    : mock((m) => m.mockOperationDiff(to, from));
 export const undo = (): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('undo') : mockOutcome('Undid the last operation.');
 export const restoreOperation = (operation: string): Promise<Outcome> =>

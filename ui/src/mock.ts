@@ -3,6 +3,7 @@
 import type {
   Activity,
   Change,
+  ChangeVersion,
   Config,
   FilePatch,
   ForgeInfo,
@@ -294,6 +295,37 @@ export const mockInterdiff: Interdiff = {
   toCommit: mockRepoState.stack[1]!.commitId,
 };
 
+/**
+ * Three versions of any change: the current commit, plus two invented predecessors.
+ * The drawer only needs plausible identities and timestamps — the interdiff it
+ * requests comes back as `mockInterdiff` whichever pair is picked.
+ */
+export const mockChangeVersions = (changeId: string): ChangeVersion[] => {
+  const current =
+    mockRepoState.graph.find((entry) => entry.changeId === changeId)?.commitId ??
+    changeId.repeat(2).slice(0, 40);
+  return [
+    {
+      commitId: current,
+      changeId,
+      description: 'Add retry logic to the sync engine\n\nUses exponential backoff.',
+      timestamp: '2026-07-26T10:05:00+02:00',
+    },
+    {
+      commitId: 'b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5',
+      changeId,
+      description: 'Add retry logic to the sync engine',
+      timestamp: '2026-07-26T09:41:00+02:00',
+    },
+    {
+      commitId: 'anoldercommitid0000000000000000000000000',
+      changeId,
+      description: 'wip retries',
+      timestamp: '2026-07-25T18:12:00+02:00',
+    },
+  ];
+};
+
 export const mockWalkthrough: Walkthrough = {
   summary:
     'This change adds retry-with-backoff to the sync engine: a new backoff helper, and the push path now routes through it so transient failures no longer abort a sync.',
@@ -416,3 +448,21 @@ export const mockOperations: Operation[] = [
     snapshot: false,
   },
 ];
+
+/** Shaped like real `jj op diff --no-graph` output, which the UI renders verbatim. */
+export const mockOperationDiff = (to: string, from: string | null): string => {
+  const label = (id: string) => mockOperations.find((op) => op.id === id)?.description ?? id;
+  const header = from
+    ? `From operation: ${from} (2026-07-26 20:40:00) ${label(from)}\n  To operation: ${to} (2026-07-26 21:02:00) ${label(to)}`
+    : `From operation: op2 (2026-07-26 20:58:00) ${label('op2')}\n  To operation: ${to} (2026-07-26 21:02:00) ${label(to)}`;
+  return `${header}
+
+Changed commits:
+○  + qpalzmw 459309eb Plan Phase 2
+   - qpalzmw hidden 1da27fbb (no description set)
+
+Changed working copy default@:
++ qpalzmw 459309eb Plan Phase 2
+- wcwcwcw 8bc80827 (empty) (no description set)
+`;
+};

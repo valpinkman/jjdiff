@@ -3,6 +3,7 @@ import { customElement, property } from 'lit/decorators.js';
 
 import { layoutGraph, type GraphRow } from './graph.js';
 import type { Change } from './ipc.js';
+import { relativeTime } from './time.js';
 
 const LANE_W = 12;
 /* Taller than the text needs. A commit list is scanned, not read, and rows this
@@ -297,23 +298,6 @@ export class LogGraph extends LitElement {
 const LANE_COLOURS = 6;
 
 const laneStroke = (lane: number) => `stroke: var(--jj-lane-${lane % LANE_COLOURS})`;
-
-/** Compact relative age: now, 5m, 3h, 2d, 4w, 7mo. */
-function relativeTime(timestamp: string): string {
-  const then = Date.parse(timestamp);
-  if (Number.isNaN(then)) return '';
-  const seconds = Math.max(0, (Date.now() - then) / 1000);
-  if (seconds < 60) return 'now';
-  const minutes = seconds / 60;
-  if (minutes < 60) return `${Math.floor(minutes)}m`;
-  const hours = minutes / 60;
-  if (hours < 24) return `${Math.floor(hours)}h`;
-  const days = hours / 24;
-  if (days < 7) return `${Math.floor(days)}d`;
-  const weeks = days / 7;
-  if (weeks < 9) return `${Math.floor(weeks)}w`;
-  return `${Math.floor(days / 30)}mo`;
-}
 
 declare global {
   interface HTMLElementTagNameMap {
