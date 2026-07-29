@@ -3364,6 +3364,19 @@ export class App extends LitElement {
                   >
                     Discard…
                   </button>
+                  <!-- Always available, unlike Commit & New beside it. That one
+                       needs a description and something to commit; this is a
+                       plain jj new, which is exactly what you reach for to park
+                       finished work and start something else — including on an
+                       empty or undescribed working copy, where the other is
+                       disabled and the only route was the palette. -->
+                  <button
+                    class="tool"
+                    title="jj new — start an empty change on top of this one, leaving it as it is."
+                    @click=${this.newOnSelected}
+                  >
+                    New on top
+                  </button>
                   <button
                     class="tool primary"
                     ?disabled=${this.files.length === 0 || !this.description.trim()}
