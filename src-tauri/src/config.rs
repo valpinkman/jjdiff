@@ -10,7 +10,23 @@ pub struct Config {
     pub ui: UiConfig,
     pub keymap: Keymap,
     pub walkthrough: WalkthroughConfig,
+    pub describe: DescribeConfig,
     pub editor: EditorConfig,
+}
+
+/// `[describe]` — how the agent writes commit messages.
+///
+/// Separate from `[walkthrough]` although both drive the same CLI: the two ask
+/// for different artefacts, and the instructions you would give for one are
+/// rarely the ones you want on the other. "Always name the ticket" belongs on a
+/// commit message; "call out anything touching a public API" belongs on a
+/// review.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DescribeConfig {
+    /// Extra instructions appended to the message-generation prompt — house
+    /// rules the diff and the recent history cannot convey on their own.
+    pub prompt: String,
 }
 
 /// `[editor]` — how "Open in Editor" launches an external editor.
@@ -119,31 +135,85 @@ pub fn load() -> Config {
     }
 }
 
-/// Write `[editor] command` back to the config file.
+/// What TOML type a setting must be written as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Str,
+    Bool,
+    Float,
+}
+
+/// Every setting the settings page may write, and its type.
+///
+/// An allow-list rather than a passthrough, for two reasons that both bite.
+///
+/// The WebView renders forge markdown written by anyone who can open a pull
+/// request, and it can invoke every command jjdiff exposes; one that took an
+/// arbitrary table and key would let anything running in there write anywhere in
+/// the user's config file.
+///
+/// And it pins the *type*. TOML is typed and `serde` is not forgiving about it:
+/// `ignore-whitespace = "true"` is a string, deserializes as a bool nowhere, and
+/// would take the whole `[ui]` table down to defaults on the next load — the
+/// setting you just turned on silently turning everything else off with it.
+///
+/// Keys are kebab-case, which is what the file uses and what `Config`'s serde
+/// aliases read; the JSON going the other way stays camelCase.
+const WRITABLE: &[(&str, &str, Kind)] = &[
+    ("ui", "theme", Kind::Str),
+    ("ui", "diff-style", Kind::Str),
+    ("ui", "code-font-size", Kind::Float),
+    ("ui", "ignore-whitespace", Kind::Bool),
+    ("ui", "word-wrap", Kind::Bool),
+    ("keymap", "command-bar", Kind::Str),
+    ("walkthrough", "backend", Kind::Str),
+    ("walkthrough", "claude-model", Kind::Str),
+    ("walkthrough", "codex-model", Kind::Str),
+    ("walkthrough", "opencode-model", Kind::Str),
+    ("walkthrough", "pi-model", Kind::Str),
+    ("walkthrough", "prompt", Kind::Str),
+    ("describe", "prompt", Kind::Str),
+    ("editor", "command", Kind::Str),
+];
+
+/// Set one setting from the settings page. Unknown keys and mistyped values are
+/// refused rather than written.
+pub fn set_setting(
+    table_name: &str,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<PathBuf, String> {
+    let kind = WRITABLE
+        .iter()
+        .find(|(table, name, _)| *table == table_name && *name == key)
+        .map(|(_, _, kind)| *kind)
+        .ok_or_else(|| format!("{table_name}.{key} is not a writable setting"))?;
+
+    let written = match kind {
+        Kind::Str => value
+            .as_str()
+            .map(toml_edit::value)
+            .ok_or_else(|| format!("{table_name}.{key} takes a string")),
+        Kind::Bool => value
+            .as_bool()
+            .map(toml_edit::value)
+            .ok_or_else(|| format!("{table_name}.{key} takes true or false")),
+        Kind::Float => value
+            .as_f64()
+            .map(toml_edit::value)
+            .ok_or_else(|| format!("{table_name}.{key} takes a number")),
+    }?;
+    write_item(table_name, key, written)
+}
+
+/// The surgical edit itself.
 ///
 /// Edits rather than re-serializes: this is the user's file, and round-tripping
 /// it through `Config` would silently delete their comments, key order and any
 /// setting a newer jjdiff added. `toml_edit` touches only the one value.
 ///
 /// Returns the path written, for the confirmation message.
-pub fn set_editor_command(command: &str) -> Result<PathBuf, String> {
-    set_value("editor", "command", command)
-}
-
-/// Write `[ui] theme` back to the config file. Same surgical edit as above — a
-/// theme is chosen once and expected to survive a restart.
-pub fn set_ui_theme(theme: &str) -> Result<PathBuf, String> {
-    set_value("ui", "theme", theme)
-}
-
-/// Set one `[table] key` in the user's config, touching nothing else.
-///
-/// Edits rather than re-serializes: this is the user's file, and round-tripping
-/// it through `Config` would silently delete their comments, key order and any
-/// setting a newer jjdiff added. `toml_edit` touches only the one value.
-///
-/// Returns the path written, for the confirmation message.
-fn set_value(table_name: &str, key: &str, value: &str) -> Result<PathBuf, String> {
+fn write_item(table_name: &str, key: &str, value: toml_edit::Item) -> Result<PathBuf, String> {
     let path = config_path().ok_or_else(|| "cannot locate $HOME".to_string())?;
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let mut document = existing
@@ -159,7 +229,7 @@ fn set_value(table_name: &str, key: &str, value: &str) -> Result<PathBuf, String
         table.set_implicit(false);
         document[table_name] = toml_edit::Item::Table(table);
     }
-    document[table_name][key] = toml_edit::value(value);
+    document[table_name][key] = value;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -197,6 +267,39 @@ mod tests {
         assert_eq!(config.walkthrough.model_for(backend), "anthropic/claude-sonnet-4-6");
     }
 
+    /// A model set without a backend still reaches the CLI's argv.
+    ///
+    /// The whole chain, because each link was tested alone and the join is where
+    /// it would break: an absent `backend` parses to Claude, `model_for` picks
+    /// the matching per-backend key, and an empty override has to become *no*
+    /// `--model` flag rather than an empty one — `--model ""` is an error, not a
+    /// default. This is the config a real user hit it with: `claude-model` set,
+    /// `backend` never written because Claude is already the default.
+    #[test]
+    fn a_model_with_no_backend_reaches_the_cli_arguments() {
+        use crate::walkthrough::{Backend, CliBackend};
+
+        let config: Config =
+            toml::from_str("[walkthrough]\nclaude-model = \"claude-haiku-4-5\"\n").unwrap();
+        let selected = Backend::parse(&config.walkthrough.backend);
+        assert_eq!(selected, Backend::Claude, "an unset backend is Claude");
+        let model = config.walkthrough.model_for(selected);
+        assert_eq!(model, "claude-haiku-4-5");
+
+        let cli = CliBackend { backend: selected, model: (!model.is_empty()).then_some(model) };
+        assert_eq!(
+            cli.args(),
+            vec!["-p", "--output-format", "json", "--model", "claude-haiku-4-5"]
+        );
+
+        // And with nothing set at all, no `--model` — an empty one is an error.
+        let bare: Config = toml::from_str("").unwrap();
+        let selected = Backend::parse(&bare.walkthrough.backend);
+        let model = bare.walkthrough.model_for(selected);
+        let cli = CliBackend { backend: selected, model: (!model.is_empty()).then_some(model) };
+        assert_eq!(cli.args(), vec!["-p", "--output-format", "json"]);
+    }
+
     #[test]
     fn parses_partial_config() {
         let config: Config =
@@ -214,9 +317,9 @@ mod tests {
         assert!(toml::from_str::<Config>("not toml [").is_err());
     }
 
-    /// The document edit `set_editor_command` performs, minus the filesystem.
-    /// It writes to `config_path()` (i.e. $HOME), which a test must not touch,
-    /// but the edit itself is where the risk of mangling someone's file lives.
+    /// The document edit a write performs, minus the filesystem. `set_setting`
+    /// writes to `config_path()` (i.e. $HOME), which a test must not touch, but
+    /// the edit itself is where the risk of mangling someone's file lives.
     fn edited(original: &str, command: &str) -> String {
         let mut document = original.parse::<toml_edit::DocumentMut>().unwrap();
         if !document.as_table().contains_key("editor") {
@@ -267,6 +370,72 @@ mod tests {
         assert_eq!(written.matches("command =").count(), 1, "no duplicate key");
         let parsed: Config = toml::from_str(&written).unwrap();
         assert_eq!(parsed.editor.command, "code -g {file}:{line}");
+    }
+
+    /// The settings page may write these and nothing else. A command taking an
+    /// arbitrary table and key would let anything running in the WebView — which
+    /// renders forge markdown from anyone who can open a pull request — write
+    /// anywhere in the user's config.
+    #[test]
+    fn only_known_settings_are_writable() {
+        for (table, key, _) in WRITABLE {
+            assert!(
+                lookup(table, key).is_some(),
+                "{table}.{key} is listed but not findable"
+            );
+        }
+        assert!(lookup("ui", "themes").is_none(), "a typo must not be written");
+        assert!(lookup("git", "user").is_none(), "an unrelated table must not be written");
+        assert!(lookup("editor", "args").is_none());
+    }
+
+    fn lookup(table_name: &str, key: &str) -> Option<Kind> {
+        WRITABLE
+            .iter()
+            .find(|(table, name, _)| *table == table_name && *name == key)
+            .map(|(_, _, kind)| *kind)
+    }
+
+    /// Types are pinned, and this is not pedantry: TOML is typed and serde is
+    /// not forgiving. `ignore-whitespace = "true"` is a string, deserializes as
+    /// a bool nowhere, and takes the whole `[ui]` table down to defaults on the
+    /// next load — the setting you just turned on quietly turning the rest off.
+    #[test]
+    fn a_setting_written_with_the_wrong_type_is_refused() {
+        use serde_json::json;
+        assert_eq!(lookup("ui", "ignore-whitespace"), Some(Kind::Bool));
+        assert_eq!(lookup("ui", "code-font-size"), Some(Kind::Float));
+        assert_eq!(lookup("ui", "theme"), Some(Kind::Str));
+
+        // The conversion, without touching $HOME — `set_setting` writes to the
+        // real config path, so only its typing half is exercised here.
+        let typed = |kind: Kind, value: serde_json::Value| -> Option<String> {
+            match kind {
+                Kind::Str => value.as_str().map(toml_edit::value),
+                Kind::Bool => value.as_bool().map(toml_edit::value),
+                Kind::Float => value.as_f64().map(toml_edit::value),
+            }
+            .map(|item| item.to_string().trim().to_string())
+        };
+        assert_eq!(typed(Kind::Bool, json!(true)).as_deref(), Some("true"));
+        assert_eq!(typed(Kind::Bool, json!("true")), None, "a string is not a bool");
+        assert_eq!(typed(Kind::Float, json!(13.5)).as_deref(), Some("13.5"));
+        assert_eq!(typed(Kind::Float, json!("13.5")), None, "a string is not a number");
+        assert_eq!(typed(Kind::Str, json!("dark")).as_deref(), Some("\"dark\""));
+        assert_eq!(typed(Kind::Str, json!(false)), None, "a bool is not a string");
+    }
+
+    /// A bool must land unquoted, or it reloads as a string and the `[ui]` table
+    /// falls back to defaults.
+    #[test]
+    fn a_boolean_setting_round_trips_as_a_boolean() {
+        let mut document = "[ui]\ntheme = \"dark\"\n".parse::<toml_edit::DocumentMut>().unwrap();
+        document["ui"]["word-wrap"] = toml_edit::value(true);
+        let written = document.to_string();
+        assert!(written.contains("word-wrap = true"), "{written}");
+        let parsed: Config = toml::from_str(&written).unwrap();
+        assert!(parsed.ui.word_wrap);
+        assert_eq!(parsed.ui.theme, "dark", "the neighbour survives");
     }
 
     #[test]

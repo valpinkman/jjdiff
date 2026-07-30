@@ -7,6 +7,7 @@
 pub mod cli;
 mod comments;
 mod config;
+mod describe;
 mod editor;
 mod forge;
 mod menu;
@@ -263,24 +264,26 @@ fn get_config() -> config::Config {
     config::load()
 }
 
-/// Persist `[editor] command` so "Open in Editor" is configurable from inside
-/// the app rather than only by hand-editing the config file. Returns the path
-/// written, so the UI can say where the setting went.
+/// Persist one setting from the settings page. The table and key must be on
+/// [`config`]'s allow-list and the value must match its declared type; both are
+/// refused rather than written, and the error says which.
 #[tauri::command]
-async fn set_editor_command(command: String) -> Result<String, String> {
+async fn set_config_value(
+    table: String,
+    key: String,
+    value: serde_json::Value,
+) -> Result<String, String> {
     blocking(move || {
-        config::set_editor_command(command.trim()).map(|path| path.display().to_string())
+        config::set_setting(&table, &key, &value).map(|path| path.display().to_string())
     })
     .await
 }
 
-/// Persist `[ui] theme`, so a palette picked in the app is still there next
-/// launch. The name is not validated here — the frontend owns the theme list,
-/// and an unknown one falls back to `system` on load rather than failing.
+/// Where the settings live, so the page can name the file it is editing — and
+/// so "edit it by hand" stays an obvious option rather than a secret.
 #[tauri::command]
-async fn set_ui_theme(theme: String) -> Result<String, String> {
-    blocking(move || config::set_ui_theme(theme.trim()).map(|path| path.display().to_string()))
-        .await
+fn config_file_path() -> String {
+    config::config_path().map(|path| path.display().to_string()).unwrap_or_default()
 }
 
 /// Rebuild the native menu from the frontend's command list.
@@ -1025,6 +1028,51 @@ async fn generate_walkthrough(
     Ok(generated)
 }
 
+/// Write a commit message for `revset` (or the working copy) with the
+/// configured agent CLI, and return it for the user to edit.
+///
+/// Returns the text rather than describing the change itself: a generated
+/// message is a draft, and one that committed on arrival would make the button
+/// a mutation you cannot preview. `App.saveDescription` is still what writes it.
+///
+/// The last few descriptions go in the prompt so the message matches the
+/// repository's own conventions — see [`describe`]. They come from `@-` and its
+/// ancestors, never `@`: the working copy's own description is the thing being
+/// replaced, and offering it as an example of house style would have the agent
+/// imitate the placeholder it was asked to improve.
+#[tauri::command]
+async fn generate_description(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    revset: Option<String>,
+    ignore_whitespace: bool,
+) -> Result<String, String> {
+    let repo = repo_handle(&state, &window)?;
+    let cfg = config::load();
+    blocking(move || {
+        let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
+        let recent: Vec<String> = repo
+            // `ancestors(x, n)` includes `x`, so six back covers five usable
+            // examples even when one of them is an empty merge commit.
+            .log("ancestors(@-,6)")
+            .map_err(|error| error.to_string())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|change| !change.description.trim().is_empty())
+            .take(5)
+            .map(|change| change.description)
+            .collect();
+        let selected = walkthrough::Backend::parse(&cfg.walkthrough.backend);
+        let model = cfg.walkthrough.model_for(selected);
+        let backend = walkthrough::CliBackend {
+            backend: selected,
+            model: (!model.is_empty()).then_some(model),
+        };
+        describe::generate(&backend, &files, &recent, &cfg.describe.prompt)
+    })
+    .await
+}
+
 /// Discover and version-check a repo off the main thread.
 async fn discover(path: String) -> Result<Repo, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1595,8 +1643,8 @@ pub fn run(args: Args) {
         .invoke_handler(tauri::generate_handler![
             launch_options,
             get_config,
-            set_editor_command,
-            set_ui_theme,
+            set_config_value,
+            config_file_path,
             set_menu,
             repo_state,
             diff,
@@ -1613,6 +1661,7 @@ pub fn run(args: Args) {
             mark_reviewed,
             get_walkthrough,
             generate_walkthrough,
+            generate_description,
             open_repository,
             open_repo_window,
             pick_repository,

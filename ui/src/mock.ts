@@ -179,8 +179,32 @@ export const mockFiles: FilePatch[] = [
 export const mockConfig: Config = {
   ui: { diffStyle: 'split', codeFontSize: 12.5, ignoreWhitespace: false, theme: 'system', wordWrap: false },
   keymap: { commandBar: 'Mod+k' },
+  walkthrough: {
+    backend: 'claude',
+    claudeModel: '',
+    codexModel: '',
+    opencodeModel: '',
+    piModel: '',
+    prompt: '',
+  },
+  describe: { prompt: '' },
   editor: { command: 'zed {file}:{line}' },
 };
+
+/** A plausible generated message, slow enough to show the working state. */
+export const mockGeneratedDescription = (): Promise<string> =>
+  new Promise((resolve) =>
+    setTimeout(
+      () =>
+        resolve(
+          'Retry transient push failures in the sync engine\n\n' +
+            'A flaky network aborted the whole sync rather than the one call that\n' +
+            'failed. The push path now routes through an exponential-backoff helper,\n' +
+            'so a transient failure costs a retry instead of the run.',
+        ),
+      1200,
+    ),
+  );
 
 export const mockForgeInfo: ForgeInfo = { kind: 'github', noun: 'pull request' };
 

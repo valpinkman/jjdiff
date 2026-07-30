@@ -11,6 +11,7 @@ import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
 import { renderMarkdown, renderMarkdownWithDiagrams } from './markdown.js';
+import type { SettingChange } from './settings-view.js';
 import './orbs.js';
 import {
   abandonChange,
@@ -34,6 +35,7 @@ import {
   splitPaths,
   undo,
   describeChange,
+  generateDescription,
   generateWalkthrough,
   getConfig,
   getConflicts,
@@ -51,17 +53,18 @@ import {
   newChange,
   getForgeInfo,
   findPullRequestForBranch,
+  getConfigPath,
   getPullRequest,
   getPullRequestActivity,
   type Activity,
+  type Config,
   listPullRequests,
   onMenuCommand,
   onRepoChanged,
   openInEditor,
   openPullRequest,
   openUrl,
-  setEditorCommand,
-  setUiTheme,
+  setConfigValue,
   openRepoWindow,
   setMenu,
   submitReview,
@@ -122,6 +125,7 @@ import './shortcuts-help.js';
 import './theme-picker.js';
 import { applyThemeTokens, isKnownTheme, THEMES } from './themes.js';
 import './diagram-view.js';
+import './settings-view.js';
 import './walkthrough-panel.js';
 import {
   fileUnitId,
@@ -241,6 +245,8 @@ export class App extends LitElement {
   private walkOverviewTheme = -1;
   private walkOverviewToken = 0;
   @state() private generating = false;
+  /** A commit message is being written by the agent. */
+  @state() private describing = false;
   /** Guided review across the whole stack: changes ordered oldest → newest. */
   @state() private stackReview: Change[] | null = null;
   /**
@@ -326,6 +332,14 @@ export class App extends LitElement {
   /** A `THEMES` id — 'system', 'light', 'dark' or a named palette. */
   @state() private theme = 'system';
   @state() private themePickerOpen = false;
+  @state() private settingsOpen = false;
+  /**
+   * The config as last loaded or written — what the settings page renders from.
+   * Held so the page reflects a change immediately instead of after a round trip
+   * to disk, and so the palette toggles and the page share one value.
+   */
+  @state() private config: Config | null = null;
+  @state() private configPath = '';
   /** Bumped on theme change so the diff re-tokenizes (shiki tokens carry colours). */
   @state() private themeVersion = 0;
   /** File the diff viewport is currently inside; drives the pinned file header. */
@@ -752,15 +766,17 @@ export class App extends LitElement {
       confirmLabel: 'Save',
     });
     if (command === null) return;
-    try {
-      const path = await setEditorCommand(command);
+    // Through the same writer as the settings page, so the two cannot disagree
+    // about what is stored — this had its own command until the page gave every
+    // setting one path.
+    await this.applySetting('editor', 'command', command.trim());
+    if (!this.actionError) {
       this.lastOutcome = {
-        message: command.trim() ? `Editor saved to ${path}.` : `Editor cleared in ${path}.`,
+        message: command.trim()
+          ? `Editor saved to ${this.configPath}.`
+          : `Editor cleared in ${this.configPath}.`,
         operation: '',
       };
-      this.actionError = null;
-    } catch (error) {
-      this.actionError = String(error);
     }
   }
 
@@ -1252,6 +1268,8 @@ export class App extends LitElement {
   private async start() {
     try {
       const config = await getConfig();
+      this.config = config;
+      void getConfigPath().then((path) => (this.configPath = path));
       this.layout = config.ui.diffStyle === 'unified' ? 'unified' : 'split';
       this.ignoreWhitespace = config.ui.ignoreWhitespace;
       document.documentElement.style.setProperty(
@@ -1511,6 +1529,13 @@ export class App extends LitElement {
       this.barOpen = !this.barOpen;
       return;
     }
+    // The desktop convention, and it beats the palette to the key so it works
+    // from inside any view.
+    if ((event.metaKey || event.ctrlKey) && event.key === ',') {
+      event.preventDefault();
+      this.settingsOpen = !this.settingsOpen;
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
       event.preventDefault();
       this.openSearch();
@@ -1528,7 +1553,7 @@ export class App extends LitElement {
     // the same keys. Without this, Escape would close the diagram *and* fall
     // through to end the review underneath it, and ←/→ would step the
     // walkthrough behind a dialog that is still on screen.
-    if (this.diagram) return;
+    if (this.diagram || this.settingsOpen) return;
     if (this.walkActive && !typing) {
       if (event.key === 'ArrowRight') {
         event.preventDefault();
@@ -2779,8 +2804,66 @@ export class App extends LitElement {
     })();
   }
 
+  /**
+   * Apply one setting and write it, in that order.
+   *
+   * The single path for every setting there is: the settings page emits into
+   * it, and the palette toggles call it too. They used to be separate — the
+   * palette flipped a field and nothing else, so Diff Layout, Word Wrap and
+   * Whitespace reset on every restart while the config file went on claiming
+   * something different, and the theme was the only one of the four that stuck.
+   *
+   * `this.config` is updated first so the page re-renders from the value
+   * immediately rather than after a round trip to disk, and a write that fails
+   * says so without reverting what the user just did — the setting is live
+   * either way, and undoing a visible change to report a filesystem error is
+   * worse than the error.
+   */
+  private async applySetting(table: string, key: string, value: string | number | boolean) {
+    if (this.config) {
+      const table_ = { ...(this.config as unknown as Record<string, Record<string, unknown>>)[table] };
+      table_[CAMEL[key] ?? key] = value;
+      this.config = { ...this.config, [table]: table_ } as Config;
+    }
+    this.applySettingLive(table, key, value);
+    try {
+      await setConfigValue(table, key, value);
+    } catch (error) {
+      this.actionError = `Setting applied, but not saved: ${String(error)}`;
+    }
+  }
+
+  /** The in-session effect of a setting, separate from persisting it. */
+  private applySettingLive(table: string, key: string, value: string | number | boolean) {
+    if (table !== 'ui') {
+      if (table === 'keymap' && key === 'command-bar') {
+        this.commandBarBinding = String(value);
+        this.commandBarShortcut = parseShortcut(String(value));
+      }
+      return;
+    }
+    switch (key) {
+      case 'diff-style':
+        this.layout = value === 'unified' ? 'unified' : 'split';
+        break;
+      case 'word-wrap':
+        this.wordWrap = Boolean(value);
+        break;
+      case 'ignore-whitespace':
+        this.ignoreWhitespace = Boolean(value);
+        void this.loadDiff();
+        break;
+      case 'code-font-size':
+        document.documentElement.style.setProperty('--jj-code-size', `${Number(value)}px`);
+        break;
+      case 'theme':
+        this.applyTheme(String(value));
+        break;
+    }
+  }
+
   private toggleLayout() {
-    this.layout = this.layout === 'split' ? 'unified' : 'split';
+    void this.applySetting('ui', 'diff-style', this.layout === 'split' ? 'unified' : 'split');
   }
 
   /**
@@ -2799,23 +2882,50 @@ export class App extends LitElement {
 
   /** Chosen for real — apply it and remember it. */
   private async chooseTheme(theme: string) {
-    this.applyTheme(theme);
+    // Through `applySetting` like every other setting, so the settings page's
+    // Theme row follows a palette picked from the picker or the palette. A theme
+    // that cannot be written still works for this session, and that helper says
+    // so rather than reverting what was just chosen.
+    await this.applySetting('ui', 'theme', theme);
+  }
+
+  /**
+   * Ask the configured agent for a commit message and put it in the box.
+   *
+   * Deliberately not `jj describe`: the result is a draft the user reads and
+   * edits, and Describe beside it is what commits one. It also does not touch
+   * `seededFor` — that guard exists so a background refresh cannot clobber what
+   * someone is typing, and this *is* someone typing, by proxy.
+   */
+  private async runGenerateDescription() {
+    if (this.describing) return;
+    this.describing = true;
+    this.actionError = null;
     try {
-      await setUiTheme(theme);
+      const message = await generateDescription(
+        this.isWorkingCopySelected ? null : this.selected,
+        this.ignoreWhitespace,
+      );
+      this.description = message;
+      // Focus and put the caret at the end, so the first thing you can do is
+      // edit it rather than hunt for where it went.
+      await this.updateComplete;
+      const box = this.querySelector<HTMLTextAreaElement>('.describe textarea');
+      box?.focus();
+      box?.setSelectionRange(message.length, message.length);
     } catch (error) {
-      // A theme that cannot be written is still a theme that works for this
-      // session; say so rather than reverting what the user just picked.
-      this.actionError = `Theme applied, but not saved: ${String(error)}`;
+      this.actionError = String(error);
+    } finally {
+      this.describing = false;
     }
   }
 
   private toggleWordWrap() {
-    this.wordWrap = !this.wordWrap;
+    void this.applySetting('ui', 'word-wrap', !this.wordWrap);
   }
 
   private toggleWhitespace() {
-    this.ignoreWhitespace = !this.ignoreWhitespace;
-    void this.loadDiff();
+    void this.applySetting('ui', 'ignore-whitespace', !this.ignoreWhitespace);
   }
 
   /** The preset the log is currently filtered by; falls back to the first ("All"). */
@@ -3022,6 +3132,12 @@ export class App extends LitElement {
         label: 'Keyboard Shortcuts',
         hint: '?',
         run: () => (this.shortcutsOpen = true),
+      },
+      {
+        id: 'settings',
+        label: 'Settings…',
+        hint: formatShortcut('Mod+,'),
+        run: () => (this.settingsOpen = true),
       },
       {
         id: 'set-editor',
@@ -3579,6 +3695,22 @@ export class App extends LitElement {
                     </span>
                   </span>
                   <span class="spacer"></span>
+                  <!-- Fills the box; it does not describe the change. A
+                       generated message is a draft, and Describe beside it is
+                       still what commits one — a button that wrote straight to
+                       the commit would be a mutation with no preview. -->
+                  <button
+                    class="tool with-icon"
+                    ?disabled=${this.files.length === 0 || this.describing}
+                    title=${this.description.trim()
+                      ? 'Replace the message with one written by the configured agent'
+                      : 'Write a commit message with the configured agent'}
+                    @click=${this.runGenerateDescription}
+                  >
+                    ${this.describing
+                      ? html`<jj-orbs .size=${13} label="Writing"></jj-orbs> Writing…`
+                      : html`${iconSparkle} ${this.description.trim() ? 'Rewrite' : 'Generate'}`}
+                  </button>
                   <button
                     class="tool"
                     ?disabled=${this.description === change.description}
@@ -3824,6 +3956,26 @@ export class App extends LitElement {
               this.proposalPicker = null;
             }}
           ></jj-command-bar>`
+        : nothing}
+      ${this.settingsOpen
+        ? html`<jj-settings-view
+            .config=${this.config}
+            .configPath=${this.configPath}
+            @setting-changed=${(event: CustomEvent<SettingChange>) =>
+              void this.applySetting(
+                event.detail.table,
+                event.detail.key,
+                event.detail.value,
+              )}
+            @pick-theme=${() => {
+              // Hands over rather than stacking: two overlays both listening for
+              // Escape at window level would close together, and the picker is
+              // the better screen for this one choice anyway.
+              this.settingsOpen = false;
+              this.themePickerOpen = true;
+            }}
+            @close=${() => (this.settingsOpen = false)}
+          ></jj-settings-view>`
         : nothing}
       ${this.themePickerOpen
         ? html`<jj-theme-picker
@@ -4564,6 +4716,26 @@ const reviewerTitle = (state: string) =>
     COMMENTED: 'commented',
     REQUESTED: 'review requested',
   })[state] ?? state.toLowerCase().replace(/_/g, ' ');
+
+/**
+ * Config keys whose TOML spelling differs from the JSON field.
+ *
+ * The file is kebab-case (jj's convention, and what `Config`'s serde aliases
+ * read) while the payload sent to the UI is camelCase. Writes name the TOML key,
+ * so updating the local copy has to cross back. Keys that spell the same in both
+ * — `theme`, `backend`, `prompt`, `command` — are absent and fall through.
+ */
+const CAMEL: Record<string, string> = {
+  'diff-style': 'diffStyle',
+  'code-font-size': 'codeFontSize',
+  'ignore-whitespace': 'ignoreWhitespace',
+  'word-wrap': 'wordWrap',
+  'command-bar': 'commandBar',
+  'claude-model': 'claudeModel',
+  'codex-model': 'codexModel',
+  'opencode-model': 'opencodeModel',
+  'pi-model': 'piModel',
+};
 
 /** Sidebar panes. `walkthrough` doubles as the guided-review switch — see `selectTab`. */
 type SidebarTab = 'stack' | 'files' | 'walkthrough' | 'review';

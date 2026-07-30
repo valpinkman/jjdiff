@@ -9,10 +9,23 @@
   something. No gradients, no glow — the same rules the UI follows.
 
   Regenerate every platform size with:
-      rsvg-convert -w 1024 -h 1024 src-tauri/icons/icon.svg -o /tmp/jjdiff.png
-      pnpm tauri icon /tmp/jjdiff.png
+      pnpm tauri icon src-tauri/icons/icon.svg
+
+  THE MARGIN IS NOT OPTIONAL. macOS reserves it: on a 1024 canvas the icon body
+  is 824x824 centred, the remaining 100 per side left transparent, and the
+  system draws its shadow into that gap. An icon that fills its canvas is not
+  cropped, it is rendered at the size it asks for — which is ~13% larger than
+  every well-behaved app beside it in ⌘-Tab and the Dock, and reads as the app
+  shouting. This drawing was authored on a 928 squircle (48 margin) and is
+  fitted to the reserved box by the transform below rather than by rewriting
+  every coordinate, so the artwork stays editable in its own terms.
+
+  Corner radius rides along: 208/928 = 22.4%, which is already Apple's
+  185.4/824 to within a rounding error.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+ <!-- [48,976] -> [100,924]: scale 824/928, then shift so the box is centred. -->
+ <g transform="translate(57.3793,57.3793) scale(0.887931)">
   <!-- Base squircle. Never pure black (DESIGN.md §2). -->
   <rect x="48" y="48" width="928" height="928" rx="208" fill="#17171b"/>
   <rect x="50" y="50" width="924" height="924" rx="206" fill="none"
@@ -35,4 +48,5 @@
   </g>
   <rect x="604" y="440" width="232" height="44" rx="22" fill="#6fd094"/>
   <rect x="604" y="640" width="150" height="44" rx="22" fill="#3a3a44"/>
+ </g>
 </svg>

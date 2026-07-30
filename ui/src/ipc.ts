@@ -201,11 +201,44 @@ export interface Config {
     /** E.g. "Mod+Shift+p" — Mod is Cmd on macOS, Ctrl elsewhere. */
     commandBar: string;
   };
+  /**
+   * `[walkthrough]` — which agent CLI writes walkthroughs and how it is driven.
+   * Present in the config file since walkthroughs shipped; it reached the UI
+   * only when the settings page needed to show it.
+   */
+  walkthrough: {
+    /** "claude" (default), "codex", "opencode" or "pi". */
+    backend: string;
+    /** Per-backend model override; empty = whatever the CLI is configured for. */
+    claudeModel: string;
+    codexModel: string;
+    opencodeModel: string;
+    piModel: string;
+    /** Extra instructions appended to every generation prompt. */
+    prompt: string;
+  };
+  /**
+   * `[describe]` — house rules for generated commit messages. Separate from
+   * `[walkthrough]` although both drive the same CLI: "always name the ticket"
+   * belongs on a message, "flag public API changes" belongs on a review.
+   */
+  describe: {
+    prompt: string;
+  };
   editor: {
     /** Template with {file}, {line}, {repo}; empty = no editor configured. */
     command: string;
   };
 }
+
+/** The `[walkthrough]` key holding the model override for a given backend. */
+export const MODEL_KEY_FOR: Record<string, 'claudeModel' | 'codexModel' | 'opencodeModel' | 'piModel'> =
+  {
+    claude: 'claudeModel',
+    codex: 'codexModel',
+    opencode: 'opencodeModel',
+    pi: 'piModel',
+  };
 
 /** What a mutation did, plus the operation to undo it. */
 export interface Outcome {
@@ -740,22 +773,37 @@ export const openRepoWindow = (path: string): Promise<void> =>
   IN_TAURI ? invoke<void>('open_repo_window', { path }) : Promise.resolve();
 
 /**
- * Persist `[editor] command`, resolving to the config path written. Only that
- * one value is touched — comments and other settings survive.
+ * Persist one setting from the settings page. The table and key must be on the
+ * backend's allow-list and the value must match its declared type — both are
+ * refused rather than written, so a wrong call is an error, not a corrupt file.
  */
-export const setEditorCommand = (command: string): Promise<string> =>
+export const setConfigValue = (
+  table: string,
+  key: string,
+  value: string | number | boolean,
+): Promise<string> =>
   IN_TAURI
-    ? invoke<string>('set_editor_command', { command })
+    ? invoke<string>('set_config_value', { table, key, value })
     : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
 
+/** Where the settings live, so the page can name the file it edits. */
 /**
- * Persist `[ui] theme`. Same surgical edit as the editor command — a theme is
- * picked once and expected to still be there next launch.
+ * Write a commit message for the diff with the configured agent CLI.
+ *
+ * Returns the text for the user to edit; it does not describe the change. A
+ * generated message is a draft, and one that committed on arrival would make
+ * the button a mutation you cannot preview.
  */
-export const setUiTheme = (theme: string): Promise<string> =>
+export const generateDescription = (
+  revset: string | null,
+  ignoreWhitespace: boolean,
+): Promise<string> =>
   IN_TAURI
-    ? invoke<string>('set_ui_theme', { theme })
-    : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
+    ? invoke<string>('generate_description', { revset, ignoreWhitespace })
+    : mock(async (m) => m.mockGeneratedDescription()).then((text) => text);
+
+export const getConfigPath = (): Promise<string> =>
+  IN_TAURI ? invoke<string>('config_file_path') : Promise.resolve('~/.config/jjdiff/config.toml');
 
 /**
  * Open a repo-relative path in the configured editor. Rejects with a message

@@ -119,7 +119,10 @@ pub struct CliBackend {
 }
 
 impl CliBackend {
-    fn args(&self) -> Vec<String> {
+    /// The CLI's argv. `pub(crate)` so `config`'s tests can assert the whole
+    /// chain from a config file to the flags the agent is actually run with —
+    /// each link was covered alone, and the join is where it would break.
+    pub(crate) fn args(&self) -> Vec<String> {
         let model = self.model.as_deref().filter(|m| !m.is_empty());
         let mut args: Vec<String> = match self.backend {
             // Prompt arrives on stdin, so no positional message is passed.

@@ -1417,6 +1417,20 @@ jj-app a.tool {
   align-items: center;
 }
 
+/* A tool with a glyph *and* a label. `button.tool` is a plain block, so an
+   inline SVG beside text wraps onto its own line and the button comes out two
+   rows tall next to its neighbours. */
+jj-app button.tool.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+}
+
+jj-app button.tool.with-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
 /* Icon-only tools: square-ish, and the glyph gets its own line box so the button
    doesn't reserve room for a text descender under it. */
 jj-app button.tool.icon {
