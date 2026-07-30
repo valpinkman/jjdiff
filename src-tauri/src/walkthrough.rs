@@ -24,6 +24,12 @@ const MAX_PROMPT_CHARS: usize = 400_000;
 #[serde(rename_all = "camelCase")]
 pub struct Walkthrough {
     pub summary: String,
+    /// The overview step, as a markdown document: impacted systems (a mermaid
+    /// diagram), changed boundaries with their contracts, mutable state and
+    /// effects. `None` on walkthroughs written before overviews existed, and on
+    /// any reply that omitted it — the UI falls back to [`Walkthrough::summary`].
+    #[serde(default)]
+    pub overview: Option<String>,
     pub steps: Vec<Step>,
     /// Fingerprint of the diff this walkthrough was generated against (staleness check).
     pub fingerprint: String,
@@ -47,6 +53,8 @@ pub struct Step {
 #[serde(rename_all = "camelCase")]
 struct AgentWalkthrough {
     summary: String,
+    #[serde(default)]
+    overview: Option<String>,
     steps: Vec<AgentStep>,
 }
 
@@ -239,16 +247,98 @@ impl AgentBackend for CliBackend {
 /// Back-compat alias: the Claude CLI backend.
 pub type ClaudeBackend = CliBackend;
 
+/// The whole authoring contract, shared with [`crate::cli::WALKTHROUGH_GUIDE`]
+/// (which agents fetch with `jjdiff --walkthrough-guide`). Keep the two in step:
+/// a walkthrough jjdiff generates and one an agent hands it must be the same
+/// artefact.
+///
+/// Two parts, because the overview and the steps answer different questions.
+/// The steps are a reading order through the diff. The overview is a *synthetic*
+/// document — what systems the change touches, what contracts moved, what state
+/// and effects appeared — which is the thing a reviewer needs before the first
+/// hunk makes sense, and the thing a file-by-file summary never produces.
 const GUIDE: &str = "\
-You are generating a guided code-review walkthrough. Order the steps so a reviewer builds \
-understanding incrementally: start with the core change or data-model shift, then the logic \
-that uses it, then tests/config/mechanical fallout. Group related hunks into one step. Titles \
-are short noun phrases; narratives are 1-4 sentences explaining what the hunks do and why they \
-matter, written for a colleague seeing the diff for the first time. Every step must reference \
-at least one hunk id, every hunk id should appear in exactly one step, and you must not invent \
-ids that are not in the diff. HARD CONSTRAINT: all hunks of the same file must be grouped \
-into the same step — a file must never be split across steps (reviewers mark whole files as \
-viewed, so a split file would show as already seen in a later step).";
+You are generating a guided code-review walkthrough for a human reviewer. It has two parts: \
+an overview document and an ordered set of steps through the diff.
+
+# Part 1 — the overview
+
+`overview` is a markdown document describing the change as a whole. It is a synthetic \
+description, not a file-by-file summary of the diff, and it never prescribes an \
+implementation. Write only what the diff supports.
+
+Markers: ➕ addition · ✏️ modification · ➖ deletion.
+
+Any section may have nothing to report. Write `None` under it; do not invent entries to \
+fill it.
+
+Open with a `#` heading naming the change, then one short paragraph stating its purpose, \
+then the marker legend line, then these four sections in this order:
+
+## Impacted Systems
+
+A ```mermaid fence holding a `flowchart LR` of the concrete processes, services, binaries, \
+crates, modules or applications that a changed boundary connects. Quote every node label \
+and every edge label. Label an edge `existing` when it is unchanged and appears only as \
+context. Keep it to the systems the change actually reaches.
+
+## Changes to System Boundaries
+
+One `###` section per changed boundary, headed `### <marker> <left system> ⇄ <right system> — <what crosses>`. \
+A boundary is where two systems meet: an IPC or RPC surface, a CLI one process shells out \
+to, a wire or file format, a database schema, a public API of one crate consumed by \
+another, a protocol. Name concrete systems, not a module-plus-caller pair. Do not list an \
+unchanged downstream boundary as changed merely because new routing now reaches it.
+
+Under each boundary:
+
+- **Routing** — bullets: which side handles what, and what a side does with a call it does \
+  not handle.
+- **Files:** one to three changed source files, each as inline code holding its \
+  repository-relative path exactly as it appears in the diff, separated by ` · `. jjdiff \
+  turns those paths into links into the diff itself, so a path it cannot match is a dead \
+  link.
+- **Contract changes** — a ```diff fence giving the relevant shapes and operations almost \
+  in full: inputs, outputs, variants, optional fields, collections and errors. Prefix an \
+  added declaration with `+` and a removed one with `-`; inside an otherwise unchanged \
+  shape, prefix only the added or removed fields. Leave necessary unchanged context \
+  unprefixed. Write them in the language of the code being changed — Rust items for Rust, \
+  TypeScript types for TypeScript, the equivalent shape and operations for anything else.
+- Any behaviour the shapes do not state and a reviewer would have to infer: error mapping, \
+  what a failure leaves behind, what is deliberately not forwarded.
+
+## Changes to Mutable State
+
+A markdown table with the header `| State | Ownership, cardinality, lifecycle |`, one row \
+per added, modified or deleted piece of held data. Put the major system on the first line \
+of the right cell and the concrete owner — struct, closure, module variable, component, \
+table, cache — on the second. Cardinality describes the data relationship itself, not the \
+number of copies. Record held data only: not function bags, clients, handles or other \
+resources that own no data, and not existing state merely because new code reads it.
+
+## Changes to Effects
+
+A markdown table with the header `| Effect | Ownership and failure handling |`, one row per \
+changed entry point that makes the system touch the outside world: filesystem, persistence, \
+network, OS, external process. A call across a boundary already listed above is not an \
+effect. If a changed entry point reaches a pre-existing effect, record the entry point and \
+name the existing downstream work rather than calling that work changed. Do not record \
+ordinary query, synchronization or cache work — record its state instead. Same two-line \
+ownership convention as above, and keep failure handling to the behaviour that changed.
+
+# Part 2 — the steps
+
+Order the steps so a reviewer builds understanding incrementally: start with the core change \
+or data-model shift, then the logic that uses it, then tests/config/mechanical fallout. \
+Group related hunks into one step. Titles are short noun phrases; narratives are 1-4 \
+sentences explaining what the hunks do and why they matter, written for a colleague seeing \
+the diff for the first time. Every step must reference at least one hunk id, every hunk id \
+should appear in exactly one step, and you must not invent ids that are not in the diff. \
+HARD CONSTRAINT: all hunks of the same file must be grouped into the same step — a file must \
+never be split across steps (reviewers mark whole files as viewed, so a split file would \
+show as already seen in a later step).
+
+`summary` is one plain paragraph — no markdown — shown where the document does not fit.";
 
 /// Extra instruction when the agent is given the diff's shape instead of its
 /// content. Without it the narratives read as though the code had been examined.
@@ -257,7 +347,10 @@ IMPORTANT: this diff is too large to send in full, so what follows is its *outli
 file and hunk with its position and header line, but not the code. Order and group the files \
 into steps as usual, and title them from the paths and headers. Keep narratives to what the \
 outline actually supports (what area a step covers and why it is read at that point); do not \
-describe code you have not been shown, and do not guess at implementation detail.";
+describe code you have not been shown, and do not guess at implementation detail. The same \
+limit applies to the overview: keep Impacted Systems and the boundary list to what the paths \
+and headers show, and omit the Contract changes fences entirely rather than inventing \
+shapes you have not seen.";
 
 /// The diff as the agent will read it: the whole thing when it fits, its shape
 /// when it does not.
@@ -349,9 +442,10 @@ pub fn build_prompt(files: &[FilePatch], context: &str, extra: &str) -> Result<(
     Ok((
         format!(
             "{GUIDE}\n{outline_block}{extra_block}\nContext: {context}\n\nRespond with ONLY a JSON \
-             object, no markdown fences, matching exactly:\n{{\"summary\": \"one-paragraph \
-             overview\", \"steps\": [{{\"title\": \"...\", \"narrative\": \"...\", \"hunkIds\": \
-             [\"path#0\"]}}]}}\n\n{heading}\n\n{diff_text}"
+             object, no markdown fences around the object itself, matching exactly:\n\
+             {{\"summary\": \"one plain paragraph\", \"overview\": \"# Title\\n\\n…the markdown \
+             document, fences and all…\", \"steps\": [{{\"title\": \"...\", \"narrative\": \
+             \"...\", \"hunkIds\": [\"path#0\"]}}]}}\n\n{heading}\n\n{diff_text}"
         ),
         outline,
     ))
@@ -399,6 +493,9 @@ pub fn parse_response(reply: &str, files: &[FilePatch], outline: bool) -> Result
     }
     Ok(Walkthrough {
         summary: parsed.summary,
+        // An empty string is the same absence as a missing key, and the UI has
+        // one fallback rather than two.
+        overview: parsed.overview.filter(|text| !text.trim().is_empty()),
         steps,
         fingerprint: jjdiff_diff::diff_fingerprint(files),
         outline,
@@ -480,6 +577,39 @@ mod tests {
         assert!(prompt.contains("+new"));
         assert!(prompt.contains("change xyz"));
         assert!(prompt.contains("ONLY a JSON object"));
+    }
+
+    #[test]
+    fn prompt_specifies_the_overview_document() {
+        let (prompt, _) = build_prompt(&files(), "ctx", "").unwrap();
+        for expected in [
+            "## Impacted Systems",
+            "```mermaid",
+            "## Changes to System Boundaries",
+            "| State | Ownership, cardinality, lifecycle |",
+            "| Effect | Ownership and failure handling |",
+            "\"overview\"",
+        ] {
+            assert!(prompt.contains(expected), "prompt is missing {expected:?}");
+        }
+    }
+
+    /// The overview rides alongside the steps, and its absence is not an error:
+    /// walkthroughs stored before overviews existed still load.
+    #[test]
+    fn overview_is_captured_when_present_and_optional_when_not() {
+        // `r##` because the document itself opens with `"# `, which closes an `r#` literal.
+        let with = r##"{"summary":"s","overview":"# T\n\n```mermaid\nflowchart LR\n  a-->b\n```",
+            "steps":[{"title":"t","narrative":"n","hunkIds":["a.rs#0"]}]}"##;
+        let parsed = parse_response(with, &files(), false).unwrap();
+        assert!(parsed.overview.unwrap().contains("flowchart LR"));
+
+        let without = r#"{"summary":"s","steps":[{"title":"t","narrative":"n","hunkIds":["a.rs#0"]}]}"#;
+        assert!(parse_response(without, &files(), false).unwrap().overview.is_none());
+
+        // Blank is the same absence, so the UI has one fallback rather than two.
+        let blank = r#"{"summary":"s","overview":"  \n ","steps":[{"title":"t","narrative":"n","hunkIds":["a.rs#0"]}]}"#;
+        assert!(parse_response(blank, &files(), false).unwrap().overview.is_none());
     }
 
     #[test]
@@ -615,6 +745,8 @@ mod tests {
         // Content dropped, and the agent told not to invent it.
         assert!(!prompt.contains(&"old ".repeat(200)));
         assert!(prompt.contains("do not describe code you have not been shown"));
+        // …including in the overview, whose contract fences need the code.
+        assert!(prompt.contains("omit the Contract changes fences"));
 
         // The flag rides on the artefact so the reader knows what they have.
         let reply = r#"{"summary":"s","steps":[{"title":"t","narrative":"n","hunkIds":["big.rs#0"]}]}"#;

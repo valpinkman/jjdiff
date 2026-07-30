@@ -330,6 +330,66 @@ export const mockChangeVersions = (changeId: string): ChangeVersion[] => {
 export const mockWalkthrough: Walkthrough = {
   summary:
     'This change adds retry-with-backoff to the sync engine: a new backoff helper, and the push path now routes through it so transient failures no longer abort a sync.',
+  // Exercises everything the overview page renders: a mermaid diagram, a diff
+  // fence, the clickable **Files:** line, and both tables.
+  overview: `# Retry-with-backoff in the sync engine
+
+Transient push failures abort a whole sync. This routes the push path through a new
+exponential-backoff helper so a flaky network costs a retry instead of the run.
+
+➕ addition · ✏️ modification · ➖ deletion
+
+## Impacted Systems
+
+\`\`\`mermaid
+flowchart LR
+  engine["Sync engine"]
+  backoff["Backoff helper"]
+  server["Remote sync server"]
+
+  engine -->|"retryWithBackoff"| backoff
+  backoff -->|"existing: push"| server
+  engine -->|"existing: pull"| server
+\`\`\`
+
+## Changes to System Boundaries
+
+### ➕ Sync engine ⇄ Backoff helper — \`retryWithBackoff\`
+
+**Routing**
+
+- The engine wraps only \`client.push\`; \`client.pull\` still calls the server directly.
+- The helper rethrows the last error once attempts are exhausted, so a permanent failure
+  still fails the sync.
+
+**Files:** \`src/sync/backoff.ts\` · \`src/sync/engine.ts\`
+
+**Contract changes**
+
+\`\`\`diff
++export async function retryWithBackoff<T>(
++  operation: () => Promise<T>,
++): Promise<T>;
+
++const MAX_ATTEMPTS = 5;
+-const DELAY_MS = 100;
++const BASE_DELAY_MS = 250;
+\`\`\`
+
+- Delay is \`BASE_DELAY_MS * 2 ** attempt\`; the caller cannot configure it yet.
+
+## Changes to Mutable State
+
+| State | Ownership, cardinality, lifecycle |
+| ----- | --------------------------------- |
+| ➕ Attempt counter | **Sync engine**<br>Closure local to \`retryWithBackoff\`.<br><br>**Cardinality:** one per in-flight push.<br>**Lifecycle:** created on call, discarded on success or on the final rethrow. |
+
+## Changes to Effects
+
+| Effect | Ownership and failure handling |
+| ------ | ------------------------------ |
+| ✏️ Push to the remote sync server | **Sync engine**<br>\`sync()\` → existing \`client.push\`<br><br>The network call itself is unchanged; it is now attempted up to five times. The last error propagates unwrapped, so existing callers still see the server's own failure. |
+`,
   steps: [
     {
       title: 'New backoff helper',
@@ -355,6 +415,9 @@ export const mockWalkthrough: Walkthrough = {
 
 const mockPoolWalkthrough: Walkthrough = {
   summary: 'Connection pool refactor: ownership moves into the pool object.',
+  // Deliberately absent, so the browser build exercises the fallback for a
+  // walkthrough stored before overviews existed.
+  overview: null,
   steps: [
     {
       title: 'Pool owns connections',

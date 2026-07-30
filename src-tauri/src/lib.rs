@@ -1245,6 +1245,19 @@ async fn list_pull_requests(
     blocking(move || forge_client(&repo)?.list(limit)).await
 }
 
+/// The proposal for one branch, asked for by name rather than found in the list.
+/// See [`forge::Client::find_by_head`] — this is what makes the banner appear on
+/// a repo with more open proposals than a page holds, and on a merged one.
+#[tauri::command]
+async fn pull_request_for_branch(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    branch: String,
+) -> Result<Option<forge::Summary>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.find_by_head(&branch)).await
+}
+
 #[tauri::command]
 async fn pull_request(
     window: tauri::Window,
@@ -1609,6 +1622,7 @@ pub fn run(args: Args) {
             open_url,
             forge_info,
             list_pull_requests,
+            pull_request_for_branch,
             pull_request,
             pull_request_activity,
             open_pull_request,

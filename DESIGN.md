@@ -314,6 +314,14 @@ top edge — that is what reads as height on a dark page.
   The header reads left to right as *bring work in → rearrange what you have → step
   back*: fetch, absorb, undo. Controls that change nothing about the repository (the
   diff layout toggle) get their own group.
+- **A document owns the pane; it does not hang above the diff.** The proposal view, the
+  operation log and the walkthrough overview are all prose of unbounded length, and each
+  one started life as a block above the code. In every case the thing being reviewed began
+  halfway down the window, and the banners still on screen were context for a diff nobody
+  was looking at. A view claims `flex: 1; min-height: 0` and its siblings are hidden by one
+  `main.showing-* > *:not(.the-view)` rule. The exception is anything that is the only way
+  *out* of the view, or that describes the document rather than the code — guided review's
+  nav bar and its stale warning both stay.
 - **Never hide options behind a hover.** The log scope was a deck of pills that
   collapsed to single initials and named themselves one at a time; five of six choices
   were invisible and the only way to learn them was to sweep the pointer across the row.

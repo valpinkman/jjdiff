@@ -256,6 +256,40 @@ impl Client {
         }
     }
 
+    /// The proposal whose head is `branch`, asked for by name.
+    ///
+    /// [`list`](Self::list) answers "what is open here" and is the wrong tool for
+    /// "is there a proposal for *this* branch": it returns one page of open
+    /// proposals, so on a repo with more of them than the page holds — 200+ open
+    /// against a limit of 30, on the monorepo that turned this up — a branch's
+    /// own proposal is routinely outside the window, and a merged one is never
+    /// in it at all. The banner could not appear there however long you waited.
+    ///
+    /// `--head` asks the forge the exact question instead, so the answer does
+    /// not depend on how busy the repo is, and `--state all` covers a proposal
+    /// that has already landed — which is still worth a banner, since a merged
+    /// PR is the review that happened. Newest first, `--limit 1`: a branch
+    /// reused across several proposals means the current one.
+    pub fn find_by_head(&self, branch: &str) -> Result<Option<Summary>, String> {
+        match self.kind {
+            Kind::GitHub => {
+                let raw = self.run(&[
+                    "pr",
+                    "list",
+                    "--head",
+                    branch,
+                    "--state",
+                    "all",
+                    "--limit",
+                    "1",
+                    "--json",
+                    "number,title,author,state,isDraft,headRefName,updatedAt",
+                ])?;
+                Ok(github::parse_list(&raw)?.into_iter().next())
+            }
+        }
+    }
+
     /// The whole conversation on a proposal, oldest first.
     ///
     /// Two calls, because GitHub does not expose these together: `pr view`
@@ -865,6 +899,28 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].number, 4);
         assert_eq!(rows[0].author, "Valentin D. Pinkman");
+    }
+
+    /// `--head` on a branch with no proposal is an ordinary answer, not a
+    /// failure: `gh` prints `[]` and exits 0, and the banner is simply absent.
+    /// Treating it as an error would put a status message on screen for every
+    /// branch that has not been proposed yet, which is most of them.
+    #[test]
+    fn a_branch_with_no_proposal_parses_to_nothing() {
+        assert!(super::github::parse_list("[]").unwrap().into_iter().next().is_none());
+    }
+
+    /// `--state all` is what makes a merged proposal findable, so the state
+    /// comes through rather than being assumed open — the banner reads
+    /// "merged", and this is the field it reads.
+    #[test]
+    fn a_merged_proposal_keeps_its_state() {
+        let raw = r#"[{"author": {"login": "valpinkman", "name": "Valentin D. Pinkman"},
+          "headRefName": "valpinkman/topic", "isDraft": false, "number": 4,
+          "state": "MERGED", "title": "C3", "updatedAt": "2026-07-27T15:53:24Z"}]"#;
+        let found = super::github::parse_list(raw).unwrap().into_iter().next().unwrap();
+        assert_eq!((found.number, found.state.as_str()), (4, "MERGED"));
+        assert_eq!(found.head, "valpinkman/topic");
     }
 
     fn comment(path: &str, line: u32, side: &str, body: &str) -> ReviewComment {

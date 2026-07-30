@@ -48,7 +48,8 @@ pub fn diff_worktree(
         collect_tree(&tree, &mut base, &mut conflicted).map_err(|e| gix_err(&e))?;
     }
 
-    let worktree = collect_worktree(repo_root, global_excludes(&repo).as_deref())?;
+    let mut worktree = collect_worktree(repo_root, global_excludes(&repo).as_deref())?;
+    restore_tracked(repo_root, &base, &mut worktree);
 
     let mut patches = Vec::new();
 
@@ -212,7 +213,24 @@ fn collect_worktree(
     let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
         .filter_entry(|entry| {
-            entry.file_name() != ".git" && entry.file_name() != ".jj"
+            if entry.file_name() == ".git" || entry.file_name() == ".jj" {
+                return false;
+            }
+            // A directory with its own `.git` is a different repository, and its
+            // contents belong to that one. git collapses an untracked nested repo
+            // to a single `?? dir/` entry and never lists inside it; jj does not
+            // snapshot it at all. jjdiff walked straight in, so a vendored clone
+            // sitting in a subdirectory turned up as dozens of untracked
+            // additions that no other tool reports — 44 of them on the repo this
+            // was found on, left over after the ignored-but-tracked fix.
+            //
+            // Depth guards the root, which has a `.git` by definition; a
+            // *committed* submodule is a gitlink rather than a blob, so it never
+            // reaches `base` and needs nothing here.
+            if entry.depth() > 0 && entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                return !entry.path().join(".git").exists();
+            }
+            true
         })
         .build();
     for entry in walker {
@@ -237,6 +255,38 @@ fn collect_worktree(
         files.insert(path, metadata.len());
     }
     Ok(files)
+}
+
+/// Put back the files the ignore-aware walk was never allowed to see.
+///
+/// **An ignore rule applies to untracked files only.** Once a file is in the
+/// tree it is tracked, and git, jj and every other tool go on diffing it however
+/// many patterns match its path — `.gitignore` decides what gets *added*, not
+/// what gets watched. [`collect_worktree`] cannot express that on its own: the
+/// walker prunes an ignored *directory* without descending, so a tracked file
+/// inside one is not filtered out so much as never visited.
+///
+/// The consequence was severe and looked like data loss. A repo that ignores
+/// `.vscode/` while committing `.vscode/settings.json` — a common arrangement,
+/// and the reason this was found — had every such file reported as **deleted**
+/// against a working copy where it was sitting untouched on disk: 1467 phantom
+/// deletions on the repo that turned it up, next to `jj st`'s one modified file.
+///
+/// So the tree is the authority on what to look at, and the walk only adds to
+/// it. Costs one `lstat` per tracked path the walk missed — zero on a repo with
+/// no ignored-but-tracked files, and only over the difference on one that has
+/// them. A path that really is gone still fails to stat and stays a deletion,
+/// and symlinks stay out, both as before.
+fn restore_tracked(root: &Path, base: &BTreeMap<String, gix::ObjectId>, worktree: &mut BTreeMap<String, u64>) {
+    for path in base.keys() {
+        if worktree.contains_key(path) {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(root.join(path)) else { continue };
+        if metadata.is_file() {
+            worktree.insert(path.clone(), metadata.len());
+        }
+    }
 }
 
 /// Cheap unchanged check: size mismatch → changed; equal sizes → hash the file and compare oids.
@@ -548,6 +598,148 @@ mod tests {
                 "unrelated files must survive: {paths:?}"
             );
         }
+    }
+
+    /// A tracked file that an ignore rule also matches is still tracked.
+    ///
+    /// `.gitignore` decides what gets added, not what gets watched, and every
+    /// tool that diffs — git, jj — goes on reporting a committed file however
+    /// many patterns cover it. jjdiff did not: the walker prunes an ignored
+    /// directory without descending, so the file was never visited and came out
+    /// the other side as a **deletion** of something sitting untouched on disk.
+    ///
+    /// Both shapes here, because they fail for different reasons: an ignored
+    /// *directory* is pruned whole, an ignored *file* is filtered by name.
+    /// `.vscode/` committing its `settings.json` is the arrangement that turned
+    /// this up, and it produced 1467 phantom deletions on one repo.
+    #[test]
+    fn tracked_files_survive_an_ignore_rule_that_matches_them() {
+        if Command::new("jj").arg("--version").output().is_err() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        jj(root, &["git", "init", "--colocate", "."]);
+
+        // Neutralise the developer's own `core.excludesFile`. This test is about
+        // ignore semantics, and a machine whose global ignore already covers
+        // `.vscode/` or `*.log` — mine does — would never track the fixture
+        // files in the first place and the assertions would pass vacuously.
+        std::fs::write(root.join("empty-excludes"), "").unwrap();
+        let out = Command::new("git")
+            .args([
+                "config",
+                "--local",
+                "core.excludesFile",
+                root.join("empty-excludes").to_str().unwrap(),
+            ])
+            .current_dir(root)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+        // Committed first, ignored after — which is how a repo ends up in this
+        // state, whether by a rule added later or a deliberate `git add -f`.
+        std::fs::create_dir(root.join("tools")).unwrap();
+        std::fs::write(root.join("tools/settings.json"), "{\"a\": 1}\n").unwrap();
+        std::fs::write(root.join("keep.data"), "kept\n").unwrap();
+        std::fs::write(root.join("plain.txt"), "one\n").unwrap();
+        jj(root, &["commit", "-m", "before the rules"]);
+        std::fs::write(root.join(".gitignore"), "tools/\nkeep.data\n").unwrap();
+        jj(root, &["commit", "-m", "add the rules"]);
+
+        let out = Command::new("jj")
+            .args(["--ignore-working-copy", "--color=never", "log", "--no-graph", "-r", "@-", "-T", "commit_id"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let base = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        // Nothing has been touched, so nothing may be reported.
+        let clean = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        assert!(
+            clean.is_empty(),
+            "an untouched worktree reported changes: {:?}",
+            clean.iter().map(|f| (&f.path, f.status)).collect::<Vec<_>>()
+        );
+
+        // Edited, they diff like anything else — not as add/delete pairs.
+        std::fs::write(root.join("tools/settings.json"), "{\"a\": 2}\n").unwrap();
+        std::fs::write(root.join("keep.data"), "changed\n").unwrap();
+        let edited = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        let mut seen: Vec<(&str, FileStatus)> =
+            edited.iter().map(|f| (f.path.as_str(), f.status)).collect();
+        seen.sort_by_key(|(path, _)| *path);
+        assert_eq!(
+            seen,
+            vec![("keep.data", FileStatus::Modified), ("tools/settings.json", FileStatus::Modified)]
+        );
+
+        // And a tracked-but-ignored file that is genuinely gone is still a
+        // deletion — the fix restores what is on disk, it does not invent it.
+        std::fs::remove_file(root.join("tools/settings.json")).unwrap();
+        let removed = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        assert_eq!(
+            removed
+                .iter()
+                .find(|f| f.path == "tools/settings.json")
+                .map(|f| f.status),
+            Some(FileStatus::Deleted)
+        );
+
+        // An *untracked* file matching a rule stays ignored, which is the whole
+        // point of the walk this works around.
+        std::fs::write(root.join("keep.data.bak"), "noise\n").unwrap();
+        std::fs::write(root.join("tools/scratch.json"), "{}\n").unwrap();
+        std::fs::write(root.join("plain2.txt"), "two\n").unwrap();
+        let untracked = diff_worktree(root, Some(&base), WorktreeDiffOptions::default()).unwrap();
+        let paths: Vec<&str> = untracked.iter().map(|f| f.path.as_str()).collect();
+        assert!(!paths.contains(&"tools/scratch.json"), "ignored file leaked: {paths:?}");
+        assert!(paths.contains(&"plain2.txt"), "unignored file lost: {paths:?}");
+    }
+
+    /// A directory with its own `.git` belongs to another repository.
+    ///
+    /// git collapses an untracked nested repo to one `?? dir/` and never lists
+    /// inside it; jj does not snapshot it at all. jjdiff walked in and reported
+    /// every file as an addition — which is how a vendored clone of an unrelated
+    /// project showed up as 44 phantom additions in a review.
+    #[test]
+    fn a_nested_git_repository_is_not_part_of_this_one() {
+        if Command::new("jj").arg("--version").output().is_err() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let (tmp, base) = fixture();
+        let root = tmp.path();
+
+        let nested = root.join("vendor/thing");
+        std::fs::create_dir_all(&nested).unwrap();
+        let out = Command::new("git")
+            .args(["init", "-q", "."])
+            .current_dir(&nested)
+            .output()
+            .expect("git runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        std::fs::write(nested.join("theirs.txt"), "not ours\n").unwrap();
+        // A plain subdirectory beside it must still be walked.
+        std::fs::create_dir_all(root.join("vendor/ours")).unwrap();
+        std::fs::write(root.join("vendor/ours/mine.txt"), "ours\n").unwrap();
+
+        let paths: Vec<String> = diff_worktree(root, Some(&base), WorktreeDiffOptions::default())
+            .unwrap()
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        assert!(
+            !paths.iter().any(|path| path.starts_with("vendor/thing")),
+            "walked into a nested repository: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|path| path == "vendor/ours/mine.txt"),
+            "an ordinary subdirectory was lost with it: {paths:?}"
+        );
     }
 
     #[test]

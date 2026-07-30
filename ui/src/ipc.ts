@@ -137,6 +137,12 @@ export interface WalkthroughStep {
 
 export interface Walkthrough {
   summary: string;
+  /**
+   * The overview step as a markdown document — impacted systems, changed
+   * boundaries, mutable state, effects. Null on walkthroughs written before
+   * overviews existed; the overview page falls back to `summary`.
+   */
+  overview: string | null;
   steps: WalkthroughStep[];
   /** Fingerprint of the diff this was generated against. */
   fingerprint: string;
@@ -657,6 +663,18 @@ export const listPullRequests = (limit = 30): Promise<PullRequestSummary[]> =>
   IN_TAURI
     ? invoke<PullRequestSummary[]>('list_pull_requests', { limit })
     : mock((m) => m.mockPullRequestList);
+
+/**
+ * The proposal whose head is `branch`, or null if there is none.
+ *
+ * Asked of the forge by name rather than looked up in `listPullRequests`, which
+ * returns one page of *open* proposals — on a busy repo a branch's own proposal
+ * is routinely outside that page, and a merged one is never in it.
+ */
+export const findPullRequestForBranch = (branch: string): Promise<PullRequestSummary | null> =>
+  IN_TAURI
+    ? invoke<PullRequestSummary | null>('pull_request_for_branch', { branch })
+    : mock((m) => m.mockPullRequestList.find((pr) => pr.head === branch) ?? null);
 
 export const getPullRequest = (number: number): Promise<PullRequest> =>
   IN_TAURI ? invoke<PullRequest>('pull_request', { number }) : mock((m) => m.mockPullRequest);

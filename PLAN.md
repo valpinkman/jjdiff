@@ -141,7 +141,9 @@ structured diff (stable hunk ids) → prompt with guide + JSON contract → Clau
 headless (`claude -p --output-format json`, stdin prompt, timeout, hallucinated-id
 filtering) → stored per **change id** with a diff fingerprint, so an evolved change flags
 the walkthrough stale and offers regeneration. Guided mode: overview + steps, each step
-filters the diff to its hunks; ←/→ navigation. Backend sits behind an `AgentBackend` trait —
+filters the diff to its hunks; ←/→ navigation. The overview is a full-page synthetic
+document — impacted systems as a mermaid diagram, changed boundaries with their contracts,
+new mutable state and effects — with its file references clickable into the diff. Backend sits behind an `AgentBackend` trait —
 Claude only for now, more CLIs later. Verified end-to-end against the real CLI
 (`cargo test -p jjdiff-app real_claude -- --ignored`).
 

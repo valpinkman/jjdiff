@@ -1018,11 +1018,27 @@ jj-app main.showing-ops > *:not(.ops-view) {
   display: none;
 }
 
+/* The walkthrough overview is the same idea with two exceptions.
+
+   The walk banner stays: it carries Exit and Next, and it is the only way out of
+   the overview — hiding it the way the proposal view hides its siblings would
+   leave a document with no way forward, which is the trap guided review already
+   shipped once.
+
+   The stale banner stays because it is about the walkthrough, not the diff. Its
+   siblings are all context for the code, and the code is not on screen; this one
+   says the document you are reading describes an older version of the change,
+   which is exactly the thing to know before reading it. */
+jj-app main.showing-overview > *:not(.walk-overview):not(.walk-banner):not(.walk-stale-banner) {
+  display: none;
+}
+
 jj-app .pr-view {
   padding: var(--jj-s-5) var(--jj-s-6) var(--jj-s-6);
   overflow-y: auto;
   box-sizing: border-box;
-  border: 0;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
   background: var(--jj-surface);
   box-shadow: var(--jj-shadow-card);
   margin-bottom: var(--jj-s-4);
@@ -1849,7 +1865,10 @@ jj-app .walkthrough-working {
   align-items: center;
   text-align: center;
   gap: var(--jj-s-2);
-  margin: var(--jj-s-4) var(--jj-s-3);
+  /* 6px, the inset `.context-card` above it uses — at 8px it sat two pixels
+     narrower on each side than the card it appears directly beneath, which
+     reads as a mistake rather than as a nested thing. */
+  margin: var(--jj-s-4) var(--jj-s-2);
   padding: var(--jj-s-6) var(--jj-s-5) var(--jj-s-6);
   border: 1px solid var(--jj-border);
   border-radius: var(--jj-r-md);
@@ -2135,9 +2154,13 @@ jj-app > main > jj-patch-view {
 
 /* The shared body of everything that sits on that page.
 
-   No border and no radius: the card is told apart from the page by being a
-   different colour, which is one signal instead of three. The shadow stays —
-   it is what says "in front of", and it is the only thing left doing that. */
+   Border and radius match `.file-header` exactly, because a diff card and the
+   working-copy card are the same kind of object — a surface in front of the
+   page — and there are far more file cards on screen than anything else, so
+   they are what the rest has to agree with. These carried no border and a
+   larger radius, on the reasoning that colour alone tells a card from the page;
+   next to a bordered file card an inch below, the difference did not read as
+   restraint, it read as two different components. */
 jj-app .banner,
 jj-app .detail,
 jj-app .describe,
@@ -2146,8 +2169,8 @@ jj-app .pr-banner,
 jj-app .search-bar,
 jj-app .status,
 jj-app .outcome {
-  border: 0;
-  border-radius: var(--jj-r-lg);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
   background: var(--jj-surface);
   box-shadow: var(--jj-shadow-card);
   box-sizing: border-box;
@@ -2763,6 +2786,200 @@ jj-app .walk-more .fold-chevron svg {
 jj-app .walk-content {
   animation: jj-step-in 0.18s ease-out;
 }
+
+/* ---- The walkthrough overview, as a page ---- */
+
+/* Same shape as `.pr-view`, and for the same reason: `main` is a flex column,
+   so a view that does not claim the free space is shrunk to a fraction of the
+   pane with dead air below it. */
+jj-app .walk-overview {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: var(--jj-s-5) var(--jj-s-6) var(--jj-s-6);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  animation: jj-step-in 0.18s ease-out;
+}
+
+/* One centred reading column, the diagram included.
+
+   Wider than a comment thread — the boundary tables carry two columns of prose
+   and the diff fences hold type declarations, both of which wrap into ribbons
+   at the 82ch a proposal body uses — but a measure all the same, and centred by
+   the two `1fr` gutters rather than left in a strip with the pane empty beside
+   it.
+
+   The figure was briefly allowed to span all three tracks, on the reasoning
+   that a graph is sized by its labels and wants every pixel. It read as a
+   diagram that had come loose: the one element in a tidy column overhanging it
+   at both ends, with the section heading above it and the prose below both
+   stopping short. Width it does not share with the document is width that
+   breaks the document. Zoom is what the Expand button is for. */
+jj-app .walk-overview .markdown-preview {
+  padding: 0;
+  max-width: none;
+  display: grid;
+  grid-template-columns: 1fr min(100ch, 100%) 1fr;
+  font-size: var(--jj-text-md);
+}
+
+jj-app .walk-overview .markdown-preview > * {
+  grid-column: 2;
+  /* A grid item's min-width is auto, so one long unwrappable line in a contract
+     fence would widen the whole middle track and push the gutters off balance.
+     Nothing else about the grid needs saying — margins between items no longer
+     collapse, which leaves the document a little airier than the same markdown
+     in a comment thread, and on a full page that is the right way to be wrong. */
+  min-width: 0;
+}
+
+jj-app .walk-overview .markdown-preview > h1:first-child {
+  margin-top: 0;
+}
+
+/* A boundary section is a unit — heading, routing, files, contract — and
+   without a rule between them the document reads as one undifferentiated run. */
+jj-app .walk-overview .markdown-preview h3 {
+  margin-top: 1.6em;
+  padding-top: 0.7em;
+  border-top: 1px solid var(--jj-border);
+}
+
+jj-app .walk-overview .markdown-preview table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+jj-app .walk-overview .markdown-preview th {
+  background: var(--jj-wash);
+  text-align: left;
+  color: var(--jj-fg);
+}
+
+jj-app .walk-overview .markdown-preview td {
+  vertical-align: top;
+}
+
+/* A path the agent named that is actually in this diff. Only those get the
+   affordance — see `markFileRefs`; a path we cannot place stays plain code
+   rather than becoming a link that goes nowhere. */
+jj-app .walk-overview code.file-ref {
+  color: var(--jj-accent);
+  background: var(--jj-accent-soft);
+  cursor: pointer;
+  transition: box-shadow var(--jj-t-1) ease;
+}
+
+jj-app .walk-overview code.file-ref:hover {
+  box-shadow: inset 0 0 0 1px var(--jj-accent-line, var(--jj-accent));
+}
+
+/* Contract fences. The colours are the diff pane's, so a `+` line means the
+   same thing in the overview as it does twenty lines further into the review. */
+jj-app .walk-overview .diff-fence {
+  background: var(--jj-bg-panel);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md, 10px);
+  padding: var(--jj-s-3) 0;
+  margin: 0.6em 0;
+  overflow-x: auto;
+  font-family: var(--jj-mono, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+jj-app .walk-overview .diff-line {
+  display: block;
+  padding: 0 var(--jj-s-4);
+  white-space: pre;
+}
+
+jj-app .walk-overview .diff-line.add {
+  background: var(--jj-added-bg);
+  color: var(--jj-added-fg);
+}
+
+jj-app .walk-overview .diff-line.del {
+  background: var(--jj-removed-bg);
+  color: var(--jj-removed-fg);
+}
+
+jj-app .walk-overview .diff-line.ctx {
+  color: var(--jj-fg-muted);
+}
+
+/* Mermaid draws at its natural size and is happy to come out 200px wide in a
+   1200px pane; the cap is on the container, and the SVG is told to fill it. */
+jj-app .walk-overview .mermaid-figure {
+  position: relative;
+  margin: var(--jj-s-4) 0;
+  padding: var(--jj-s-4);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md, 10px);
+  background: var(--jj-bg-panel);
+  overflow-x: auto;
+  cursor: zoom-in;
+}
+
+/* The whole figure opens the zoom view, but a picture does not announce that,
+   so the button says it in words and stays visible (DESIGN.md §6). */
+jj-app .walk-overview .mermaid-expand {
+  position: absolute;
+  top: var(--jj-s-2);
+  right: var(--jj-s-2);
+  z-index: 1;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-sm, 8px);
+  background: var(--jj-surface);
+  color: var(--jj-fg-muted);
+  font-family: var(--jj-sans);
+  font-size: var(--jj-text-sm);
+  font-weight: 550;
+  padding: 2px 8px;
+  cursor: zoom-in;
+  transition:
+    border-color var(--jj-t-1) ease,
+    color var(--jj-t-1) ease;
+}
+
+jj-app .walk-overview .mermaid-expand:hover {
+  border-color: var(--jj-border-strong);
+  color: var(--jj-fg);
+}
+
+jj-app .walk-overview .mermaid-expand:focus-visible {
+  outline: 2px solid var(--jj-accent);
+  outline-offset: 1px;
+}
+
+/* mermaid writes `width="100%"` and an inline `max-width` of the diagram's
+   natural pixel width, which pins it to whatever size its labels happened to
+   need and leaves the rest of the figure empty. Overriding the cap lets it use
+   the width it has been given; the viewBox keeps the proportions. */
+jj-app .walk-overview .mermaid-figure svg {
+  display: block;
+  margin: 0 auto;
+  width: 100%;
+  max-width: none !important;
+  height: auto;
+}
+
+jj-app .walk-overview .diagram-error {
+  margin-top: calc(var(--jj-s-2) * -1);
+  font-size: var(--jj-text-sm);
+  color: var(--jj-fg-muted);
+}
+
+jj-app .walk-overview-loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--jj-s-7) 0;
+}
+
 
 @keyframes jj-step-in {
   from {
@@ -3790,7 +4007,8 @@ jj-patch-view .file-header.stuck.closing {
   padding: var(--jj-s-5) var(--jj-s-6) var(--jj-s-6);
   overflow-y: auto;
   box-sizing: border-box;
-  border: 0;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
   background: var(--jj-surface);
   box-shadow: var(--jj-shadow-card);
   /* `height: 100%` resolved and was then shrunk by the flex column, leaving the

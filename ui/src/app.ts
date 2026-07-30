@@ -10,7 +10,7 @@ import type { RebaseMode } from './rebase-picker.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
-import { renderMarkdown } from './markdown.js';
+import { renderMarkdown, renderMarkdownWithDiagrams } from './markdown.js';
 import './orbs.js';
 import {
   abandonChange,
@@ -50,6 +50,7 @@ import {
   markReviewed,
   newChange,
   getForgeInfo,
+  findPullRequestForBranch,
   getPullRequest,
   getPullRequestActivity,
   type Activity,
@@ -120,6 +121,7 @@ import type { PatchView } from './patch-view.js';
 import './shortcuts-help.js';
 import './theme-picker.js';
 import { applyThemeTokens, isKnownTheme, THEMES } from './themes.js';
+import './diagram-view.js';
 import './walkthrough-panel.js';
 import {
   fileUnitId,
@@ -220,8 +222,24 @@ export class App extends LitElement {
   @state() private walkthrough: Walkthrough | null = null;
   @state() private walkStale = false;
   @state() private walkActive = false;
-  /** -1 = overview (summary + full diff); 0..n-1 = steps. */
+  /** -1 = overview (its own full page); 0..n-1 = steps over the diff. */
   @state() private walkStep = -1;
+  /**
+   * The overview document, rendered.
+   *
+   * Held as state rather than computed in `render` because producing it is
+   * async twice over — `marked` and `mermaid` are both dynamic imports, and a
+   * diagram is laid out by mermaid before it is an SVG. Rebuilt on the
+   * walkthrough and on the theme, since the diagram's palette is read off the
+   * document at draw time and would otherwise keep the old theme's colours.
+   */
+  @state() private walkOverviewHtml: TemplateResult | null = null;
+  /** The overview diagram open in the zoom view, or null. */
+  @state() private diagram: { svg: string; caption: string } | null = null;
+  /** The two inputs `walkOverviewHtml` was built from, and a token to drop stale renders. */
+  private walkOverviewSource: string | null = null;
+  private walkOverviewTheme = -1;
+  private walkOverviewToken = 0;
   @state() private generating = false;
   /** Guided review across the whole stack: changes ordered oldest → newest. */
   @state() private stackReview: Change[] | null = null;
@@ -341,6 +359,13 @@ export class App extends LitElement {
   @state() private proposalsByBranch: ReadonlyMap<string, PullRequestSummary> = new Map();
   /** When `proposalsByBranch` was last (re)loaded; drives the focus throttle. */
   private proposalIndexAt = 0;
+  /**
+   * Bookmark → the in-flight or settled `--head` lookup for it (null = no
+   * proposal). Not `@state`: it feeds `proposalsByBranch`, which is what
+   * renders. Dropped whenever the index reloads, so a proposal opened since is
+   * found rather than remembered as absent.
+   */
+  private branchProposals = new Map<string, Promise<number | null>>();
 
   /** Rendered proposal body, and its conversation. Both are markdown from the
    *  forge, so both go through the sanitising renderer. */
@@ -433,6 +458,33 @@ export class App extends LitElement {
   protected override updated() {
     if (document.hasFocus()) this.syncMenu();
     this.measureNarrative();
+    void this.buildOverview();
+    if (this.showingOverview) this.markFileRefs();
+  }
+
+  /**
+   * Render the overview document, once per (walkthrough, theme) pair.
+   *
+   * Driven from `updated` rather than from each place that sets `walkthrough`,
+   * because the theme is the other input and it changes from somewhere else
+   * entirely. The guard is a key rather than a dirty flag: two renders can be in
+   * flight when a theme changes mid-draw, and the stale one must not win.
+   */
+  private async buildOverview() {
+    const source = this.walkthrough?.overview ?? null;
+    if (source === this.walkOverviewSource && this.themeVersion === this.walkOverviewTheme) {
+      return;
+    }
+    this.walkOverviewSource = source;
+    this.walkOverviewTheme = this.themeVersion;
+    const token = ++this.walkOverviewToken;
+    if (!source) {
+      this.walkOverviewHtml = null;
+      return;
+    }
+    const rendered = await renderMarkdownWithDiagrams(source, String(token));
+    if (this.walkOverviewToken !== token) return;
+    this.walkOverviewHtml = rendered;
   }
 
   /**
@@ -482,22 +534,114 @@ export class App extends LitElement {
     this.repoMenuOpen = !this.repoMenuOpen;
   }
 
-  /** Full reset after switching repos — nothing from the old repo may leak. */
+  /**
+   * Everything on screen that belongs to a repository rather than to the app.
+   *
+   * This used to be eight assignments inline in `switchRepo` under a comment
+   * claiming a full reset, and it was not one: the diff, the viewed flags, the
+   * conflicts, the comments, the operation log, the forge and its proposals all
+   * survived into the next repo. The visible symptom was the previous repo's
+   * diff sitting there until something forced another load, but the quiet ones
+   * were worse — comments are keyed by path, so one repo's notes attached
+   * themselves to same-named files in another, and the proposal index went on
+   * matching bookmarks, so a branch as ordinary as `main` could raise the *old*
+   * repo's pull request banner over the new repo's code.
+   *
+   * Cleared up front rather than left for each loader to overwrite, because a
+   * loader that is slow or fails leaves the previous value in place, and
+   * stale-but-plausible is the whole failure this guards against. What stays is
+   * what is about the app rather than the repo: theme, layout, wrap, whitespace,
+   * sidebar geometry, keybindings.
+   */
+  private resetRepoState() {
+    this.selected = null;
+    this.seededFor = null;
+    this.description = '';
+    this.editingDescription = false;
+
+    this.files = [];
+    this.focusPath = null;
+    this.visibleFile = null;
+    this.fileLines = new Map();
+    this.expansions = new Map();
+    this.markdownPreviews = new Map();
+    this.splitSelection = null;
+    this.splitShape = '';
+
+    this.viewedPaths = new Set();
+    this.reviewedCommit = null;
+    this.conflicts = new Map();
+    this.conflictAt = null;
+    this.comments = new Map();
+    this.allComments = [];
+    this.reviewDraft = null;
+
+    this.walkthrough = null;
+    this.walkStale = false;
+    this.walkActive = false;
+    this.walkStep = -1;
+    this.stackReview = null;
+    this.diagram = null;
+
+    this.viewMode = 'full';
+    this.versionPair = null;
+    this.versions = [];
+    this.versionsOpen = false;
+    this.operations = [];
+    this.opDiff = null;
+    this.opCompareFrom = null;
+
+    // The forge is re-discovered, not assumed: the next repo may be on another
+    // host or on none, and an inherited `forge` offers actions that cannot work.
+    this.forge = null;
+    this.pullRequest = null;
+    this.prRevset = null;
+    this.proposalsByBranch = new Map();
+    this.branchProposals = new Map();
+    this.proposalIndexAt = 0;
+    this.prBody = null;
+    this.prActivity = [];
+    this.prActivityBodies = new Map();
+    this.prDetailsFor = null;
+
+    // A revset scoped to the old repo would name changes that do not exist here.
+    this.graphRevset = null;
+    this.revsetSearch = '';
+    this.closeSearch();
+
+    this.sidebarTab = 'stack';
+    this.error = null;
+    this.actionError = null;
+    this.actionInfo = null;
+    this.lastOutcome = null;
+  }
+
+  /**
+   * Which forge this repo is on, and what is open on it.
+   *
+   * Best-effort in both halves: forge affordances are absent on a repo jjdiff
+   * cannot drive, never broken. Runs on startup *and* on every repo switch —
+   * it was startup-only, which left the first repo's forge attached to every
+   * one opened after it.
+   */
+  private async loadForge() {
+    try {
+      this.forge = await getForgeInfo();
+    } catch {
+      this.forge = null;
+      return;
+    }
+    await this.loadProposalIndex();
+  }
+
+  /** Point the window at another repository, leaving nothing of the last one. */
   private async switchRepo(path: string) {
     this.repoMenuOpen = false;
     await this.run(async () => {
       await openRepository(path);
-      this.selected = null;
-      this.seededFor = null;
-      this.focusPath = null;
-      this.walkthrough = null;
-      this.walkActive = false;
-      this.walkStep = -1;
-      this.stackReview = null;
-      this.viewMode = 'full';
-      this.sidebarTab = 'stack';
-      this.editingDescription = false;
+      this.resetRepoState();
       await this.refresh();
+      void this.loadForge();
     });
   }
 
@@ -525,7 +669,12 @@ export class App extends LitElement {
    */
   private async handleSecondInstance(args: SecondInstanceArgs) {
     if (args.repoPath) {
+      // The backend has already re-bound this window to the new repo, so the
+      // same reset the menu path does is owed here — this arm only refreshed,
+      // which left every per-repo field pointing at the repo we just left.
+      this.resetRepoState();
       await this.refresh();
+      void this.loadForge();
     }
     if (args.revset) {
       const target = this.repo?.graph.find(
@@ -629,6 +778,12 @@ export class App extends LitElement {
     // Stamped before the attempt, not after, so a forge that is down throttles
     // its own retries instead of one per focus.
     this.proposalIndexAt = Date.now();
+    // Reloading the index is the "proposals may have changed" moment, so the
+    // per-branch answers expire with it — otherwise a branch looked up before
+    // its proposal existed would stay known-absent for the session. The
+    // throttle on `refreshProposals` is what keeps this from being a `gh` call
+    // per alt-tab.
+    this.branchProposals = new Map();
     try {
       const proposals = await listPullRequests();
       const index = new Map<string, PullRequestSummary>();
@@ -772,12 +927,60 @@ export class App extends LitElement {
   }
 
   /**
+   * Ask the forge directly whether any of the selection's bookmarks has a
+   * proposal, when the index did not know.
+   *
+   * The index is one page of *open* proposals. On a repo with more open than
+   * the page holds — 200+ against a limit of 30, on the monorepo this was
+   * reported from — a branch's own proposal is routinely outside it, and a
+   * merged one is never in it, so the banner simply never appeared however long
+   * you waited. `--head` asks the exact question instead, and the answer does
+   * not depend on how busy the repo is.
+   *
+   * The cost is a `gh` subprocess, which is why it is a *fallback* and not the
+   * primary path: the index still answers for free in the common case, and this
+   * runs only for a bookmark it did not cover. The cache holds **promises**, not
+   * values, so the refreshes that overlap — a repo watcher firing while a window
+   * focus is in flight — share one call rather than racing two; and it stores
+   * misses as well as hits, or a branch with no proposal would be re-asked on
+   * every selection forever. A *failed* call is evicted instead: it is not an
+   * answer, and caching it would make one flaky moment permanent for the
+   * session.
+   */
+  private async lookupProposalByBookmark(): Promise<number | null> {
+    const change = this.selectedChange;
+    if (!this.forge || !change) return null;
+    for (const bookmark of change.bookmarks) {
+      let pending = this.branchProposals.get(bookmark);
+      if (!pending) {
+        pending = findPullRequestForBranch(bookmark)
+          .then((found) => {
+            if (found) {
+              // Feed the index, so from here on the synchronous getter matches
+              // and no further call is made for this branch.
+              this.proposalsByBranch = new Map(this.proposalsByBranch).set(bookmark, found);
+            }
+            return found?.number ?? null;
+          })
+          .catch(() => {
+            this.branchProposals.delete(bookmark);
+            return null;
+          });
+        this.branchProposals.set(bookmark, pending);
+      }
+      const number = await pending;
+      if (number !== null) return number;
+    }
+    return null;
+  }
+
+  /**
    * Load the full proposal (checks, reviewers, merge state) for whatever the
    * selection matched. The list call carries none of that, so this fills it in
    * once per number and is skipped when it is already loaded.
    */
   private async syncMatchedProposal(refetch = false) {
-    const matched = this.matchedProposalNumber;
+    const matched = this.matchedProposalNumber ?? (await this.lookupProposalByBookmark());
     if (matched === null) {
       // Only clear a banner we inferred; an explicitly opened proposal owns the
       // view until it is closed. So does one you are *reading*: this runs on
@@ -1072,14 +1275,7 @@ export class App extends LitElement {
     // running forwards its parsed argv here. Open the repo in the existing
     // window rather than starting a rival process.
     void onSecondInstance((args) => void this.handleSecondInstance(args));
-    // Which forge this repo is on, if any. Best-effort: forge affordances are
-    // simply absent on a repo we cannot drive, never broken.
-    void getForgeInfo()
-      .then((info) => {
-        this.forge = info;
-        return this.loadProposalIndex();
-      })
-      .catch(() => (this.forge = null));
+    void this.loadForge();
     try {
       const launch = await getLaunchOptions();
       if (launch.pullRequest !== null) {
@@ -1328,6 +1524,11 @@ export class App extends LitElement {
     }
     const typing = (event.target as HTMLElement | null)?.tagName === 'TEXTAREA'
       || (event.target as HTMLElement | null)?.tagName === 'INPUT';
+    // The diagram view is modal over the overview, and both of them answer to
+    // the same keys. Without this, Escape would close the diagram *and* fall
+    // through to end the review underneath it, and ←/→ would step the
+    // walkthrough behind a dialog that is still on screen.
+    if (this.diagram) return;
     if (this.walkActive && !typing) {
       if (event.key === 'ArrowRight') {
         event.preventDefault();
@@ -2066,6 +2267,30 @@ export class App extends LitElement {
     } else if (delta < 0 && index > 0) {
       void this.enterStackChange(this.stackReview[index - 1]!, 'last');
     }
+  }
+
+  /**
+   * Whether the overview owns the pane.
+   *
+   * The overview is not a summary hanging over the diff any more — it is a
+   * document with a system diagram, contract fences and tables, and there is no
+   * code to look at while reading it. The proposal view reached the same
+   * conclusion for the same reason. It stands down for the proposal and the
+   * operation log, which are already claiming the pane.
+   *
+   * A walkthrough with no document keeps the old arrangement — one paragraph in
+   * the banner, the whole diff below — because a page holding a single sentence
+   * and nothing else is worse than the block it replaced. That is the only shape
+   * walkthroughs stored before overviews existed can have.
+   */
+  private get showingOverview(): boolean {
+    return (
+      this.walkActive &&
+      this.walkStep < 0 &&
+      !!this.walkthrough?.overview &&
+      this.viewMode !== 'pr' &&
+      this.viewMode !== 'ops'
+    );
   }
 
   /** Hunks visible in the current walkthrough step, or null for everything. */
@@ -3113,13 +3338,18 @@ export class App extends LitElement {
       <!-- The showing-pr class hides every sibling, and the view itself only
            renders with a proposal in hand. The class is keyed on both, or a
            proposal that goes away while its view is open leaves a blank pane
-           behind instead of falling back to the diff. -->
+           behind instead of falling back to the diff.
+
+           showing-overview is the same idea with one exception: the walk banner
+           stays, because it is the only way forward out of the overview. -->
       <main
         class=${this.viewMode === 'pr' && this.pullRequest
           ? 'showing-pr'
           : this.viewMode === 'ops'
             ? 'showing-ops'
-            : ''}
+            : this.showingOverview
+              ? 'showing-overview'
+              : ''}
         @squash-file=${this.onSquashFile}
         @toggle-viewed=${this.onToggleViewed}
         @search-state=${(event: CustomEvent<{ count: number; current: number }>) => {
@@ -3427,7 +3657,7 @@ export class App extends LitElement {
              older version" changes how much you should trust everything under
              it, so it has to be read before that, not after. -->
         ${this.walkthrough && this.walkStale && !this.generating
-          ? html`<div class="banner">
+          ? html`<div class="banner walk-stale-banner">
               <span class="chip">${iconInfo}</span>
               <span
                 >The walkthrough was generated for an older version of this
@@ -3492,22 +3722,27 @@ export class App extends LitElement {
                     : 'Next →'}
                 </button>
               </div>
-              <p class="walk-narrative ${this.walkExpanded ? 'expanded' : ''}">
-                ${this.walkStep < 0
-                  ? this.walkthrough.summary
-                  : this.walkthrough.steps[this.walkStep]?.narrative}
-              </p>
-              ${this.walkOverflow
-                ? html`<button
-                    class="walk-more"
-                    @click=${() => (this.walkExpanded = !this.walkExpanded)}
-                  >
-                    ${this.walkExpanded ? 'Show less' : 'Show more'}
-                    <span class="fold-chevron ${this.walkExpanded ? 'up' : ''}"
-                      >${iconChevron}</span
-                    >
-                  </button>`
-                : nothing}
+              <!-- Nothing under the head at the overview: the prose is the page
+                   below, and repeating its opening paragraph in a clamped
+                   three-line block above it read as a duplicate. -->
+              ${this.showingOverview
+                ? nothing
+                : html`<p class="walk-narrative ${this.walkExpanded ? 'expanded' : ''}">
+                      ${this.walkStep < 0
+                        ? this.walkthrough.summary
+                        : this.walkthrough.steps[this.walkStep]?.narrative}
+                    </p>
+                    ${this.walkOverflow
+                      ? html`<button
+                          class="walk-more"
+                          @click=${() => (this.walkExpanded = !this.walkExpanded)}
+                        >
+                          ${this.walkExpanded ? 'Show less' : 'Show more'}
+                          <span class="fold-chevron ${this.walkExpanded ? 'up' : ''}"
+                            >${iconChevron}</span
+                          >
+                        </button>`
+                      : nothing}`}
                 </div>`,
               )}
             </div>`
@@ -3550,7 +3785,8 @@ export class App extends LitElement {
              which names the file *and* carries its actions. A separate crumb
              put the same path on screen twice, one line apart. -->
 
-        ${this.viewMode === 'pr'
+        ${this.showingOverview ? this.renderWalkthroughOverview() : nothing}
+        ${this.viewMode === 'pr' || this.showingOverview
           ? nothing
           : html`<jj-patch-view
               .files=${visible}
@@ -3621,6 +3857,13 @@ export class App extends LitElement {
               this.runRebase(this.rebasing!.change, event.detail.mode, event.detail.destination)}
             @close=${() => (this.rebasing = null)}
           ></jj-rebase-picker>`
+        : nothing}
+      ${this.diagram
+        ? html`<jj-diagram-view
+            .svg=${this.diagram.svg}
+            .caption=${this.diagram.caption}
+            @close=${() => (this.diagram = null)}
+          ></jj-diagram-view>`
         : nothing}
       ${this.renderFileMenu()}
     `;
@@ -3906,6 +4149,108 @@ export class App extends LitElement {
         </article>`;
       })}
     </div>`;
+  }
+
+  /**
+   * The overview step, as its own page.
+   *
+   * The document is markdown the agent wrote, so it is rendered through the same
+   * scrubber as a proposal body — an LLM's output is not text jjdiff authored,
+   * and this WebView can call every command the app exposes.
+   *
+   * Only reached with a document in hand; see `showingOverview` for what happens
+   * without one.
+   */
+  private renderWalkthroughOverview() {
+    const walkthrough = this.walkthrough;
+    if (!walkthrough) return nothing;
+    return html`<div class="walk-overview" @click=${this.onOverviewClick}>
+      ${this.walkOverviewHtml
+        ? html`<div class="markdown-preview">${this.walkOverviewHtml}</div>`
+        : html`<div class="walk-overview-loading beam">
+            <jj-orbs .size=${40} label="Rendering overview"></jj-orbs>
+          </div>`}
+    </div>`;
+  }
+
+  /**
+   * Clicks inside the overview: a file path goes to the diff, anything else that
+   * is a link goes to the OS browser.
+   *
+   * Delegated for the same reason the proposal panel's handler is — the markup
+   * is generated, so there is no anchor to bind to. File references are ordinary
+   * inline code in the document; `markFileRefs` is what decides which of them
+   * name a file actually in this diff, so an agent that writes a path we cannot
+   * place renders as plain code rather than as a link that does nothing.
+   */
+  private onOverviewClick = (event: MouseEvent) => {
+    const target = event.target as HTMLElement | null;
+    const ref = target?.closest?.('code.file-ref');
+    if (ref) {
+      event.preventDefault();
+      this.openOverviewFile(ref.textContent?.trim() ?? '');
+      return;
+    }
+    const figure = target?.closest?.('.mermaid-figure');
+    if (figure) {
+      event.preventDefault();
+      this.openDiagram(figure);
+      return;
+    }
+    this.onProposalLinkClick(event);
+  };
+
+  /**
+   * Open a figure in the zoom view.
+   *
+   * The SVG is read back out of the DOM rather than re-rendered: it is the same
+   * picture, already drawn and already scrubbed, and asking mermaid for it a
+   * second time is a second chance to fail. The caption is the nearest heading
+   * above the figure — the document's own section title, which beats a generic
+   * one and costs a walk up the sibling list.
+   */
+  private openDiagram(figure: Element) {
+    const svg = figure.querySelector('svg');
+    if (!svg) return;
+    let heading: Element | null = figure.previousElementSibling;
+    while (heading && !/^H[1-6]$/.test(heading.tagName)) {
+      heading = heading.previousElementSibling;
+    }
+    this.diagram = { svg: svg.outerHTML, caption: heading?.textContent?.trim() || 'Diagram' };
+  }
+
+  /** Leave the overview for the step that owns `path`, and land on the file. */
+  private openOverviewFile(path: string) {
+    if (!this.walkthrough) return;
+    const owner = this.walkthrough.steps.findIndex((step) =>
+      step.hunkIds.some((id) => id.slice(0, id.lastIndexOf('#')) === path),
+    );
+    this.walkStep = owner >= 0 ? owner : 0;
+    this.focusPath = path;
+    // After the step renders: the diff pane is not mounted while the overview
+    // owns it, and a filtered step re-flattens every row.
+    void this.updateComplete.then(() => this.patchView?.scrollToPath(path));
+  }
+
+  /**
+   * Mark the inline-code spans in the overview that name a file in this diff.
+   *
+   * Done to the committed DOM rather than during markdown rendering, because
+   * whether a path is reachable is a fact about the diff, not about the
+   * document — and the renderer has no business knowing about `FilePatch`.
+   * Idempotent, and scoped to the overview, so running it on every update costs
+   * a query over a handful of nodes.
+   */
+  private markFileRefs() {
+    const paths = new Set(this.files.map((file) => file.path));
+    for (const code of this.querySelectorAll<HTMLElement>('.walk-overview code')) {
+      // Only bare paths: a fenced block is code, and its lines are not links.
+      const known = !code.closest('pre') && paths.has(code.textContent?.trim() ?? '');
+      code.classList.toggle('file-ref', known);
+      if (known) {
+        code.title = 'Open this file in the diff';
+      }
+    }
   }
 
   /**
