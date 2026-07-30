@@ -4311,45 +4311,13 @@ export class App extends LitElement {
                    loses the one cue that says where the content went. -->
               <div class="fold ${this.detailCollapsed ? 'closed' : ''}">
                 <div>
-              <!-- Prose left, actions right. The description is capped at a
-                   readable measure, so on a wide window the right half of the
-                   card sat empty while the buttons queued up underneath it.
-                   The file list stays full width, below both. -->
+              <!-- Actions first, then the description across the full width.
+                   They were a right-hand column, which capped the prose at half
+                   the card and stacked six buttons vertically — a description is
+                   the thing you came to read, and a vertical stack of verbs
+                   reads as a menu rather than a toolbar. First in the DOM as
+                   well as on screen, so the tab order matches. -->
               <div class="detail-main">
-                <div class="detail-prose">
-              <!-- Guided review is a *reading* mode: you are being walked
-                   through someone's change, step by step. Offering to rewrite
-                   its message mid-walkthrough is an invitation to edit the
-                   thing you are in the middle of reviewing, so the control is
-                   gone until the walkthrough is exited. The message itself
-                   still shows. -->
-              ${this.editingDescription && !this.walkActive
-                ? html`<textarea
-                      class="detail-edit"
-                      .value=${this.description}
-                      @input=${(event: Event) =>
-                        (this.description = (event.target as HTMLTextAreaElement).value)}
-                    ></textarea>
-                    <div class="detail-actions">
-                      <button
-                        class="tool ${change.immutable ? 'danger' : ''}"
-                        title=${
-                          change.immutable
-                            ? 'jj describe --ignore-immutable — rewrite the message of a published commit. You will be asked to confirm.'
-                            : 'jj describe — save this message onto the change.'
-                        }
-                        ?disabled=${this.description === change.description}
-                        @click=${this.saveDescription}
-                      >
-                        Save description
-                      </button>
-                      <button class="tool" @click=${this.cancelDescriptionEdit}>Cancel</button>
-                    </div>`
-                : html`${descriptionBody(change.description)
-                      ? html`<div class="detail-desc">${descriptionBody(change.description)}</div>`
-                      : nothing}`}
-                </div>
-
               <!-- Four verbs out, the rest behind "More". The split is by how
                    often a hand reaches for them, not by what jj calls them. -->
               <div class="detail-actions detail-verbs">
@@ -4421,6 +4389,39 @@ export class App extends LitElement {
                   ${this.moreAt ? this.renderMoreMenu(change, this.moreAt) : nothing}
                 </span>
               </div>
+                <div class="detail-prose">
+              <!-- Guided review is a *reading* mode: you are being walked
+                   through someone's change, step by step. Offering to rewrite
+                   its message mid-walkthrough is an invitation to edit the
+                   thing you are in the middle of reviewing, so the control is
+                   gone until the walkthrough is exited. The message itself
+                   still shows. -->
+              ${this.editingDescription && !this.walkActive
+                ? html`<textarea
+                      class="detail-edit"
+                      .value=${this.description}
+                      @input=${(event: Event) =>
+                        (this.description = (event.target as HTMLTextAreaElement).value)}
+                    ></textarea>
+                    <div class="detail-actions">
+                      <button
+                        class="tool ${change.immutable ? 'danger' : ''}"
+                        title=${
+                          change.immutable
+                            ? 'jj describe --ignore-immutable — rewrite the message of a published commit. You will be asked to confirm.'
+                            : 'jj describe — save this message onto the change.'
+                        }
+                        ?disabled=${this.description === change.description}
+                        @click=${this.saveDescription}
+                      >
+                        Save description
+                      </button>
+                      <button class="tool" @click=${this.cancelDescriptionEdit}>Cancel</button>
+                    </div>`
+                : html`${descriptionBody(change.description)
+                      ? html`<div class="detail-desc">${descriptionBody(change.description)}</div>`
+                      : nothing}`}
+                </div>
               </div>
 
               <div class="detail-files">

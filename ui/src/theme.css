@@ -2435,14 +2435,16 @@ jj-app .detail-edit:focus {
   box-shadow: var(--jj-focus-ring);
 }
 
-/* Prose and verbs, side by side. Reading measure is capped at 78ch, so on any
-   window wider than that the right half of the card was empty while the action
-   row queued up under the text. */
+/* Verbs on top, prose beneath, both full width. Side by side, the actions took
+   a whole column to stack six buttons in — so the description, which is what the
+   card is *for*, was capped at half the width while the other half held a
+   vertical list. A horizontal row states the same options in one line of height
+   and lets the text run. */
 jj-app .detail-main {
-  display: grid;
-  grid-template-columns: minmax(0, 78ch) minmax(0, 1fr);
-  align-items: start;
-  gap: var(--jj-s-5) var(--jj-s-7);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--jj-s-4);
   margin-bottom: var(--jj-s-5);
   /* Room for the hover lift. The fold's inner element must clip (that is how it
      animates to a content-derived height), and this is the first thing inside
@@ -2450,13 +2452,6 @@ jj-app .detail-main {
      own outline, to that edge. `--jj-shadow-raised` reaches ~8px above the box;
      12 clears it with the 1px lift on top. */
   padding-top: var(--jj-s-4);
-}
-
-/* One column below the measure — two columns of nothing is worse than one. */
-@media (max-width: 1100px) {
-  jj-app .detail-main {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 jj-app .detail-prose {
@@ -2471,17 +2466,13 @@ jj-app .detail-actions {
   margin-bottom: var(--jj-s-4);
 }
 
-/* The verbs sit at the top of their column and run to the card's right edge,
-   so the row reads right-to-left from the destructive end back to the primary. */
+/* A toolbar across the top of the card, reading left to right from the primary
+   action. It was right-aligned when it was a column hugging the card's edge;
+   as a row that would push the verbs away from the description they act on and
+   leave the eye starting at "More". */
 jj-app .detail-verbs {
-  justify-content: flex-end;
+  justify-content: flex-start;
   margin-bottom: 0;
-}
-
-@media (max-width: 1100px) {
-  jj-app .detail-verbs {
-    justify-content: flex-start;
-  }
 }
 
 /* The overflow. Same popover grammar as the repo switcher and the file context
