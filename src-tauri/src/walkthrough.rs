@@ -1,8 +1,9 @@
 //! LLM-guided review walkthroughs.
 //!
 //! A walkthrough is an ordered set of steps; each step carries a narrative and references
-//! hunk ids from the structured diff. Generation is delegated to an agent CLI — Claude Code
-//! only for now, behind [`AgentBackend`] so other CLIs can slot in later.
+//! hunk ids from the structured diff. Generation is delegated to an agent CLI — claude,
+//! codex, opencode or pi, selected by `[walkthrough] backend` — behind [`AgentBackend`],
+//! which is also what `describe` drives to write commit messages.
 //!
 //! Walkthroughs are keyed by change id and stored with the diff fingerprint they were
 //! generated against, so a change that evolves is detected as stale (the jj-native angle:
@@ -226,8 +227,12 @@ impl AgentBackend for CliBackend {
                 Some(_) => break,
                 None if Instant::now() > deadline => {
                     let _ = child.kill();
+                    // Name the tool, not the task: this backend also writes
+                    // commit messages, and "walkthrough generation timed out"
+                    // during a describe names something the user never asked for.
                     return Err(format!(
-                        "walkthrough generation timed out after {}s",
+                        "{} timed out after {}s",
+                        self.backend.label(),
                         GENERATION_TIMEOUT.as_secs()
                     ));
                 }
@@ -247,20 +252,22 @@ impl AgentBackend for CliBackend {
     }
 }
 
-/// Back-compat alias: the Claude CLI backend.
-pub type ClaudeBackend = CliBackend;
-
 /// The whole authoring contract, shared with [`crate::cli::WALKTHROUGH_GUIDE`]
-/// (which agents fetch with `jjdiff --walkthrough-guide`). Keep the two in step:
-/// a walkthrough jjdiff generates and one an agent hands it must be the same
-/// artefact.
+/// (which agents fetch with `jjdiff --walkthrough-guide`) and with
+/// `skills/jjdiff/SKILL.md`. Keep the three in step: a walkthrough jjdiff
+/// generates and one an agent hands it must be the same artefact.
 ///
 /// Two parts, because the overview and the steps answer different questions.
 /// The steps are a reading order through the diff. The overview is a *synthetic*
 /// document — what systems the change touches, what contracts moved, what state
 /// and effects appeared — which is the thing a reviewer needs before the first
 /// hunk makes sense, and the thing a file-by-file summary never produces.
-const GUIDE: &str = "\
+///
+/// The overview's headings nest `#` title → `##` section → `###` boundary, and
+/// that is the one level the three copies have to agree on:
+/// `cli::tests::the_three_authoring_guides_state_one_overview_contract` reads
+/// all three and is the only place the decision is made.
+pub(crate) const GUIDE: &str = "\
 You are generating a guided code-review walkthrough for a human reviewer. It has two parts: \
 an overview document and an ordered set of steps through the diff.
 
@@ -582,19 +589,16 @@ mod tests {
         assert!(prompt.contains("ONLY a JSON object"));
     }
 
+    /// What the overview document must contain is asserted once for all three
+    /// copies of the guide, in
+    /// `cli::tests::the_three_authoring_guides_state_one_overview_contract`.
+    /// What is this test's own is the join: that the prompt carries the guide
+    /// at all, and asks for the key the guide spends most of its length on.
     #[test]
-    fn prompt_specifies_the_overview_document() {
+    fn prompt_carries_the_guide_and_asks_for_the_overview() {
         let (prompt, _) = build_prompt(&files(), "ctx", "").unwrap();
-        for expected in [
-            "## Impacted Systems",
-            "```mermaid",
-            "## Changes to System Boundaries",
-            "| State | Ownership, cardinality, lifecycle |",
-            "| Effect | Ownership and failure handling |",
-            "\"overview\"",
-        ] {
-            assert!(prompt.contains(expected), "prompt is missing {expected:?}");
-        }
+        assert!(prompt.contains(GUIDE), "the prompt does not carry the authoring guide");
+        assert!(prompt.contains("\"overview\""), "the JSON skeleton does not ask for an overview");
     }
 
     /// The overview rides alongside the steps, and its absence is not an error:

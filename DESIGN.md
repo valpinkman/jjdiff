@@ -200,6 +200,19 @@ top edge — that is what reads as height on a dark page.
   edge with a rule under each, and the pane read as a stack of dividers: a form, not a
   workspace. The shadow is the only thing left saying "in front of", which is one signal
   instead of three.
+- **A completed action reports itself in a card, not a floating toast.** jj's own
+  narration of the last mutation sits in the main pane beside the error and info lines,
+  as `.outcome` — same surface, radius and shadow as every other banner, because the
+  thing it describes is the pane it sits in. It carries an Undo (`jj op revert` on the
+  operation the mutation created, so it stays right even once it is no longer the tip)
+  and a Dismiss, and the next action replaces it. It is **not** timed: a card that
+  removes itself is motion the user did not cause (§7), and jj's narration is often the
+  only place a command says what it touched. Actions that are not mutations — a review
+  posted, the terminal helper installed, a review copied — report here too with no
+  operation, and then there is no Undo button rather than one that cannot work. It is a
+  sibling of the pane's other cards, so a document that owns the pane (§6) hides it with
+  them; submitting a review from the proposal view and reverting from the operation log
+  therefore narrate into a card nobody can see, which is a gap rather than a rule.
 - **The diff pane is the exception: a container of cards, not a card.** It has no
   background, no shadow and no radius; the *file* cards are the objects, and the space
   between them is the page. It was a panel-coloured slab for a while, with the file cards
@@ -242,7 +255,11 @@ top edge — that is what reads as height on a dark page.
   raised slab that *slides* between segments. The movement is what says the panes are
   neighbours on one strip; a fill that blinks on somewhere else does not.
 - **Tags:** pill-shaped, soft-filled, sentence case. Bookmarks amber, states neutral,
-  conflicts red.
+  conflicts red. **The conflict chip explains itself:** `⚠ conflicts` names the state but
+  not what it conflicts *with*, so it carries a tooltip — "This pull request has conflicts
+  with its base branch" — in the banner and in the proposal view alike. The view used to
+  have the bare chip; that was the copy that had drifted, not a decision, and the view is
+  the screen where the reader has the least other context.
 - **A file is a card inside the diff pane** — `--jj-r-md` on the header's top corners
   and the footer's bottom ones, full-bleed horizontally (no side gutter: the pane is not
   a frame, so an inset one would draw a second edge around every file). The header
@@ -259,6 +276,24 @@ top edge — that is what reads as height on a dark page.
 - **Menus** — repo switcher, file context menu, the change's More overflow — are one
   component in three places: `--jj-r-md`, `--jj-shadow-pop`, and `jj-pop`, which unfolds
   the panel downward out of the control that opened it.
+- **Overlay chrome is one file, not eight.** `ui/src/overlay.ts` holds the scrim
+  (`overlayChrome`: fixed inset, `rgb(0 0 0 / 0.22)` under a 3px blur, `z-index: 110`,
+  the `scrim-in`/`pop` keyframes and the reduced-motion opt-out every shadow root has to
+  make for itself), the panel header (`panelHeader`: `16px 20px 12px`, `--jj-text-title`
+  at 650 with `-0.02em`, the muted `.hint` beside it, the `.spacer` after it) and the
+  footer button (`panelButton`: `.btn`, sans, hairline, `--jj-r-pill`, `.primary` on
+  `--jj-primary`, `:disabled` at 0.45). An overlay composes
+  `[overlayChrome, panelHeader, panelButton, …]` with its own block last, so
+  a local rule wins on equal specificity — that is where the settings header's
+  `border-bottom`, the rebase picker's truncated command preview and the diagram view's
+  centred, darker scrim live. The reduced-motion opt-out is the one rule that must *not*
+  lose that race, and a media query carries no specificity of its own, so it is written
+  `:host .panel` rather than `.panel`: written plainly it sat before every panel's
+  `animation: pop` and the panels animated anyway. Three overlays sit off that layer on purpose: the palette
+  and the shortcuts sheet at 100, the prompt at 200, so a confirmation raised by a
+  command lands on top of whatever asked for it. The button is always `.btn`, never the
+  bare element: these shadow roots also hold list rows, toggles and swatches that are
+  buttons and are not this.
 - **Focus:** keyboard focus is always visible — 2px accent outline (controls) or
   3px soft accent ring (`--jj-focus-ring`) on text fields. `outline: none` without a
   replacement is a defect.
@@ -320,8 +355,12 @@ top edge — that is what reads as height on a dark page.
   halfway down the window, and the banners still on screen were context for a diff nobody
   was looking at. A view claims `flex: 1; min-height: 0` and its siblings are hidden by one
   `main.showing-* > *:not(.the-view)` rule. The exception is anything that is the only way
-  *out* of the view, or that describes the document rather than the code — guided review's
-  nav bar and its stale warning both stay.
+  *out* of the view, that describes the document rather than the code, or that reports what
+  the view just did — guided review's nav bar and its stale warning stay, and so do the
+  outcome card and the status line. That last one is not symmetry: submitting a review is
+  reachable only from the proposal view and undo, restore and revert only from the operation
+  log, so hiding them left a *failed* submission saying nothing while the composer emptied,
+  which reads as success.
 - **Never hide options behind a hover.** The log scope was a deck of pills that
   collapsed to single initials and named themselves one at a time; five of six choices
   were invisible and the only way to learn them was to sweep the pointer across the row.

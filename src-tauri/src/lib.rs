@@ -233,6 +233,33 @@ fn repo_handle(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Re
     Ok(entry.repo.as_ref().expect("repo present").clone())
 }
 
+/// The repo half of every review-state key: viewed flags, reviewed commits,
+/// walkthroughs (`ReviewStore`) and comments (`CommentStore`) are all stored
+/// under the string form of the window's repo root.
+///
+/// One function because the format is a stored contract — a site that spelled
+/// it differently, by canonicalising the path or by using the launch path
+/// (which may be a subdirectory `Repo::discover` resolves via `jj root`), would
+/// key that user's review state under a name nothing else reads, and their
+/// notes and viewed flags would simply be gone.
+///
+/// It reads the root off the repo already bound to the window, so a command
+/// that needs nothing else runs no subprocess; only a window whose repo has not
+/// been discovered yet falls through to [`repo_handle`].
+fn repo_key(state: &tauri::State<'_, AppState>, window: &tauri::Window) -> Result<String, String> {
+    let bound = state
+        .windows
+        .lock()
+        .expect("windows lock")
+        .get(window.label())
+        .and_then(|entry| entry.repo.as_ref())
+        .map(|repo| repo.root().to_string_lossy().into_owned());
+    match bound {
+        Some(key) => Ok(key),
+        None => Ok(repo_handle(state, window)?.root().to_string_lossy().into_owned()),
+    }
+}
+
 /// Run blocking jj/fs work off the main thread.
 async fn blocking<T: Send + 'static>(
     task: impl FnOnce() -> Result<T, String> + Send + 'static,
@@ -329,10 +356,11 @@ async fn repo_state(
     .await
 }
 
-/// Shared by `diff` and walkthrough generation. `revset: None` = live working copy
+/// Shared by `diff`, walkthrough generation and the headless commands in `cli`.
+/// `revset: None` = live working copy
 /// (fs-vs-`@-` through gix — no snapshot, no operation written); otherwise parses
 /// `jj diff --git` output.
-fn compute_diff(
+pub(crate) fn compute_diff(
     repo: &Repo,
     revset: Option<&str>,
     ignore_whitespace: bool,
@@ -375,7 +403,7 @@ async fn interdiff_since_reviewed(
     ignore_whitespace: bool,
 ) -> Result<Interdiff, String> {
     let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     let from = state
         .review
         .lock()
@@ -742,15 +770,6 @@ fn pull_request_url(output: &str) -> Option<String> {
         })
 }
 
-#[tauri::command]
-async fn remotes(
-    window: tauri::Window,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<String>, String> {
-    let repo = repo_handle(&state, &window)?;
-    blocking(move || vcs(repo.remotes())).await
-}
-
 // -- Operation log / undo --
 
 #[tauri::command]
@@ -825,8 +844,7 @@ fn review_status(
     state: tauri::State<'_, AppState>,
     change_id: String,
 ) -> Result<ReviewStatus, String> {
-    let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     let review = state.review.lock().expect("review lock");
     Ok(ReviewStatus {
         viewed: review.viewed(&repo_key, &change_id),
@@ -842,8 +860,7 @@ fn set_viewed(
     path: String,
     viewed: bool,
 ) -> Result<(), String> {
-    let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     state
         .review
         .lock()
@@ -865,7 +882,7 @@ async fn import_walkthrough(
     path: String,
 ) -> Result<walkthrough::Walkthrough, String> {
     let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     let imported = blocking(move || {
         let raw = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {path}: {error}"))?;
@@ -983,7 +1000,7 @@ async fn get_walkthrough(
     ignore_whitespace: bool,
 ) -> Result<WalkthroughStatus, String> {
     let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     let stored = state.review.lock().expect("review lock").walkthrough(&repo_key, &change_id);
     let Some(stored) = stored else {
         return Ok(WalkthroughStatus { walkthrough: None, stale: false });
@@ -1007,16 +1024,11 @@ async fn generate_walkthrough(
     context: String,
 ) -> Result<walkthrough::Walkthrough, String> {
     let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     let cfg = config::load().walkthrough;
     let generated = blocking(move || {
         let files = compute_diff(&repo, revset.as_deref(), ignore_whitespace)?;
-        let selected = walkthrough::Backend::parse(&cfg.backend);
-        let model = cfg.model_for(selected);
-        let backend = walkthrough::CliBackend {
-            backend: selected,
-            model: (!model.is_empty()).then_some(model),
-        };
+        let backend = cfg.cli_backend();
         walkthrough::generate(&backend, &files, &context, &cfg.prompt)
     })
     .await?;
@@ -1062,12 +1074,7 @@ async fn generate_description(
             .take(5)
             .map(|change| change.description)
             .collect();
-        let selected = walkthrough::Backend::parse(&cfg.walkthrough.backend);
-        let model = cfg.walkthrough.model_for(selected);
-        let backend = walkthrough::CliBackend {
-            backend: selected,
-            model: (!model.is_empty()).then_some(model),
-        };
+        let backend = cfg.walkthrough.cli_backend();
         describe::generate(&backend, &files, &recent, &cfg.describe.prompt)
     })
     .await
@@ -1255,7 +1262,7 @@ fn forge_client(repo: &Repo) -> Result<forge::Client, String> {
         format!("jjdiff can't tell what forge `{name}` ({url}) is — only GitHub has a \
                  CLI it knows how to drive")
     })?;
-    Ok(forge::Client { kind, root: repo.root().to_path_buf() })
+    Ok(forge::Client { kind, root: repo.root().to_path_buf(), remote: name.clone() })
 }
 
 #[derive(Serialize)]
@@ -1359,15 +1366,8 @@ async fn open_pull_request(
     let opened = blocking(move || {
         let client = forge_client(&repo)?;
         let pull_request = client.pull_request(number)?;
-        let remotes = vcs(repo.remote_urls())?;
-        let remote = remotes
-            .iter()
-            .find(|(name, _)| name == "origin")
-            .or_else(|| remotes.first())
-            .map(|(name, _)| name.clone())
-            .ok_or_else(|| "this repository has no git remote".to_string())?;
         let bookmark = vcs(repo.fetch_forge_ref(
-            &remote,
+            &client.remote,
             &client.kind.head_ref(number),
             &client.kind.local_bookmark(number),
         ))?;
@@ -1375,7 +1375,7 @@ async fn open_pull_request(
         // branch has to be local for the review revset to resolve. Not fatal:
         // an already-current repo makes this a no-op, and an offline one still
         // gets a review if it happens to have the commit.
-        if let Err(error) = repo.git_fetch_branch(&remote, &pull_request.base) {
+        if let Err(error) = repo.git_fetch_branch(&client.remote, &pull_request.base) {
             eprintln!("jjdiff: could not refresh {}: {error}", pull_request.base);
         }
         // Diff against the forge's own merge base rather than `base..head`,
@@ -1431,8 +1431,7 @@ fn mark_reviewed(
     change_id: String,
     commit_id: String,
 ) -> Result<(), String> {
-    let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     state
         .review
         .lock()
@@ -1461,8 +1460,7 @@ fn add_comment(
     body: String,
     parent_id: Option<i64>,
 ) -> Result<Comment, String> {
-    let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     state.comments.lock().expect("comments lock").add(NewComment {
         repo: repo_key,
         change_id,
@@ -1485,8 +1483,7 @@ fn list_comments(
     state: tauri::State<'_, AppState>,
     change_id: String,
 ) -> Result<Vec<Comment>, String> {
-    let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     state.comments.lock().expect("comments lock").list(&repo_key, &change_id)
 }
 
@@ -1537,7 +1534,7 @@ async fn refresh_comment_anchors(
     ignore_whitespace: bool,
 ) -> Result<usize, String> {
     let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     // Compute the diff off the main thread, then run the re-anchoring (an
     // in-memory SQLite query) back on the caller. The comment store is not
     // `Send` through `blocking` because it borrows `state`.
@@ -1556,8 +1553,7 @@ fn export_review_markdown(
     state: tauri::State<'_, AppState>,
     change_id: String,
 ) -> Result<String, String> {
-    let repo = repo_handle(&state, &window)?;
-    let repo_key = repo.root().to_string_lossy().into_owned();
+    let repo_key = repo_key(&state, &window)?;
     state
         .comments
         .lock()
@@ -1691,7 +1687,6 @@ pub fn run(args: Args) {
             delete_bookmark,
             git_fetch,
             git_push,
-            remotes,
             operation_log,
             operation_diff,
             undo,

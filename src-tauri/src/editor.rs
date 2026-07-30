@@ -148,7 +148,11 @@ mod tests {
     #[test]
     fn empty_template_names_the_config_key() {
         let error = build_argv("", &PathBuf::from("/a"), None, &PathBuf::from("/repo")).unwrap_err();
-        assert!(error.contains("[editor]"), "error should name the config section: {error}");
+        assert!(
+            error.starts_with("no editor configured"),
+            "ui/src/app.ts matches this exact prefix to offer the configure prompt \
+             instead of showing a raw config error: {error}"
+        );
         assert!(build_argv("   ", &PathBuf::from("/a"), None, &PathBuf::from("/repo")).is_err());
     }
 }

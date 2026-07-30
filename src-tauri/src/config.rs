@@ -62,6 +62,19 @@ pub struct WalkthroughConfig {
 }
 
 impl WalkthroughConfig {
+    /// The agent CLI this config selects, ready to run. One accessor rather
+    /// than the same three lines at each call site: describe and walkthrough
+    /// both read `[walkthrough] backend`, so giving `[describe]` its own key
+    /// later is a change here and nowhere else.
+    pub fn cli_backend(&self) -> crate::walkthrough::CliBackend {
+        let selected = crate::walkthrough::Backend::parse(&self.backend);
+        let model = self.model_for(selected);
+        crate::walkthrough::CliBackend {
+            backend: selected,
+            model: (!model.is_empty()).then_some(model),
+        }
+    }
+
     /// Model override for whichever backend is selected.
     pub fn model_for(&self, backend: crate::walkthrough::Backend) -> String {
         use crate::walkthrough::Backend;

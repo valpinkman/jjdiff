@@ -147,8 +147,12 @@ pub struct Summary {
 }
 
 /// What a submitted review says.
+///
+/// camelCase, not lowercase: the spelling here is the wire format `ui/src/ipc.ts`
+/// declares, and `lowercase` would run `RequestChanges` together into
+/// `requestchanges` — a verdict the UI could never submit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum Verdict {
     Approve,
     RequestChanges,
@@ -201,6 +205,9 @@ pub struct Client {
     /// Repo root; every CLI call runs here so the tool resolves the same repo
     /// jjdiff has open, regardless of the process's cwd.
     pub root: std::path::PathBuf,
+    /// The git remote this client was built from, so a fetch goes to the same
+    /// place the client queried rather than re-running the selection.
+    pub remote: String,
 }
 
 impl Client {
@@ -785,6 +792,17 @@ mod tests {
         // Gitea and friends have no CLI jjdiff knows how to drive.
         assert_eq!(Kind::from_remote("git@tangled.org:valpinkman/jjdiff"), None);
         assert_eq!(Kind::from_remote("https://git.sr.ht/~user/repo"), None);
+    }
+
+    #[test]
+    fn verdicts_parse_the_spellings_the_frontend_sends() {
+        // The three literals of `ui/src/ipc.ts`'s Verdict union, verbatim.
+        assert_eq!(serde_json::from_str::<Verdict>("\"approve\"").unwrap(), Verdict::Approve);
+        assert_eq!(
+            serde_json::from_str::<Verdict>("\"requestChanges\"").unwrap(),
+            Verdict::RequestChanges
+        );
+        assert_eq!(serde_json::from_str::<Verdict>("\"comment\"").unwrap(), Verdict::Comment);
     }
 
     #[test]

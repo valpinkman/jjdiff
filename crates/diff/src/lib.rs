@@ -135,8 +135,40 @@ pub enum LineKind {
 pub enum DiffError {
     #[error("malformed patch at line {line}: {message}")]
     Malformed { line: usize, message: String },
-    #[error("git object access failed: {0}")]
-    Gix(String),
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
+    /// A gix call that failed, named by the path it was working on. The path and
+    /// the operation are the whole point: a bare "git object access failed" on a
+    /// working-copy diff says nothing about which of a repo's files could not be
+    /// read, which is the one thing the user can act on.
+    #[error("{operation} failed for {path}: {source}")]
+    Gix {
+        path: String,
+        operation: &'static str,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("{operation} failed for {path}: {source}")]
+    Io {
+        path: String,
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl DiffError {
+    pub(crate) fn gix(
+        path: impl Into<String>,
+        operation: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> DiffError {
+        DiffError::Gix { path: path.into(), operation, source: Box::new(source) }
+    }
+
+    pub(crate) fn io(
+        path: impl Into<String>,
+        operation: &'static str,
+        source: std::io::Error,
+    ) -> DiffError {
+        DiffError::Io { path: path.into(), operation, source }
+    }
 }

@@ -78,8 +78,18 @@ function scrub(node: Element) {
  * does nothing and every outbound link has to go through `open_url`.
  */
 export async function renderMarkdown(text: string): Promise<TemplateResult> {
+  return html`${unsafeHTML(await renderMarkdownToHtml(text))}`;
+}
+
+/**
+ * The same thing as markup, for the caller that needs a string rather than a
+ * template: the `.md` file preview hands its HTML to a diff row. It parsed with
+ * `marked` directly until it went through here — a `.md` in a fetched proposal
+ * is a stranger's markdown, and the scrubber is what makes it safe to inject.
+ */
+export async function renderMarkdownToHtml(text: string): Promise<string> {
   const { marked } = await import('marked');
-  return html`${unsafeHTML(await toHtml(marked, text))}`;
+  return toHtml(marked, text);
 }
 
 async function toHtml(marked: typeof import('marked').marked, text: string): Promise<string> {

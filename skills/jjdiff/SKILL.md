@@ -12,8 +12,8 @@ walkthrough than jjdiff regenerating one from the diff alone.
 A walkthrough has two parts: an **overview document** the reviewer reads before any code,
 and an ordered set of **steps** through the diff.
 
-> **Need the full authoring guide?** Run `jjdiff --walkthrough-guide` — it prints this
-> document to stdout, so you can fetch it without having the skill installed.
+> **Need the full authoring guide?** Run `jjdiff --walkthrough-guide` — it prints the same
+> guide to stdout, so you can fetch it without having the skill installed.
 
 ## Steps
 
@@ -24,7 +24,10 @@ and an ordered set of **steps** through the diff.
    jjdiff --print-hunks <revset>   # a specific change
    ```
 
-   Each hunk is printed as `<path>#<index>` followed by its lines.
+   Each hunk is printed as `<path>#<index>` followed by its lines. The index is positional,
+   and `--print-hunks` reads the user's `[ui] ignore-whitespace` setting so it numbers hunks
+   exactly as the app will when it resolves your ids. Do not carry ids over from a dump taken
+   against another repo or another setting; take a fresh one.
 
 2. Write JSON to a temp file matching exactly:
 
@@ -44,7 +47,7 @@ and an ordered set of **steps** through the diff.
    jjdiff --walkthrough-file /tmp/walkthrough.json [revset]
    ```
 
-## The overview
+# Part 1 — the overview
 
 `overview` is a markdown document describing the change as a whole. It is a synthetic
 description, not a file-by-file summary of the diff, and it never prescribes an
@@ -59,14 +62,14 @@ fill it.
 Open with a `#` heading naming the change, one short paragraph stating its purpose, the
 marker legend line, then these four sections in this order.
 
-### Impacted Systems
+## Impacted Systems
 
 A ` ```mermaid ` fence holding a `flowchart LR` of the concrete processes, services,
 binaries, crates, modules or applications that a changed boundary connects. Quote every
 node label and every edge label. Label an edge `existing` when it is unchanged and appears
-only as context.
+only as context. Keep it to the systems the change actually reaches.
 
-### Changes to System Boundaries
+## Changes to System Boundaries
 
 One `###` section per changed boundary, headed
 `### <marker> <left system> ⇄ <right system> — <what crosses>`. A boundary is where two
@@ -85,11 +88,13 @@ boundary as changed merely because new routing now reaches it. Under each:
   almost in full: inputs, outputs, variants, optional fields, collections and errors.
   Prefix an added declaration with `+` and a removed one with `-`; inside an otherwise
   unchanged shape, prefix only the added or removed fields. Leave necessary unchanged
-  context unprefixed. Write them in the language of the code being changed.
+  context unprefixed. Write them in the language of the code being changed —
+  Rust items for Rust, TypeScript types for TypeScript, the equivalent shape and
+  operations for anything else.
 - Any behaviour the shapes do not state and a reviewer would have to infer: error mapping,
   what a failure leaves behind, what is deliberately not forwarded.
 
-### Changes to Mutable State
+## Changes to Mutable State
 
 A markdown table headed `| State | Ownership, cardinality, lifecycle |`, one row per added,
 modified or deleted piece of held data. Put the major system on the first line of the right
@@ -98,7 +103,7 @@ on the second. Cardinality describes the data relationship itself, not the numbe
 copies. Record held data only: not function bags, clients, handles or other resources that
 own no data, and not existing state merely because new code reads it.
 
-### Changes to Effects
+## Changes to Effects
 
 A markdown table headed `| Effect | Ownership and failure handling |`, one row per changed
 entry point that makes the system touch the outside world: filesystem, persistence,
@@ -108,10 +113,13 @@ name the existing downstream work rather than calling that work changed. Do not 
 ordinary query, synchronization or cache work — record its state instead. Same two-line
 ownership convention, and keep failure handling to the behaviour that changed.
 
-## The steps
+# Part 2 — the steps
 
-Order the steps so understanding builds: core change first, then its callers, then
-tests/config/mechanical fallout. Group related hunks into one step.
+Order the steps so a reviewer builds understanding incrementally: start with the core change
+or data-model shift, then the logic that uses it, then tests/config/mechanical fallout. Group
+related hunks into one step. Titles are short noun phrases; narratives are 1-4 sentences
+explaining what the hunks do and why they matter, written for a colleague seeing the diff for
+the first time.
 
 Rules jjdiff enforces on import — violating them silently loses content:
 

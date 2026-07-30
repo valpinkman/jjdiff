@@ -214,8 +214,13 @@ pub fn version_line() -> String {
 }
 
 /// The authoring guide agents fetch via `jjdiff --walkthrough-guide`. Mirrors
-/// [`skills/jjdiff/SKILL.md`](../../skills/jjdiff/SKILL.md) so an agent that
-/// does not have the skill installed can still author a walkthrough.
+/// [`skills/jjdiff/SKILL.md`](../../skills/jjdiff/SKILL.md) and
+/// [`crate::walkthrough::GUIDE`] so an agent that does not have the skill
+/// installed, and one whose walkthrough jjdiff generated, produce the same
+/// artefact. This copy is a manual for driving the CLI; the other is a prompt
+/// to a model that already holds the diff — they read differently on purpose,
+/// and what they must state identically is pinned by
+/// [`tests::the_three_authoring_guides_state_one_overview_contract`].
 pub const WALKTHROUGH_GUIDE: &str = "\
 # jjdiff walkthrough authoring guide
 
@@ -247,7 +252,7 @@ any code, and an ordered set of *steps* through the diff.
 
        jjdiff --walkthrough-file /tmp/walkthrough.json [revset]
 
-## The overview
+# Part 1 — the overview
 
 `overview` is a markdown document describing the change as a whole. It is a \
 synthetic description, not a file-by-file summary of the diff, and it never \
@@ -262,14 +267,15 @@ entries to fill it.
 Open with a `#` heading naming the change, one short paragraph stating its \
 purpose, the marker legend line, then these four sections in this order.
 
-### Impacted Systems
+## Impacted Systems
 
 A ```mermaid fence holding a `flowchart LR` of the concrete processes, \
 services, binaries, crates, modules or applications that a changed boundary \
 connects. Quote every node label and every edge label. Label an edge \
-`existing` when it is unchanged and appears only as context.
+`existing` when it is unchanged and appears only as context. Keep it to the \
+systems the change actually reaches.
 
-### Changes to System Boundaries
+## Changes to System Boundaries
 
 One `###` section per changed boundary, headed
 `### <marker> <left system> ⇄ <right system> — <what crosses>`. A boundary is \
@@ -290,12 +296,13 @@ changed merely because new routing now reaches it. Under each:
   collections and errors. Prefix an added declaration with `+` and a removed
   one with `-`; inside an otherwise unchanged shape, prefix only the added or
   removed fields. Leave necessary unchanged context unprefixed. Write them in
-  the language of the code being changed.
+  the language of the code being changed — Rust items for Rust, TypeScript
+  types for TypeScript, the equivalent shape and operations for anything else.
 - Any behaviour the shapes do not state and a reviewer would have to infer:
   error mapping, what a failure leaves behind, what is deliberately not
   forwarded.
 
-### Changes to Mutable State
+## Changes to Mutable State
 
 A markdown table headed `| State | Ownership, cardinality, lifecycle |`, one \
 row per added, modified or deleted piece of held data. Put the major system on \
@@ -305,7 +312,7 @@ describes the data relationship itself, not the number of copies. Record held \
 data only: not function bags, clients, handles or other resources that own no \
 data, and not existing state merely because new code reads it.
 
-### Changes to Effects
+## Changes to Effects
 
 A markdown table headed `| Effect | Ownership and failure handling |`, one row \
 per changed entry point that makes the system touch the outside world: \
@@ -316,7 +323,7 @@ downstream work rather than calling that work changed. Do not record ordinary \
 query, synchronization or cache work — record its state instead. Same two-line \
 ownership convention, and keep failure handling to the behaviour that changed.
 
-## The steps
+# Part 2 — the steps
 
 Order the steps so a reviewer builds understanding incrementally: start with \
 the core change or data-model shift, then the logic that uses it, then \
@@ -359,14 +366,14 @@ pub fn run_headless(headless: &Headless, args: &Args) -> Result<(), String> {
             Ok(())
         }
         Headless::Diff(revset) => {
-            let files = diff_files(args, revset.as_deref())?;
+            let files = diff_files(args, revset.as_deref(), ignore_whitespace())?;
             let json = serde_json::to_string_pretty(&files)
                 .map_err(|e| format!("failed to serialize diff: {e}"))?;
             println!("{json}");
             Ok(())
         }
         Headless::PrintHunks(revset) => {
-            let files = diff_files(args, revset.as_deref())?;
+            let files = diff_files(args, revset.as_deref(), ignore_whitespace())?;
             print_hunks(&files);
             Ok(())
         }
@@ -378,28 +385,29 @@ pub fn run_headless(headless: &Headless, args: &Args) -> Result<(), String> {
     }
 }
 
-/// Compute the diff for a headless command. `None` = live working copy
-/// (fs-vs-`@-` via gix — no snapshot, no op written); otherwise parses
-/// `jj diff --git` output for the revset.
-fn diff_files(args: &Args, revset: Option<&str>) -> Result<Vec<FilePatch>, String> {
+/// The user's `[ui] ignore-whitespace`, which the headless diff has to honour
+/// rather than assume: hunk ids are positional, `--ignore-all-space` suppresses
+/// whitespace-only hunks and renumbers every later hunk in that file, and
+/// `import_walkthrough` resolves the ids an agent wrote against a diff computed
+/// with the setting on. Reading the config here rather than taking a flag keeps
+/// the two numberings the same by construction — `config::load` falls back to
+/// defaults on an unreadable file, so it adds no way for this to fail.
+fn ignore_whitespace() -> bool {
+    crate::config::load().ui.ignore_whitespace
+}
+
+/// Compute the diff for a headless command, through the same `compute_diff` the
+/// app uses so the two producers cannot drift — a headless copy of that match
+/// went its own way on whitespace, and hunk ids are positional.
+fn diff_files(
+    args: &Args,
+    revset: Option<&str>,
+    ignore_whitespace: bool,
+) -> Result<Vec<FilePatch>, String> {
     let cwd = args.repo_or_cwd();
     let repo = Repo::discover(&cwd).map_err(|e| e.to_string())?;
     repo.check_version().map_err(|e| e.to_string())?;
-    match revset {
-        Some(revset) => {
-            let patch = repo.patch_for(revset, false).map_err(|e| e.to_string())?;
-            jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())
-        }
-        None => {
-            let base = repo.working_copy_parent().map_err(|e| e.to_string())?;
-            jjdiff_diff::worktree::diff_worktree(
-                repo.root(),
-                base.as_deref(),
-                jjdiff_diff::worktree::WorktreeDiffOptions::default(),
-            )
-            .map_err(|e| e.to_string())
-        }
-    }
+    crate::compute_diff(&repo, revset, ignore_whitespace)
 }
 
 fn print_hunks(files: &[FilePatch]) {
@@ -734,19 +742,58 @@ mod tests {
 
     #[test]
     /// An agent that fetches the guide instead of installing the skill has to
-    /// be able to author *both* halves from it — the JSON shape, the rule that
-    /// silently eats content if broken, and the overview's sections.
+    /// be able to author *both* halves from it — the JSON shape and the rule
+    /// that silently eats content if broken.
     fn walkthrough_guide_mentions_hunk_ids_and_exclusivity() {
         assert!(WALKTHROUGH_GUIDE.contains("hunkIds"));
         assert!(WALKTHROUGH_GUIDE.contains("All hunks of one file belong to one step"));
+        assert!(WALKTHROUGH_GUIDE.contains("\"overview\""));
+    }
+
+    /// The overview contract is written out three times — as the prompt jjdiff
+    /// sends an agent, as this guide, and as the skill — and CLAUDE.md makes
+    /// keeping them in step an invariant. They are deliberately different
+    /// documents, so what is asserted is only what an agent's output is judged
+    /// against, and it is asserted over all three at once: with one test per
+    /// copy the two that existed pinned `##` and `###` for the same section and
+    /// both passed. `include_str!` reaches out of the crate on purpose — the
+    /// skill is the third copy, and a test that skipped it would police two of
+    /// three.
+    #[test]
+    fn the_three_authoring_guides_state_one_overview_contract() {
+        const SKILL: &str = include_str!("../../skills/jjdiff/SKILL.md");
+        let sources = [
+            ("walkthrough::GUIDE", crate::walkthrough::GUIDE),
+            ("cli::WALKTHROUGH_GUIDE", WALKTHROUGH_GUIDE),
+            ("skills/jjdiff/SKILL.md", SKILL),
+        ];
+
+        // Anchored on the newline because `### Impacted Systems` *contains*
+        // `## Impacted Systems`, and the level is the thing being pinned: the
+        // overview nests `#` title → `##` section → `###` boundary, so a section
+        // written at `###` would sit alongside the boundaries under it.
         for section in [
-            "\"overview\"",
-            "### Impacted Systems",
+            "Impacted Systems",
+            "Changes to System Boundaries",
+            "Changes to Mutable State",
+            "Changes to Effects",
+        ] {
+            let heading = format!("\n## {section}\n");
+            for (name, source) in sources {
+                assert!(source.contains(&heading), "{name} does not head {section:?} with `##`");
+            }
+        }
+
+        for rule in [
             "```mermaid",
             "| State | Ownership, cardinality, lifecycle |",
             "| Effect | Ownership and failure handling |",
+            "Keep it to the systems the change actually reaches",
+            "Rust items for Rust",
         ] {
-            assert!(WALKTHROUGH_GUIDE.contains(section), "guide is missing {section:?}");
+            for (name, source) in sources {
+                assert!(source.contains(rule), "{name} is missing {rule:?}");
+            }
         }
     }
 

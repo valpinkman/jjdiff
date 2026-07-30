@@ -112,6 +112,77 @@ fn a_selected_hunk_becomes_its_own_change() {
     );
 }
 
+/// The same split against a file with CRLF endings. The plan carries no `\r` —
+/// the diff it was built from was parsed with `str::lines`, which drops it —
+/// while the directories jj hands the tool hold the file's bytes as they are,
+/// so this is the case where the two only line up if the arithmetic normalises
+/// them and writes the terminators back.
+#[test]
+fn a_crlf_file_keeps_its_terminators_through_a_split() {
+    let _guard = JJ_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !jj_available() {
+        eprintln!("skipping: jj not installed");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    jj(root, &["git", "init", "--colocate", "."]);
+    std::fs::write(root.join("f.txt"), "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n").unwrap();
+    jj(root, &["commit", "-m", "base"]);
+    std::fs::write(root.join("f.txt"), "ONE\r\ntwo\r\nthree\r\nfour\r\nFIVE\r\n").unwrap();
+    jj(root, &["describe", "-m", "both edits"]);
+
+    // Byte for byte the plan of the first test: no producer puts a `\r` in a
+    // plan line, whatever the file's endings are.
+    let plan = serde_json::json!({
+        "files": [{
+            "path": "f.txt",
+            "oldPath": null,
+            "select": "hunks",
+            "hunks": [
+                { "selected": true, "oldStart": 1, "oldLines": 2, "lines": [
+                    { "kind": "removed", "text": "one" },
+                    { "kind": "added", "text": "ONE" },
+                    { "kind": "context", "text": "two" }
+                ]},
+                { "selected": false, "oldStart": 4, "oldLines": 2, "lines": [
+                    { "kind": "context", "text": "four" },
+                    { "kind": "removed", "text": "five" },
+                    { "kind": "added", "text": "FIVE" }
+                ]}
+            ]
+        }]
+    });
+    let plan_path = root.join("plan.json");
+    std::fs::write(&plan_path, plan.to_string()).unwrap();
+
+    let binary = env!("CARGO_BIN_EXE_jjdiff-app");
+    let program = format!("merge-tools.jjdiff-split.program=\"{binary}\"");
+    let edit_args = format!(
+        "merge-tools.jjdiff-split.edit-args=[\"--apply-split-plan\",\"{}\",\"$left\",\"$right\"]",
+        plan_path.display()
+    );
+    jj(
+        root,
+        &[
+            "--config", &program,
+            "--config", &edit_args,
+            "split", "-r", "@", "--tool", "jjdiff-split", "-m", "first edit only",
+        ],
+    );
+
+    // The `\r` in the diff's own output is the file's: a split that rewrote the
+    // terminators would show every line as changed instead of one.
+    let selected = diff(root, "@-");
+    assert!(selected.contains("+ONE\r\n"), "the selected hunk moved out, CRLF intact: {selected:?}");
+    assert!(!selected.contains("+FIVE"), "the unselected one did not: {selected:?}");
+    assert!(!selected.contains("-two"), "and no line nobody touched moved with it: {selected:?}");
+
+    let remainder = diff(root, "@");
+    assert!(remainder.contains("+FIVE\r\n"), "the remainder keeps the rest: {remainder:?}");
+    assert!(!remainder.contains("+ONE"), "and not the part that left: {remainder:?}");
+}
+
 /// A plan that no longer describes the change must take the split down with it.
 /// This is the failure that matters: the alternative to aborting is patching
 /// someone's commit at offsets that mean nothing.

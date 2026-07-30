@@ -10,7 +10,7 @@ import type { RebaseMode } from './rebase-picker.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
-import { renderMarkdown, renderMarkdownWithDiagrams } from './markdown.js';
+import { renderMarkdown, renderMarkdownToHtml, renderMarkdownWithDiagrams } from './markdown.js';
 import type { SettingChange } from './settings-view.js';
 import './orbs.js';
 import {
@@ -24,12 +24,12 @@ import {
   getInterdiff,
   getOperationDiff,
   getOperationLog,
-  getRemotes,
   gitFetch,
   gitPush,
   rebaseChange,
   restoreOperation,
   restorePaths,
+  revertOperation,
   setBookmark,
   splitHunks,
   splitPaths,
@@ -99,6 +99,7 @@ import {
   type Walkthrough,
 } from './ipc.js';
 import { folderIcon } from './file-icons.js';
+import { prMetaItems, proposalState, type PrMetaContext } from './pr-templates.js';
 import type { FileMenuRequest } from './file-tree.js';
 import {
   iconAbsorb,
@@ -180,6 +181,168 @@ function activityKey(entry: { createdAt: string; url: string }, index: number): 
  * straight back finds it.
  */
 const PROPOSAL_REFRESH_MS = 15_000;
+
+/**
+ * Every field on the app that belongs to a *repository* rather than to the app.
+ *
+ * The list is a type so that `freshRepoScope` can be checked against it: a name
+ * here with no value there is a compile error, and a value there with no name
+ * here is one too. What it replaces is 47 straight-line assignments under a doc
+ * comment claiming completeness — against which a newly added per-repo field
+ * compiled, rendered and typechecked whether or not anything ever cleared it,
+ * and three of them did not (CLAUDE.md, "A window that changes repo resets
+ * through `App.resetRepoState`"). It does not catch a field added to neither,
+ * so the rule when adding per-repo state is still to name it here.
+ *
+ * The plain fields are in it as well as the `@state` ones. They are the easiest
+ * to miss — nothing renders from them, so a stale `branchProposals` or
+ * `prDetailsFor` shows up as an answer about the previous repo rather than as
+ * anything on screen.
+ *
+ * Deliberately absent: `busy`, because clearing it mid-flight re-enables the
+ * toolbar under a running mutation; `detailCollapsed`, which is sticky on
+ * purpose; the flags a `finally` owns (`versionsLoading`, `generating`,
+ * `describing`); and everything that is about the app rather than the repo —
+ * theme, layout, wrap, whitespace, sidebar geometry, keybindings.
+ */
+type RepoScoped =
+  | 'selected'
+  | 'seededFor'
+  | 'description'
+  | 'editingDescription'
+  | 'files'
+  | 'focusPath'
+  | 'visibleFile'
+  | 'fileLines'
+  | 'expansions'
+  | 'markdownPreviews'
+  | 'splitSelection'
+  | 'splitShape'
+  | 'viewedPaths'
+  | 'reviewedCommit'
+  | 'conflicts'
+  | 'conflictAt'
+  | 'comments'
+  | 'allComments'
+  | 'reviewDraft'
+  | 'walkthrough'
+  | 'walkStale'
+  | 'walkActive'
+  | 'walkStep'
+  | 'stackReview'
+  | 'diagram'
+  | 'rebasing'
+  | 'proposalPicker'
+  | 'fileMenu'
+  | 'viewMode'
+  | 'versionPair'
+  | 'versions'
+  | 'versionsOpen'
+  | 'operations'
+  | 'opDiff'
+  | 'opCompareFrom'
+  | 'forge'
+  | 'pullRequest'
+  | 'prRevset'
+  | 'proposalsByBranch'
+  | 'branchProposals'
+  | 'proposalIndexAt'
+  | 'prBody'
+  | 'prActivity'
+  | 'prActivityBodies'
+  | 'prDetailsFor'
+  | 'graphRevset'
+  | 'revsetSearch'
+  | 'sidebarTab'
+  | 'error'
+  | 'actionError'
+  | 'actionInfo'
+  | 'lastOutcome';
+
+/**
+ * What every field in `RepoScoped` looks like on a repository nobody has looked
+ * at yet.
+ *
+ * A function and not a shared constant: half of these are a `new Map()` or a
+ * `new Set()`, and a literal would hand every reset the same instance — two
+ * windows switching repos would then be writing into one collection.
+ *
+ * `Pick<App, RepoScoped>` would be the stronger return type, since it is the
+ * fields' own declared types rather than just their names, but `keyof` omits
+ * `private` members and every one of these is private.
+ */
+function freshRepoScope() {
+  return {
+    selected: null,
+    seededFor: null,
+    description: '',
+    editingDescription: false,
+
+    files: [],
+    focusPath: null,
+    visibleFile: null,
+    fileLines: new Map(),
+    expansions: new Map(),
+    markdownPreviews: new Map(),
+    splitSelection: null,
+    splitShape: '',
+
+    viewedPaths: new Set(),
+    reviewedCommit: null,
+    conflicts: new Map(),
+    conflictAt: null,
+    comments: new Map(),
+    allComments: [],
+    reviewDraft: null,
+
+    walkthrough: null,
+    walkStale: false,
+    walkActive: false,
+    walkStep: -1,
+    stackReview: null,
+    diagram: null,
+
+    // An overlay opened over the old repo still refers to it: the rebase picker
+    // holds one of its changes — and a second instance reaches this reset with
+    // no user click, so confirming would rebase by an id the new repo does not
+    // have — the proposal list holds entries closed over its PR numbers, and the
+    // file menu names a file that is no longer on screen.
+    rebasing: null,
+    proposalPicker: null,
+    fileMenu: null,
+
+    viewMode: 'full' as ViewMode,
+    versionPair: null,
+    versions: [],
+    versionsOpen: false,
+    operations: [],
+    opDiff: null,
+    opCompareFrom: null,
+
+    // The forge is re-discovered, not assumed: the next repo may be on another
+    // host or on none, and an inherited `forge` offers actions that cannot work.
+    forge: null,
+    pullRequest: null,
+    prRevset: null,
+    proposalsByBranch: new Map(),
+    branchProposals: new Map(),
+    proposalIndexAt: 0,
+    prBody: null,
+    prActivity: [],
+    prActivityBodies: new Map(),
+    prDetailsFor: null,
+
+    // A revset scoped to the old repo would name changes that do not exist here.
+    graphRevset: null,
+    revsetSearch: '',
+
+    sidebarTab: 'stack' as SidebarTab,
+    error: null,
+    actionError: null,
+    actionInfo: null,
+    lastOutcome: null,
+  } satisfies Record<RepoScoped, unknown>;
+}
 
 @customElement('jj-app')
 export class App extends LitElement {
@@ -563,71 +726,14 @@ export class App extends LitElement {
    *
    * Cleared up front rather than left for each loader to overwrite, because a
    * loader that is slow or fails leaves the previous value in place, and
-   * stale-but-plausible is the whole failure this guards against. What stays is
-   * what is about the app rather than the repo: theme, layout, wrap, whitespace,
-   * sidebar geometry, keybindings.
+   * stale-but-plausible is the whole failure this guards against. `RepoScoped`
+   * is what gets cleared, and says what deliberately does not.
    */
   private resetRepoState() {
-    this.selected = null;
-    this.seededFor = null;
-    this.description = '';
-    this.editingDescription = false;
-
-    this.files = [];
-    this.focusPath = null;
-    this.visibleFile = null;
-    this.fileLines = new Map();
-    this.expansions = new Map();
-    this.markdownPreviews = new Map();
-    this.splitSelection = null;
-    this.splitShape = '';
-
-    this.viewedPaths = new Set();
-    this.reviewedCommit = null;
-    this.conflicts = new Map();
-    this.conflictAt = null;
-    this.comments = new Map();
-    this.allComments = [];
-    this.reviewDraft = null;
-
-    this.walkthrough = null;
-    this.walkStale = false;
-    this.walkActive = false;
-    this.walkStep = -1;
-    this.stackReview = null;
-    this.diagram = null;
-
-    this.viewMode = 'full';
-    this.versionPair = null;
-    this.versions = [];
-    this.versionsOpen = false;
-    this.operations = [];
-    this.opDiff = null;
-    this.opCompareFrom = null;
-
-    // The forge is re-discovered, not assumed: the next repo may be on another
-    // host or on none, and an inherited `forge` offers actions that cannot work.
-    this.forge = null;
-    this.pullRequest = null;
-    this.prRevset = null;
-    this.proposalsByBranch = new Map();
-    this.branchProposals = new Map();
-    this.proposalIndexAt = 0;
-    this.prBody = null;
-    this.prActivity = [];
-    this.prActivityBodies = new Map();
-    this.prDetailsFor = null;
-
-    // A revset scoped to the old repo would name changes that do not exist here.
-    this.graphRevset = null;
-    this.revsetSearch = '';
+    Object.assign(this, freshRepoScope());
+    // Why the search fields are not in `RepoScoped`: closing the bar is a method,
+    // and everything else that closes it goes through the same one.
     this.closeSearch();
-
-    this.sidebarTab = 'stack';
-    this.error = null;
-    this.actionError = null;
-    this.actionInfo = null;
-    this.lastOutcome = null;
   }
 
   /**
@@ -706,19 +812,13 @@ export class App extends LitElement {
 
   /** Write the `jjdiff` shim on PATH; surface the report in the status bar. */
   private async runInstallTerminalHelper() {
-    this.busy = 'install-terminal-helper';
-    try {
+    await this.act({ busy: 'install-terminal-helper' }, async () => {
       const report = await installTerminalHelper();
       // `lastOutcome` is the success toast; reuse it even though this isn't a
       // jj mutation — the report reads like one ("Installed `jjdiff` on PATH").
+      // No operation, so the toast shows no Undo.
       this.lastOutcome = { message: report, operation: '' };
-      this.actionError = null;
-    } catch (error) {
-      this.actionError = String(error);
-      this.lastOutcome = null;
-    } finally {
-      this.busy = null;
-    }
+    });
   }
 
   /**
@@ -742,11 +842,14 @@ export class App extends LitElement {
     } catch (error) {
       // An unconfigured editor is a setup step, not a failure — offer the
       // setting rather than printing the config key and leaving them to it.
+      // The prefix is the whole contract, and it is pinned from the other side
+      // by `empty_template_names_the_config_key` in src-tauri/src/editor.rs:
+      // reword it there and this branch stops firing with nothing to catch it.
       if (String(error).includes('no editor configured')) {
         await this.configureEditor();
         return;
       }
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -1034,33 +1137,34 @@ export class App extends LitElement {
    * as a proposal that was already there.
    */
   private async openProposal(number: number) {
-    this.busy = 'pull-request';
-    try {
-      const opened = await openPullRequest(number);
-      this.pullRequest = opened;
-      this.focusPath = null;
-      this.viewMode = 'full';
-      await this.refresh();
-      // Select the fetched head so the change, its diff and the banner agree.
-      const head = this.repo?.graph.find((change) =>
-        change.bookmarks.includes(opened.bookmark),
-      );
-      if (head) {
-        this.selected = head.changeId;
+    await this.act({ busy: 'pull-request' }, async () => {
+      try {
+        const opened = await openPullRequest(number);
+        this.pullRequest = opened;
+        this.focusPath = null;
+        this.viewMode = 'full';
+        await this.refresh();
+        // Select the fetched head so the change, its diff and the banner agree.
+        const head = this.repo?.graph.find((change) =>
+          change.bookmarks.includes(opened.bookmark),
+        );
+        if (head) {
+          this.selected = head.changeId;
+        }
+        // Someone else's proposal is usually several commits, so default to the
+        // whole thing rather than whichever commit happens to be the tip.
+        this.prRevset = opened.revset;
+        await this.loadDiff();
+        void this.loadProposalIndex();
+      } catch (error) {
+        // Rolled back here rather than in `act`'s catch, which cannot tell a
+        // failure from a refusal: an open that never started because something
+        // else was running must leave the banner alone.
+        this.pullRequest = null;
+        this.prRevset = null;
+        throw error;
       }
-      // Someone else's proposal is usually several commits, so default to the
-      // whole thing rather than whichever commit happens to be the tip.
-      this.prRevset = opened.revset;
-      await this.loadDiff();
-      void this.loadProposalIndex();
-      this.actionError = null;
-    } catch (error) {
-      this.actionError = String(error);
-      this.pullRequest = null;
-      this.prRevset = null;
-    } finally {
-      this.busy = null;
-    }
+    });
   }
 
   /** Toggle between the whole proposal's diff and the selected change's own. */
@@ -1088,7 +1192,7 @@ export class App extends LitElement {
       await openUrl(url);
       this.actionError = null;
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -1098,10 +1202,8 @@ export class App extends LitElement {
    * proposal is just another thing to run.
    */
   private async showProposalList() {
-    this.busy = 'pull-request';
-    try {
+    await this.act({ busy: 'pull-request' }, async () => {
       const proposals = await listPullRequests();
-      this.actionError = null;
       if (proposals.length === 0) {
         this.lastOutcome = { message: `No open ${this.forge?.noun ?? 'pull request'}s.`, operation: '' };
         return;
@@ -1114,11 +1216,7 @@ export class App extends LitElement {
         run: () => void this.openProposal(proposal.number),
       }));
       this.barOpen = true;
-    } catch (error) {
-      this.actionError = String(error);
-    } finally {
-      this.busy = null;
-    }
+    });
   }
 
   private async promptForProposal() {
@@ -1170,8 +1268,7 @@ export class App extends LitElement {
       danger: draft.verdict === 'requestChanges',
     });
     if (!ok) return;
-    this.busy = 'submit-review';
-    try {
+    await this.act({ busy: 'submit-review' }, async () => {
       // Outdated comments have no line on the current diff, so the forge would
       // reject the whole review. They ride along in the body instead — the
       // backend does the same for anything else it cannot anchor.
@@ -1196,14 +1293,15 @@ export class App extends LitElement {
             : `Review submitted on #${pr.number}.`,
         operation: '',
       };
-      this.actionError = null;
-      // Reviewer state and merge status just changed.
-      this.pullRequest = await getPullRequest(pr.number);
-    } catch (error) {
-      this.actionError = String(error);
-    } finally {
-      this.busy = null;
-    }
+      try {
+        // Reviewer state and merge status just changed.
+        this.pullRequest = await getPullRequest(pr.number);
+      } catch {
+        // The review is posted by now, so a refresh that fails is stale
+        // reviewer state — not a submission to report as having failed, which
+        // is what letting it out of here would say.
+      }
+    });
   }
 
   // ---- Inline review comments ----
@@ -1229,7 +1327,7 @@ export class App extends LitElement {
       await this.loadComments();
       this.actionError = null;
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -1238,7 +1336,7 @@ export class App extends LitElement {
       await setCommentResolved(id, resolved);
       await this.loadComments();
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -1247,7 +1345,7 @@ export class App extends LitElement {
       await deleteComment(id);
       await this.loadComments();
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -1261,7 +1359,7 @@ export class App extends LitElement {
       this.lastOutcome = { message: 'Copied review as Markdown to clipboard.', operation: '' };
       this.actionError = null;
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -1521,6 +1619,26 @@ export class App extends LitElement {
     this.searchQuery = '';
   }
 
+  /**
+   * Is a modal overlay up? One question, asked once, instead of a flag list per
+   * guard — there were two of them and they had already drifted apart.
+   *
+   * The shortcuts sheet is deliberately not here: `?` toggles it and Escape
+   * closes it, both from `onGlobalKey`, so an early return would be the handler
+   * refusing to answer the keys that are the sheet's whole interface. Every
+   * other overlay handles its own Escape.
+   */
+  private get overlayOpen(): boolean {
+    return (
+      this.barOpen
+      || this.settingsOpen
+      || this.themePickerOpen
+      || this.versionsOpen
+      || this.rebasing !== null
+      || this.diagram !== null
+    );
+  }
+
   private onGlobalKey = (event: KeyboardEvent) => {
     if (matchesShortcut(event, this.commandBarShortcut)) {
       event.preventDefault();
@@ -1549,11 +1667,12 @@ export class App extends LitElement {
     }
     const typing = (event.target as HTMLElement | null)?.tagName === 'TEXTAREA'
       || (event.target as HTMLElement | null)?.tagName === 'INPUT';
-    // The diagram view is modal over the overview, and both of them answer to
-    // the same keys. Without this, Escape would close the diagram *and* fall
-    // through to end the review underneath it, and ←/→ would step the
-    // walkthrough behind a dialog that is still on screen.
-    if (this.diagram || this.settingsOpen) return;
+    // An open overlay owns the keyboard, and everything below answers to the
+    // same keys. Without this, Escape would close the dialog *and* fall through
+    // to end the review underneath it, ←/→ would step the walkthrough behind
+    // it, and j/k/v/c would scroll a diff nobody can see — its own filter box
+    // is two shadow roots down, so `typing` cannot see it from here.
+    if (this.overlayOpen) return;
     if (this.walkActive && !typing) {
       if (event.key === 'ArrowRight') {
         event.preventDefault();
@@ -1589,11 +1708,7 @@ export class App extends LitElement {
       }
     }
     // Single-key review flow: j/k files, n/p hunks, v viewed, c conflicts.
-    // An open overlay owns the keyboard: its own filter box is two shadow roots
-    // down, so `typing` cannot see it from here.
-    if (typing || this.barOpen || this.rebasing || event.metaKey || event.ctrlKey || event.altKey) {
-      return;
-    }
+    if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
     // Shift+C before the switch: `event.key` is already the capital, and it is
     // the one binding here whose shifted form means something different.
     if (event.key === 'C') {
@@ -1721,17 +1836,29 @@ export class App extends LitElement {
         this.description = current.description;
         this.seededFor = current.changeId;
       }
-      await Promise.all([
-        this.loadDiff(),
-        this.loadReview(),
-        this.loadConflicts(),
-        this.loadWalkthrough(),
-        this.loadComments(),
-        this.syncMatchedProposal(),
-      ]);
+      await this.loadForTarget();
     } catch (error) {
       this.error = String(error);
     }
+  }
+
+  /**
+   * Everything keyed to the change under review, in one list.
+   *
+   * This sequence used to be written out at each of its three call sites with a
+   * different subset each time, and `loadComments` was missing from two of them
+   * — so clicking another change in the log left the previous one's inline
+   * comments on the diff until the next repo-watcher tick corrected them.
+   */
+  private async loadForTarget(): Promise<void> {
+    await Promise.all([
+      this.loadDiff(),
+      this.loadReview(),
+      this.loadConflicts(),
+      this.loadWalkthrough(),
+      this.loadComments(),
+      this.syncMatchedProposal(),
+    ]);
   }
 
   private async loadDiff() {
@@ -1772,7 +1899,7 @@ export class App extends LitElement {
       }
       this.reconcileSplitSelection();
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -2005,11 +2132,7 @@ export class App extends LitElement {
     // Selecting a change leaves whole-proposal mode: the diff should follow
     // what was clicked.
     this.prRevset = null;
-    void this.loadDiff();
-    void this.loadReview();
-    void this.loadConflicts();
-    void this.loadWalkthrough();
-    void this.syncMatchedProposal();
+    void this.loadForTarget();
   }
 
   /**
@@ -2034,6 +2157,11 @@ export class App extends LitElement {
    * care that this one is not a change id; what it has to be is stable across
    * rewrites, and a proposal number is. `commitId` is what drift is measured
    * against — the proposal's head, since that is what its diff is of.
+   *
+   * Not to be confused with `contentRevset`, which answers a different
+   * question: this one is the *key* review state hangs off, and its `revset` is
+   * a scope to diff, which for a proposal is a range. Reading one file's text
+   * needs a single revision.
    */
   private get reviewTarget():
     | { key: string; revset: string | null; commitId: string; label: string }
@@ -2057,6 +2185,34 @@ export class App extends LitElement {
         change.description.split('\n')[0] || '(no description)'
       }`,
     };
+  }
+
+  /**
+   * The revision file *contents* are read at — a single revision, never a range.
+   *
+   * `getFileContent`/`getFileBytes` run `jj file show -r`, which refuses a
+   * revset resolving to more than one revision, and the image view derives the
+   * old side as `${revset}-`, which for `base..head` is the nonsense
+   * `base..head-`. So while the pane shows a whole proposal this is its head,
+   * not `prRevset` itself — expanding context and previewing markdown used to
+   * read the *selected* change instead, which with a mid-stack commit selected
+   * is a different file at a different revision, silently.
+   *
+   * Which spelling of the head depends on what the repo actually holds. A
+   * bookmark that matched the proposal index is local by construction, so it is
+   * preferred when the graph carries it; nothing fetched anything on that path,
+   * and `headOid` — the forge's own exact answer, and what `openProposal`
+   * fetched onto a `jjdiff-pr-N` bookmark — resolves only for a commit that is
+   * here. Falling back to the selection covers a proposal with neither.
+   */
+  private get contentRevset(): string | null {
+    const selection = this.isWorkingCopySelected ? null : this.selected;
+    const proposal = this.pullRequest;
+    if (!this.prRevset || !proposal) return selection;
+    const localHead = this.repo?.graph.some((change) =>
+      change.bookmarks.includes(proposal.head),
+    );
+    return (localHead ? proposal.head : proposal.headOid || proposal.head) || selection;
   }
 
   /**
@@ -2175,8 +2331,7 @@ export class App extends LitElement {
     this.viewMode = 'full';
     this.description = change.description;
     this.seededFor = change.changeId;
-    await Promise.all([this.loadDiff(), this.loadReview(), this.loadConflicts()]);
-    await this.loadWalkthrough();
+    await this.loadForTarget();
     this.walkActive = true;
     this.walkStep =
       position === 'last' && this.walkthrough ? this.walkthrough.steps.length - 1 : -1;
@@ -2324,24 +2479,74 @@ export class App extends LitElement {
     return new Set(this.walkthrough.steps[this.walkStep]?.hunkIds ?? []);
   }
 
+  /**
+   * One failure policy, in one place.
+   *
+   * A failure supersedes whatever the last action said: the narration and the
+   * progress line both describe something that is no longer what happened.
+   * This was written out eighteen times, each clearing a different subset, so
+   * the same jj error read differently depending on which button produced it.
+   */
+  private report(error: unknown) {
+    this.actionError = String(error);
+    this.actionInfo = null;
+    this.lastOutcome = null;
+  }
+
+  /**
+   * Run an action: one re-entry guard, one busy label, one clearing policy.
+   *
+   * `busy` is a *label*, not a flag, because it is read for identity — the
+   * review composer disables itself on `busy === 'submit-review'` — so an
+   * action that should lock the toolbar names itself and one that should not
+   * omits it. Whatever is already running wins, and says so: four methods
+   * hand-rolled this without the guard, and finishing under an in-flight
+   * mutation cleared `busy` while that mutation was still going, re-enabling
+   * the header's buttons. Refusing quietly would have been the other failure
+   * mode, so the refusal is on screen.
+   *
+   * State that says what happened is cleared up front, so what is showing
+   * always describes the action that just ran. The helper owns guard, label
+   * and error only; success payloads belong to the caller, which is why
+   * `sendReview` and `openProposal` set their own. `outcome` is for the
+   * callers whose resolved value *is* the narration.
+   */
+  private async act<T>(
+    opts: { busy?: string; outcome?: boolean },
+    action: () => Promise<T>,
+  ): Promise<T | undefined> {
+    if (opts.busy) {
+      if (this.busy) {
+        this.actionInfo = `Busy: ${this.busy} is still running.`;
+        return undefined;
+      }
+      this.busy = opts.busy;
+    }
+    this.actionError = null;
+    this.actionInfo = null;
+    this.lastOutcome = null;
+    try {
+      const result = await action();
+      if (opts.outcome) this.lastOutcome = result as Outcome;
+      return result;
+    } catch (error) {
+      this.report(error);
+      return undefined;
+    } finally {
+      if (opts.busy) this.busy = null;
+    }
+  }
+
   /** Run a jj mutation: capture its narration for the toast, refresh, surface errors. */
   private async command(label: string, action: () => Promise<Outcome>) {
-    if (this.busy) return;
-    this.busy = label;
-    try {
+    await this.act({ busy: label, outcome: true }, async () => {
       const outcome = await action();
-      this.lastOutcome = outcome;
-      this.actionError = null;
       await this.refresh();
       if (this.viewMode === 'ops') {
         await this.loadOperations();
       }
-    } catch (error) {
-      this.actionError = String(error);
-      this.lastOutcome = null;
-    } finally {
-      this.busy = null;
-    }
+      return outcome;
+    });
   }
 
   /** Scope the Log graph. jj validates the revset; its error is surfaced verbatim. */
@@ -2362,18 +2567,13 @@ export class App extends LitElement {
         this.opDiff = null;
       }
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
+  /** An action with nothing to lock and no narration — the rest is `act`'s. */
   private async run(action: () => Promise<void>) {
-    try {
-      await action();
-      this.actionError = null;
-    } catch (error) {
-      this.actionError = String(error);
-      this.actionInfo = null;
-    }
+    await this.act({}, action);
   }
 
   /**
@@ -2723,6 +2923,26 @@ export class App extends LitElement {
     void this.command('op restore', () => restoreOperation(operation.id));
   }
 
+  /**
+   * Take one operation back out without unwinding the ones after it.
+   *
+   * That is the whole difference from Restore beside it: restoring is time
+   * travel to a point and drops everything since, while `jj op revert` applies
+   * one operation's inverse as a new operation and leaves the rest standing.
+   * It is also why this one can conflict where a restore cannot — the work on
+   * top may depend on what is being taken away.
+   */
+  private async revertOp(operation: Operation) {
+    const ok = await askConfirm({
+      heading: 'Revert this operation?',
+      detail: `Applies the inverse of:\n${operation.description}\n\nEverything after it stays. This is itself an operation, so it is undoable.`,
+      confirmLabel: 'Revert',
+      danger: true,
+    });
+    if (!ok) return;
+    void this.command('op revert', () => revertOperation(operation.id));
+  }
+
   private markCurrentReviewed() {
     const target = this.reviewTarget;
     if (!target) return;
@@ -2762,7 +2982,7 @@ export class App extends LitElement {
       try {
         this.versions = await getChangeVersions(change.changeId);
       } catch (error) {
-        this.actionError = String(error);
+        this.report(error);
         this.versionsOpen = false;
       } finally {
         this.versionsLoading = false;
@@ -2829,7 +3049,7 @@ export class App extends LitElement {
     try {
       await setConfigValue(table, key, value);
     } catch (error) {
-      this.actionError = `Setting applied, but not saved: ${String(error)}`;
+      this.report(`Setting applied, but not saved: ${String(error)}`);
     }
   }
 
@@ -2914,7 +3134,7 @@ export class App extends LitElement {
       box?.focus();
       box?.setSelectionRange(message.length, message.length);
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     } finally {
       this.describing = false;
     }
@@ -3913,6 +4133,7 @@ export class App extends LitElement {
           ? html`<div class="status error">${this.actionError}</div>`
           : nothing}
         ${this.actionInfo ? html`<div class="status info">${this.actionInfo}</div>` : nothing}
+        ${this.lastOutcome ? this.renderOutcome(this.lastOutcome) : nothing}
         <!-- No breadcrumb: the diff pane pins the current file's own header,
              which names the file *and* carries its actions. A separate crumb
              put the same path on screen twice, one line apart. -->
@@ -3939,7 +4160,7 @@ export class App extends LitElement {
               .themeVersion=${this.themeVersion}
               .comments=${this.comments}
               .canComment=${!this.walkActive && this.selectedChange !== null}
-              .revset=${this.isWorkingCopySelected ? null : this.selected}
+              .revset=${this.contentRevset}
               .markdownPreviews=${this.markdownPreviews}
               @add-comment=${(e: CustomEvent) => this.onAddComment(e.detail)}
               @resolve-comment=${(e: CustomEvent<{ id: number; value: boolean }>) =>
@@ -4022,6 +4243,41 @@ export class App extends LitElement {
   }
 
   /**
+   * What the last mutation did, and the one click that takes it back.
+   *
+   * jj's own words rather than ours: `run_mutation` hands back what the command
+   * printed plus the operation it created, and that operation id is the whole
+   * reason Undo can be a button here rather than a trip to the Ops tab. It runs
+   * `jj op revert` and not `jj undo`, which undoes whichever operation is
+   * *latest* — not necessarily the one this card is naming by the time someone
+   * reads it.
+   *
+   * Some of what lands here is not a mutation at all — a review posted, a
+   * helper installed, a review copied to the clipboard — and those carry an
+   * empty operation. No button then, rather than one that cannot work.
+   *
+   * Dismissed by hand, and replaced by whatever the next action reports.
+   * Nothing times out: a card that removes itself is motion nobody caused, and
+   * jj's narration is often the only place a command says what it touched.
+   */
+  private renderOutcome(outcome: Outcome) {
+    return html`<div class="outcome">
+      <span class="outcome-text">${outcome.message}</span>
+      ${outcome.operation
+        ? html`<button
+            class="tool"
+            title="Revert the operation this created"
+            @click=${() =>
+              void this.command('op revert', () => revertOperation(outcome.operation))}
+          >
+            Undo
+          </button>`
+        : nothing}
+      <button class="tool" @click=${() => (this.lastOutcome = null)}>Dismiss</button>
+    </div>`;
+  }
+
+  /**
    * The proposal the selected change belongs to: identity, merge state, checks
    * and reviewers, above the diff it describes.
    *
@@ -4039,7 +4295,6 @@ export class App extends LitElement {
     // would just repeat the title immediately above itself.
     if (!pr || this.viewMode === 'pr') return nothing;
     const whole = this.prRevset !== null;
-    const conflicting = pr.mergeable === 'CONFLICTING';
     return html`
       <div class="pr-banner">
         <div class="pr-head">
@@ -4061,43 +4316,7 @@ export class App extends LitElement {
           </button>
           <button class="tool" @click=${() => void this.openReviewComposer()}>Review…</button>
         </div>
-        <div class="pr-meta">
-          <span>${pr.author}</span>
-          <span class="pr-branches">
-            <code>${pr.base}</code> ← <code>${pr.head}</code>
-          </span>
-          ${pr.additions || pr.deletions
-            ? html`<span class="pr-stat">
-                <span class="plus">+${pr.additions}</span>
-                <span class="minus">−${pr.deletions}</span>
-              </span>`
-            : nothing}
-          ${conflicting
-            ? html`<span class="pr-conflict" title="This ${this.forge?.noun ?? 'pull request'} has conflicts with its base branch"
-                >⚠ conflicts</span
-              >`
-            : nothing}
-          ${this.renderChecks(pr)} ${this.renderHeadDrift(pr)}
-          ${pr.reviewers.length
-            ? html`<span class="pr-reviewers">
-                ${pr.reviewers.map(
-                  (reviewer) => html`<span
-                    class="tag muted ${reviewer.state === 'APPROVED'
-                      ? 'approved'
-                      : reviewer.state === 'CHANGES_REQUESTED'
-                        ? 'changes'
-                        : ''}"
-                    title=${reviewerTitle(reviewer.state)}
-                    >${reviewer.state === 'APPROVED'
-                      ? '✓ '
-                      : reviewer.state === 'CHANGES_REQUESTED'
-                        ? '✕ '
-                        : ''}${reviewer.name}</span
-                  >`,
-                )}
-              </span>`
-            : nothing}
-        </div>
+        <div class="pr-meta">${prMetaItems(pr, this.prMetaContext)}</div>
       </div>
       ${this.reviewDraft ? this.renderReviewComposer(pr) : nothing}
     `;
@@ -4171,8 +4390,15 @@ export class App extends LitElement {
                 ${index === 0
                   ? html`<button class="tool" @click=${this.runUndo}>Undo</button>`
                   : html`<button class="tool" @click=${() => void this.restoreTo(operation)}>
-                      Restore here
-                    </button>`}
+                        Restore here
+                      </button>
+                      <button
+                        class="tool"
+                        title="Apply this operation's inverse, keeping everything after it"
+                        @click=${() => void this.revertOp(operation)}
+                      >
+                        Revert this operation
+                      </button>`}
                 <button class="tool" @click=${() => this.showOpDiff(operation, null)}>
                   ${single ? 'Hide changes' : 'What changed'}
                 </button>
@@ -4222,37 +4448,7 @@ export class App extends LitElement {
         <button class="tool" @click=${() => (this.viewMode = 'full')}>Back to Diff</button>
       </div>
       <div class="pr-view-meta">
-        <span>${pr.author}</span>
-        <span class="pr-branches"><code>${pr.base}</code> ← <code>${pr.head}</code></span>
-        ${pr.additions || pr.deletions
-          ? html`<span class="pr-stat">
-              <span class="plus">+${pr.additions}</span>
-              <span class="minus">−${pr.deletions}</span>
-            </span>`
-          : nothing}
-        ${pr.mergeable === 'CONFLICTING'
-          ? html`<span class="pr-conflict">⚠ conflicts</span>`
-          : nothing}
-        ${this.renderChecks(pr)} ${this.renderHeadDrift(pr)}
-        ${pr.reviewers.length
-          ? html`<span class="pr-reviewers">
-              ${pr.reviewers.map(
-                (reviewer) => html`<span
-                  class="tag muted ${reviewer.state === 'APPROVED'
-                    ? 'approved'
-                    : reviewer.state === 'CHANGES_REQUESTED'
-                      ? 'changes'
-                      : ''}"
-                  title=${reviewerTitle(reviewer.state)}
-                  >${reviewer.state === 'APPROVED'
-                    ? '✓ '
-                    : reviewer.state === 'CHANGES_REQUESTED'
-                      ? '✕ '
-                      : ''}${reviewer.name}</span
-                >`,
-              )}
-            </span>`
-          : nothing}
+        ${prMetaItems(pr, this.prMetaContext)}
         <span class="spacer"></span>
         <a class="pr-more" href=${pr.url}>Open on GitHub →</a>
       </div>
@@ -4419,104 +4615,19 @@ export class App extends LitElement {
   };
 
   /**
-   * Unpushed commits on the proposal's head branch.
-   *
-   * This is the fact that decides whether anything else on the banner can be
-   * trusted. Reviewers, merge state and above all CI describe the head the forge
-   * has; if the local branch has moved since, every one of them is about
-   * different code than the diff on screen — and a green "checks passed" next to
-   * unpushed work reads as approval of what you are looking at.
+   * What `pr-templates.ts` needs to draw the meta row: the forge's noun, the
+   * head branch's tracking state, and the three actions its items offer. All
+   * of it is per-repo state this shell owns, so the templates take it rather
+   * than reach for it — which is also what keeps them plain functions.
    */
-  /**
-   * How far the proposal's head branch has drifted from its remote, and the one
-   * command that closes the gap.
-   *
-   * Drift in either direction makes everything beside it untrustworthy: the
-   * checks, reviews and merge state all describe the head *the forge has*. So
-   * the warning is not decoration, and neither is the button — being told your
-   * work is unpushed and then having to go and find the push command is the
-   * gap this closes.
-   *
-   * The verb follows the direction rather than being a single "sync": behind
-   * wins when both are true, because a push against a moved remote is rejected
-   * as a non-fast-forward, and doing both silently would rebase your work
-   * without asking.
-   */
-  private renderHeadDrift(pr: PullRequest) {
-    const tracking = this.tracking(pr.head);
-    const ahead = tracking?.ahead ?? 0;
-    const behind = tracking?.behind ?? 0;
-    if (!ahead && !behind) return nothing;
-    const noun = this.forge?.noun ?? 'pull request';
-    const plural = (count: number) => (count === 1 ? '' : 's');
-    return html`<span
-        class="pr-drift"
-        title=${
-          behind
-            ? `${pr.head}@remote has ${behind} commit${plural(behind)} this repo does not. Everything this ${noun} reports is about that head, not the code shown here.`
-            : `${ahead} local commit${plural(ahead)} on ${pr.head} ${
-                ahead === 1 ? 'has' : 'have'
-              } not been pushed. Everything this ${noun} reports — checks, reviews, merge state — is about the head the forge has, not the code shown here.`
-        }
-        >⚠ ${behind ? `${behind} behind` : `${ahead} unpushed`}</span
-      >
-      <button
-        class="tool pr-sync"
-        title=${
-          behind
-            ? `jj git fetch — bring in the ${behind} commit${plural(behind)} the remote has. Integrate before pushing; a push over a moved remote is refused.`
-            : `jj git push -b ${pr.head} — send the ${ahead} unpushed commit${plural(ahead)} so the ${noun} describes the code you are looking at.`
-        }
-        @click=${(event: Event) => {
-          // The banner is itself a button into the proposal view.
-          event.stopPropagation();
-          if (behind) this.runFetch();
-          else void this.command('push', () => gitPush({ bookmark: pr.head }));
-        }}
-      >
-        ${behind ? 'Fetch' : 'Push'}
-      </button>`;
-  }
-
-  /**
-   * CI summary. Reads as one verdict, not a row of counters: what a reviewer
-   * needs is "can I trust this build", and only the failures are worth naming.
-   * Failed checks are clickable — a red name with no way to reach the log is
-   * an invitation to go hunting in a browser.
-   */
-  private renderChecks(pr: PullRequest) {
-    if (pr.checks.length === 0) return nothing;
-    const failed = pr.checks.filter((check) => check.conclusion === 'FAILURE');
-    const running = pr.checks.filter((check) => check.status !== 'COMPLETED');
-    const passed = pr.checks.filter((check) => check.conclusion === 'SUCCESS');
-    if (failed.length) {
-      return html`<span class="pr-checks bad">
-        <span>✕ ${failed.length} of ${pr.checks.length} failed</span>
-        ${failed.map(
-          (check) => html`<button
-            class="pr-check-name"
-            title="Open ${check.name} on the forge"
-            @click=${() => void this.openExternal(check.url)}
-          >
-            ${check.name}
-          </button>`,
-        )}
-      </span>`;
-    }
-    if (running.length) {
-      // Neutral, and pulsing rather than spinning (DESIGN.md §6): in progress
-      // is not an outcome, so it must not read as one.
-      return html`<span class="pr-checks pending">
-        <span class="dot"></span>
-        ${running.length} check${running.length === 1 ? '' : 's'} running
-      </span>`;
-    }
-    if (passed.length) {
-      return html`<span class="pr-checks ok"
-        >✓ ${passed.length} check${passed.length === 1 ? '' : 's'} passed</span
-      >`;
-    }
-    return nothing;
+  private get prMetaContext(): PrMetaContext {
+    return {
+      noun: this.forge?.noun ?? 'pull request',
+      tracking: (bookmark) => this.tracking(bookmark),
+      openCheck: (url) => void this.openExternal(url),
+      fetch: () => this.runFetch(),
+      push: (bookmark) => void this.command('push', () => gitPush({ bookmark })),
+    };
   }
 
   /** Review composer, seeded from the change's pending inline comments. */
@@ -4628,10 +4739,7 @@ export class App extends LitElement {
     const STEP = 20;
     try {
       if (!this.fileLines.has(path)) {
-        const text = await getFileContent(
-          this.isWorkingCopySelected ? null : this.selected,
-          path,
-        );
+        const text = await getFileContent(this.contentRevset, path);
         const next = new Map(this.fileLines);
         next.set(path, text.split('\n'));
         this.fileLines = next;
@@ -4644,7 +4752,7 @@ export class App extends LitElement {
       });
       this.expansions = expanded;
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   };
 
@@ -4657,16 +4765,11 @@ export class App extends LitElement {
       return;
     }
     try {
-      const text = await getFileContent(
-        this.isWorkingCopySelected ? null : this.selected,
-        path,
-      );
-      const { marked } = await import('marked');
-      const html = marked.parse(text, { async: false }) as string;
-      next.set(path, html);
+      const text = await getFileContent(this.contentRevset, path);
+      next.set(path, await renderMarkdownToHtml(text));
       this.markdownPreviews = next;
     } catch (error) {
-      this.actionError = String(error);
+      this.report(error);
     }
   }
 
@@ -4692,30 +4795,6 @@ export class App extends LitElement {
     void setViewed(target.key, path, viewed).catch(() => void this.loadReview());
   }
 }
-
-/**
- * The proposal's state as a glyph + word.
- *
- * Only *outcomes* take colour (DESIGN.md §2): merged succeeded, closed did not.
- * Open and draft are neutral, because they are a status rather than a verdict —
- * which is what leaves the coloured ones worth noticing. GitHub's purple for
- * merged would be a third hue, so it stays out.
- */
-function proposalState(pr: PullRequest) {
-  const state = pr.draft ? 'draft' : pr.state.toLowerCase();
-  const glyph = { merged: '✓', closed: '✕', draft: '◌', open: '●' }[state] ?? '●';
-  return html`<span class="pr-state ${state}" title=${`${state} · ${pr.mergeable.toLowerCase()}`}>
-    <span class="pr-state-glyph">${glyph}</span>${state}
-  </span>`;
-}
-
-const reviewerTitle = (state: string) =>
-  ({
-    APPROVED: 'approved',
-    CHANGES_REQUESTED: 'requested changes',
-    COMMENTED: 'commented',
-    REQUESTED: 'review requested',
-  })[state] ?? state.toLowerCase().replace(/_/g, ' ');
 
 /**
  * Config keys whose TOML spelling differs from the JSON field.

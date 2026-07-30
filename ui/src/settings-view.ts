@@ -1,8 +1,9 @@
-import { css, html, LitElement, nothing } from 'lit';
+import { css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 
 import { MODEL_KEY_FOR, type Config } from './ipc.js';
 import { formatShortcut } from './keys.js';
+import { OverlayElement, overlayChrome, panelHeader } from './overlay.js';
 import { THEMES } from './themes.js';
 
 /** What the page emits when a control is used: one config key, one value. */
@@ -36,310 +37,241 @@ const BACKENDS = [
  * Shadow DOM: leaf widget, no cross-boundary selection (DESIGN.md §6).
  */
 @customElement('jj-settings-view')
-export class SettingsView extends LitElement {
-  static override styles = css`
-    :host {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
-      padding-top: 7vh;
-      background: rgb(0 0 0 / 0.22);
-      backdrop-filter: blur(3px) saturate(0.9);
-      -webkit-backdrop-filter: blur(3px) saturate(0.9);
-      z-index: 110;
-      animation: scrim-in var(--jj-t-2, 180ms) ease-out;
-    }
-    @keyframes scrim-in {
-      from {
-        opacity: 0;
+export class SettingsView extends OverlayElement {
+  static override styles = [
+    overlayChrome,
+    panelHeader,
+    css`
+      /* Taller than the other panels, so it starts a little higher. */
+      :host {
+        padding-top: 7vh;
       }
-    }
-    .panel {
-      display: flex;
-      flex-direction: column;
-      width: min(680px, 92vw);
-      max-height: 82vh;
-      background: var(--jj-bg-panel);
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-md, 6px);
-      box-shadow: var(--jj-shadow-pop);
-      overflow: hidden;
-      animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
-    }
-    @keyframes pop {
-      from {
-        opacity: 0;
-        transform: translateY(-10px) scale(0.965);
-      }
-    }
-    .panel:focus {
-      outline: none;
-    }
-    header {
-      display: flex;
-      align-items: baseline;
-      gap: 10px;
-      padding: 16px 20px 12px;
-      border-bottom: 1px solid var(--jj-border);
-    }
-    h2 {
-      margin: 0;
-      font-family: var(--jj-sans);
-      font-size: var(--jj-text-title, 20px);
-      font-weight: 650;
-      letter-spacing: -0.02em;
-      color: var(--jj-fg);
-    }
-    .spacer {
-      flex: 1;
-    }
-    /* The file is the real store, and saying where it is keeps hand-editing an
-       obvious option rather than a secret the page has taken over. */
-    .path {
-      font-family: var(--jj-mono);
-      font-size: 11px;
-      color: var(--jj-fg-faint);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 46%;
-    }
-    .body {
-      overflow-y: auto;
-      padding: 4px 20px 20px;
-    }
-    .group {
-      font-family: var(--jj-sans);
-      font-size: 10.5px;
-      font-weight: 650;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--jj-fg-faint);
-      padding: 18px 0 2px;
-    }
-    .row {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-      padding: 9px 0;
-      border-top: 1px solid var(--jj-border);
-    }
-    .group + .row {
-      border-top: 0;
-    }
-    .row.stacked {
-      display: block;
-    }
-    .label {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      min-width: 0;
-      flex: 1;
-    }
-    .label strong {
-      font-family: var(--jj-sans);
-      font-size: 12.5px;
-      font-weight: 600;
-      color: var(--jj-fg);
-    }
-    .label small {
-      font-size: 11.5px;
-      line-height: 1.45;
-      color: var(--jj-fg-muted);
-    }
-    .control {
-      flex: none;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .row.stacked .control {
-      margin-top: 8px;
-      display: block;
-    }
-    input[type='text'],
-    textarea,
-    select {
-      box-sizing: border-box;
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-md, 6px);
-      background: var(--jj-surface);
-      color: var(--jj-fg);
-      font-family: var(--jj-sans);
-      font-size: 12.5px;
-      padding: 6px 9px;
-      outline: none;
-    }
-    input[type='text'],
-    textarea {
-      font-family: var(--jj-mono);
-      font-size: 12px;
-      width: 100%;
-    }
-    textarea {
-      min-height: 68px;
-      resize: vertical;
-      line-height: 1.5;
-    }
-    input:focus-visible,
-    textarea:focus-visible,
-    select:focus-visible {
-      border-color: var(--jj-accent);
-      box-shadow: 0 0 0 1px var(--jj-accent);
-    }
-    /* A segmented control, not a dropdown: two mutually exclusive options that
-       both fit are a choice you should be able to see without opening it. */
-    .segmented {
-      display: inline-flex;
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-md, 6px);
-      overflow: hidden;
-    }
-    .segmented button {
-      border: 0;
-      background: var(--jj-surface);
-      color: var(--jj-fg-muted);
-      font-family: var(--jj-sans);
-      font-size: 12px;
-      font-weight: 550;
-      padding: 5px 13px;
-      cursor: pointer;
-    }
-    .segmented button + button {
-      border-left: 1px solid var(--jj-border);
-    }
-    .segmented button.on {
-      background: var(--jj-accent);
-      color: #fff;
-    }
-    .switch {
-      position: relative;
-      width: 38px;
-      height: 22px;
-      flex: none;
-      border: 1px solid var(--jj-border);
-      border-radius: 999px;
-      background: var(--jj-surface);
-      cursor: pointer;
-      transition:
-        background var(--jj-t-2, 180ms) ease,
-        border-color var(--jj-t-2, 180ms) ease;
-    }
-    .switch::after {
-      content: '';
-      position: absolute;
-      top: 2px;
-      left: 2px;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: var(--jj-fg-muted);
-      transition:
-        transform var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
-        background var(--jj-t-2, 180ms) ease;
-    }
-    .switch[aria-checked='true'] {
-      background: var(--jj-accent);
-      border-color: var(--jj-accent);
-    }
-    .switch[aria-checked='true']::after {
-      background: #fff;
-      transform: translateX(16px);
-    }
-    .switch:focus-visible {
-      outline: 2px solid var(--jj-accent);
-      outline-offset: 2px;
-    }
-    button.link {
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-md, 6px);
-      background: var(--jj-surface);
-      color: var(--jj-fg-soft);
-      font-family: var(--jj-sans);
-      font-size: 12px;
-      font-weight: 550;
-      padding: 5px 11px;
-      cursor: pointer;
-    }
-    button.link:hover {
-      border-color: var(--jj-border-strong);
-      color: var(--jj-fg);
-    }
-    .size {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .size input {
-      width: 140px;
-    }
-    .size output {
-      font-family: var(--jj-mono);
-      font-size: 11.5px;
-      font-variant-numeric: tabular-nums;
-      color: var(--jj-fg-muted);
-      width: 6ch;
-      text-align: right;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      :host,
       .panel {
-        animation: none;
+        display: flex;
+        flex-direction: column;
+        width: min(680px, 92vw);
+        max-height: 82vh;
+        background: var(--jj-bg-panel);
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-md, 6px);
+        box-shadow: var(--jj-shadow-pop);
+        overflow: hidden;
+        animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
       }
-      .switch,
+      .panel:focus {
+        outline: none;
+      }
+      /* The body scrolls under the title, so the rule is what keeps the heading
+         from touching the first group as it goes past. */
+      header {
+        border-bottom: 1px solid var(--jj-border);
+      }
+      /* The file is the real store, and saying where it is keeps hand-editing an
+         obvious option rather than a secret the page has taken over. */
+      .path {
+        font-family: var(--jj-mono);
+        font-size: 11px;
+        color: var(--jj-fg-faint);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 46%;
+      }
+      .body {
+        overflow-y: auto;
+        padding: 4px 20px 20px;
+      }
+      .group {
+        font-family: var(--jj-sans);
+        font-size: 10.5px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--jj-fg-faint);
+        padding: 18px 0 2px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 9px 0;
+        border-top: 1px solid var(--jj-border);
+      }
+      .group + .row {
+        border-top: 0;
+      }
+      .row.stacked {
+        display: block;
+      }
+      .label {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+        flex: 1;
+      }
+      .label strong {
+        font-family: var(--jj-sans);
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--jj-fg);
+      }
+      .label small {
+        font-size: 11.5px;
+        line-height: 1.45;
+        color: var(--jj-fg-muted);
+      }
+      .control {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .row.stacked .control {
+        margin-top: 8px;
+        display: block;
+      }
+      input[type='text'],
+      textarea,
+      select {
+        box-sizing: border-box;
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-md, 6px);
+        background: var(--jj-surface);
+        color: var(--jj-fg);
+        font-family: var(--jj-sans);
+        font-size: 12.5px;
+        padding: 6px 9px;
+        outline: none;
+      }
+      input[type='text'],
+      textarea {
+        font-family: var(--jj-mono);
+        font-size: 12px;
+        width: 100%;
+      }
+      textarea {
+        min-height: 68px;
+        resize: vertical;
+        line-height: 1.5;
+      }
+      input:focus-visible,
+      textarea:focus-visible,
+      select:focus-visible {
+        border-color: var(--jj-accent);
+        box-shadow: 0 0 0 1px var(--jj-accent);
+      }
+      /* A segmented control, not a dropdown: two mutually exclusive options that
+         both fit are a choice you should be able to see without opening it. */
+      .segmented {
+        display: inline-flex;
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-md, 6px);
+        overflow: hidden;
+      }
+      .segmented button {
+        border: 0;
+        background: var(--jj-surface);
+        color: var(--jj-fg-muted);
+        font-family: var(--jj-sans);
+        font-size: 12px;
+        font-weight: 550;
+        padding: 5px 13px;
+        cursor: pointer;
+      }
+      .segmented button + button {
+        border-left: 1px solid var(--jj-border);
+      }
+      .segmented button.on {
+        background: var(--jj-accent);
+        color: #fff;
+      }
+      .switch {
+        position: relative;
+        width: 38px;
+        height: 22px;
+        flex: none;
+        border: 1px solid var(--jj-border);
+        border-radius: 999px;
+        background: var(--jj-surface);
+        cursor: pointer;
+        transition:
+          background var(--jj-t-2, 180ms) ease,
+          border-color var(--jj-t-2, 180ms) ease;
+      }
       .switch::after {
-        transition: none;
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--jj-fg-muted);
+        transition:
+          transform var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
+          background var(--jj-t-2, 180ms) ease;
       }
-    }
-  `;
+      .switch[aria-checked='true'] {
+        background: var(--jj-accent);
+        border-color: var(--jj-accent);
+      }
+      .switch[aria-checked='true']::after {
+        background: #fff;
+        transform: translateX(16px);
+      }
+      .switch:focus-visible {
+        outline: 2px solid var(--jj-accent);
+        outline-offset: 2px;
+      }
+      button.link {
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-md, 6px);
+        background: var(--jj-surface);
+        color: var(--jj-fg-soft);
+        font-family: var(--jj-sans);
+        font-size: 12px;
+        font-weight: 550;
+        padding: 5px 11px;
+        cursor: pointer;
+      }
+      button.link:hover {
+        border-color: var(--jj-border-strong);
+        color: var(--jj-fg);
+      }
+      .size {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .size input {
+        width: 140px;
+      }
+      .size output {
+        font-family: var(--jj-mono);
+        font-size: 11.5px;
+        font-variant-numeric: tabular-nums;
+        color: var(--jj-fg-muted);
+        width: 6ch;
+        text-align: right;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .switch,
+        .switch::after {
+          transition: none;
+        }
+      }
+    `,
+  ];
 
   @property({ attribute: false }) config: Config | null = null;
   @property() configPath = '';
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-    window.addEventListener('keydown', this.onWindowKey);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    window.removeEventListener('keydown', this.onWindowKey);
-    super.disconnectedCallback();
-  }
 
   override firstUpdated() {
     this.renderRoot.querySelector<HTMLElement>('.panel')?.focus();
   }
 
-  private onBackdrop = (event: MouseEvent) => {
-    // Retargeting: a listener on the host sees an inside click as the host too,
-    // so only the composed path's origin tells the scrim from the panel.
-    if (event.composedPath()[0] === this) this.close();
-  };
-
-  /**
-   * Escape only. Everything else is stopped on the panel — this page is mostly
-   * text fields, and `App.onGlobalKey` decides "is someone typing" from
-   * `event.target`, which by the time an event reaches window is this host and
-   * not the input inside it. Without that, typing an editor command would drive
-   * the diff underneath: `j`, `k`, `v`, `c`.
-   */
-  private onWindowKey = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    this.close();
-  };
-
-  private onPanelKey = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') return; // the window listener owns it
-    event.stopPropagation();
-  };
-
-  private close() {
+  protected override dismiss() {
     this.dispatchEvent(new Event('close'));
   }
 

@@ -207,6 +207,17 @@ surface means every new command in M10 arrives with a safety net.
   action, so experimenting is cheap. This is the feature that makes the rest safe.
 - **`jj op diff`** between two operations for "what did that actually do".
 
+**As built, the Undo affordance reverts by id.** The narration card every mutation raises
+(`.outcome`, DESIGN.md §5) carries `jj op revert <the operation that command created>`,
+not `jj undo`: the card can outlive being the tip — another window on the same repo
+mutates, the watcher refreshes, and the narration is still on screen — and `jj undo`
+would then unwind somebody else's work. That is also what let the third verb land in the
+op log itself: **Revert this operation** sits beside **Restore here** on every row but
+the tip, and the difference between them is exactly whether the operations after the one
+you picked survive. Both confirm and neither passes `--ignore-immutable`; an operation is
+not a change, so `confirmImmutableRewrite`, which names a bookmark and its descendants,
+has nothing to say about one.
+
 ### M10 — The jj command surface ✅
 
 One `mutate()` helper in `crates/vcs`: run, capture stdout+stderr, return the resulting
@@ -286,7 +297,7 @@ is out of date before you push over it.
   directions against a real remote. Bookmark tags show `↑2 ↓1` (neutral: a position is
   not an outcome) and disappear when in sync. The payoff is on the forge banner: an
   unpushed head means CI, reviewers and merge state describe code the forge has and the
-  reviewer does not, so `renderHeadDrift` says so next to the checks.
+  reviewer does not, so `headDrift` says so next to the checks.
 - ~~**Rebase destination picker**~~ ✅ **DONE.** The revset prompt asked the wrong
   question: the destination is nearly always a commit already on screen, so naming it
   meant reading an id off the graph and retyping it — a transcription step whose only

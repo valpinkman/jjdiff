@@ -124,7 +124,6 @@
   --jj-r-chip: var(--jj-r-pill);
   --jj-r-md: 6px;
   --jj-r-lg: 8px;
-  --jj-r-xl: 10px;
   --jj-r-pill: 999px;
 
   /* Motion. Duration says how far something travelled; the curve says what
@@ -1012,9 +1011,16 @@ jj-app .pr-conflict {
    about a change on screen while you were reading something else entirely.
    Hidden here rather than unmounted in the template: those siblings are spread
    across a long render, and this keeps "a view replaces the pane" as one
-   statement instead of a condition repeated on each of them. */
-jj-app main.showing-pr > *:not(.pr-view),
-jj-app main.showing-ops > *:not(.ops-view) {
+   statement instead of a condition repeated on each of them.
+
+   The outcome card and the status line are the exception, because they are not
+   context for the diff — they are what the screen you are on just did. Both of
+   these views act: submitting a review is only reachable from the proposal view,
+   and undo, restore and revert only from the operation log. Hidden, a submission
+   that failed said nothing at all and the composer merely emptied, which reads as
+   success; the narration and the Undo beside it went the same way. */
+jj-app main.showing-pr > *:not(.pr-view):not(.outcome):not(.status),
+jj-app main.showing-ops > *:not(.ops-view):not(.outcome):not(.status) {
   display: none;
 }
 

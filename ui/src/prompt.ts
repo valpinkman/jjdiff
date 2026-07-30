@@ -1,5 +1,7 @@
-import { css, html, LitElement, nothing } from 'lit';
+import { css, html, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
+
+import { OverlayElement } from './overlay.js';
 
 /**
  * In-app replacements for `prompt()` and `confirm()`.
@@ -17,8 +19,11 @@ import { customElement, property, query, state } from 'lit/decorators.js';
  *     const name = await askText({ title: 'Bookmark name' });
  */
 @customElement('jj-prompt')
-export class Prompt extends LitElement {
+export class Prompt extends OverlayElement {
   static override styles = css`
+    /* Above every other overlay, not on their layer: a confirmation is usually
+       raised by a command run from one of them, and it has to land on top of
+       whatever asked for it. */
     :host {
       position: fixed;
       inset: 0;
@@ -132,6 +137,13 @@ export class Prompt extends LitElement {
 
   @query('input') private field?: HTMLInputElement;
 
+  /**
+   * Escape is answered on the panel, which always holds focus — the field in
+   * text mode, the confirm button otherwise — and stopped there, so no window
+   * listener is needed and the overlay this was raised from keeps its own.
+   */
+  protected override escapeOnWindow = false;
+
   override firstUpdated() {
     // Focus the field in text mode, the confirm button otherwise, so Enter
     // does the obvious thing either way.
@@ -141,6 +153,11 @@ export class Prompt extends LitElement {
     } else {
       this.renderRoot.querySelector<HTMLButtonElement>('button.confirm')?.focus();
     }
+  }
+
+  /** Dismissing is a refusal: `askConfirm` resolves false, `askText` null. */
+  protected override dismiss() {
+    this.done(false);
   }
 
   private done(accepted: boolean) {
@@ -188,23 +205,6 @@ export class Prompt extends LitElement {
       </div>
     `;
   }
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    super.disconnectedCallback();
-  }
-
-  private onBackdrop = (event: MouseEvent) => {
-    // `event.target` is retargeted to the host for a listener bound to the host,
-    // so an inside click reads as an outside one. The composed path's first
-    // entry is the real origin — the host itself only when the scrim was hit.
-    if (event.composedPath()[0] === this) this.done(false);
-  };
 }
 
 /** Mount a prompt, await the answer, tear it down. */

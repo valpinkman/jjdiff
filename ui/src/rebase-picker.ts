@@ -1,7 +1,8 @@
-import { css, html, LitElement, nothing } from 'lit';
+import { css, html, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 
 import type { Change } from './ipc.js';
+import { OverlayElement, overlayChrome, panelButton, panelHeader } from './overlay.js';
 import { relativeTime } from './time.js';
 
 /** How much of the graph a rebase moves. jj's `-r` / `-s` / `-b`. */
@@ -45,248 +46,183 @@ const MODES: { mode: RebaseMode; flag: string; label: string; detail: string }[]
  * Shadow DOM: leaf widget, no cross-boundary selection (DESIGN.md §6).
  */
 @customElement('jj-rebase-picker')
-export class RebasePicker extends LitElement {
-  static override styles = css`
-    :host {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
-      padding-top: 9vh;
-      background: rgb(0 0 0 / 0.22);
-      backdrop-filter: blur(3px) saturate(0.9);
-      -webkit-backdrop-filter: blur(3px) saturate(0.9);
-      z-index: 110;
-      animation: scrim-in var(--jj-t-2, 180ms) ease-out;
-    }
-    @keyframes scrim-in {
-      from {
-        opacity: 0;
-      }
-    }
-    .panel {
-      display: flex;
-      flex-direction: column;
-      width: min(680px, 92vw);
-      max-height: 78vh;
-      background: var(--jj-bg-panel);
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-lg, 0px);
-      box-shadow: var(--jj-shadow-pop);
-      overflow: hidden;
-      font-family: var(--jj-sans);
-      animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
-    }
-    @keyframes pop {
-      from {
-        opacity: 0;
-        transform: translateY(-10px) scale(0.965);
-      }
-    }
-    header {
-      display: flex;
-      align-items: baseline;
-      gap: 10px;
-      padding: 16px 20px 12px;
-    }
-    h2 {
-      margin: 0;
-      font-size: var(--jj-text-title, 20px);
-      font-weight: 650;
-      letter-spacing: -0.02em;
-      color: var(--jj-fg);
-    }
-    .subject {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-size: var(--jj-text-sm, 11.5px);
-      color: var(--jj-fg-muted);
-    }
-    .modes {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding: 0 20px 12px;
-    }
-    .mode {
-      display: grid;
-      grid-template-columns: 18px auto minmax(0, 1fr);
-      align-items: baseline;
-      gap: 8px;
-      padding: 5px 8px;
-      border-radius: var(--jj-r-sm, 0px);
-      cursor: pointer;
-      color: var(--jj-fg);
-      font-size: var(--jj-text-base, 13px);
-    }
-    .mode:hover {
-      background: var(--jj-surface);
-    }
-    .mode code {
-      font-family: var(--jj-mono);
-      font-size: var(--jj-text-xs, 11px);
-      color: var(--jj-fg-muted);
-    }
-    .mode .detail {
-      font-size: var(--jj-text-xs, 11px);
-      color: var(--jj-fg-muted);
-    }
-    input[type='radio'] {
-      accent-color: var(--jj-accent);
-      margin: 0;
-      justify-self: center;
-    }
-    .filter {
-      padding: 0 20px 10px;
-    }
-    input[type='text'] {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 7px 11px;
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-sm, 0px);
-      background: var(--jj-surface);
-      color: var(--jj-fg);
-      font-family: var(--jj-sans);
-      font-size: var(--jj-text-base, 13px);
-      outline: none;
-    }
-    input.revset {
-      font-family: var(--jj-mono);
-      font-size: var(--jj-text-sm, 11.5px);
-    }
-    input:focus {
-      border-color: var(--jj-accent);
-      box-shadow: var(--jj-focus-ring);
-    }
-    .list {
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-      border-top: 1px solid var(--jj-border);
-    }
-    .target {
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      box-sizing: border-box;
-      padding: 8px 20px;
-      border: 0;
-      background: transparent;
-      color: var(--jj-fg);
-      text-align: left;
-      cursor: pointer;
-      box-shadow: inset 0 -1px 0 var(--jj-border);
-      font: inherit;
-    }
-    .target:hover {
-      background: var(--jj-surface);
-    }
-    .target.active {
-      background: var(--jj-surface-2);
-      box-shadow: inset 3px 0 0 var(--jj-accent), inset 0 -1px 0 var(--jj-border);
-    }
-    .target code {
-      font-family: var(--jj-mono);
-      font-size: var(--jj-text-xs, 11px);
-      color: var(--jj-fg-muted);
-    }
-    .target .what {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      font-size: var(--jj-text-base, 13px);
-    }
-    .target .what.none {
-      color: var(--jj-fg-faint);
-      font-style: italic;
-    }
-    .tags {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      white-space: nowrap;
-    }
-    .tag {
-      font-size: 10.5px;
-      font-weight: 600;
-      border-radius: var(--jj-r-pill, 999px);
-      padding: 1.5px 8px;
-      background: var(--jj-surface-2);
-      color: var(--jj-fg-muted);
-    }
-    .tag.bookmark {
-      background: var(--jj-accent-soft);
-      color: var(--jj-accent);
-    }
-    .age {
-      font-size: var(--jj-text-xs, 11px);
-      color: var(--jj-fg-faint);
-    }
-    .none-yet {
-      padding: 22px 20px;
-      font-size: var(--jj-text-base, 13px);
-      color: var(--jj-fg-muted);
-    }
-    footer {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 12px 20px;
-      border-top: 1px solid var(--jj-border);
-    }
-    .hint {
-      font-size: var(--jj-text-sm, 11.5px);
-      color: var(--jj-fg-muted);
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .hint code {
-      font-family: var(--jj-mono);
-      color: var(--jj-fg);
-    }
-    .spacer {
-      flex: 1;
-    }
-    button.action {
-      font-size: var(--jj-text-base, 13px);
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-pill, 999px);
-      background: var(--jj-surface);
-      color: var(--jj-fg);
-      padding: 7px 16px;
-      cursor: pointer;
-      transition:
-        background var(--jj-t-1, 120ms) ease-out,
-        border-color var(--jj-t-1, 120ms) ease-out;
-    }
-    button.action:hover:not(:disabled) {
-      border-color: var(--jj-border-strong);
-    }
-    button.action.primary {
-      background: var(--jj-primary);
-      color: var(--jj-primary-fg);
-      border-color: transparent;
-    }
-    button.action:disabled {
-      opacity: 0.45;
-      cursor: default;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      :host,
+export class RebasePicker extends OverlayElement {
+  static override styles = [
+    overlayChrome,
+    panelHeader,
+    panelButton,
+    css`
       .panel {
-        animation: none;
+        display: flex;
+        flex-direction: column;
+        width: min(680px, 92vw);
+        max-height: 78vh;
+        background: var(--jj-bg-panel);
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-lg, 0px);
+        box-shadow: var(--jj-shadow-pop);
+        overflow: hidden;
+        font-family: var(--jj-sans);
+        animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
       }
-    }
-  `;
+      .subject {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: var(--jj-text-sm, 11.5px);
+        color: var(--jj-fg-muted);
+      }
+      .modes {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 0 20px 12px;
+      }
+      .mode {
+        display: grid;
+        grid-template-columns: 18px auto minmax(0, 1fr);
+        align-items: baseline;
+        gap: 8px;
+        padding: 5px 8px;
+        border-radius: var(--jj-r-sm, 0px);
+        cursor: pointer;
+        color: var(--jj-fg);
+        font-size: var(--jj-text-base, 13px);
+      }
+      .mode:hover {
+        background: var(--jj-surface);
+      }
+      .mode code {
+        font-family: var(--jj-mono);
+        font-size: var(--jj-text-xs, 11px);
+        color: var(--jj-fg-muted);
+      }
+      .mode .detail {
+        font-size: var(--jj-text-xs, 11px);
+        color: var(--jj-fg-muted);
+      }
+      input[type='radio'] {
+        accent-color: var(--jj-accent);
+        margin: 0;
+        justify-self: center;
+      }
+      .filter {
+        padding: 0 20px 10px;
+      }
+      input[type='text'] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 11px;
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-sm, 0px);
+        background: var(--jj-surface);
+        color: var(--jj-fg);
+        font-family: var(--jj-sans);
+        font-size: var(--jj-text-base, 13px);
+        outline: none;
+      }
+      input.revset {
+        font-family: var(--jj-mono);
+        font-size: var(--jj-text-sm, 11.5px);
+      }
+      input:focus {
+        border-color: var(--jj-accent);
+        box-shadow: var(--jj-focus-ring);
+      }
+      .list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        border-top: 1px solid var(--jj-border);
+      }
+      .target {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 20px;
+        border: 0;
+        background: transparent;
+        color: var(--jj-fg);
+        text-align: left;
+        cursor: pointer;
+        box-shadow: inset 0 -1px 0 var(--jj-border);
+        font: inherit;
+      }
+      .target:hover {
+        background: var(--jj-surface);
+      }
+      .target.active {
+        background: var(--jj-surface-2);
+        box-shadow: inset 3px 0 0 var(--jj-accent), inset 0 -1px 0 var(--jj-border);
+      }
+      .target code {
+        font-family: var(--jj-mono);
+        font-size: var(--jj-text-xs, 11px);
+        color: var(--jj-fg-muted);
+      }
+      .target .what {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: var(--jj-text-base, 13px);
+      }
+      .target .what.none {
+        color: var(--jj-fg-faint);
+        font-style: italic;
+      }
+      .tags {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .tag {
+        font-size: 10.5px;
+        font-weight: 600;
+        border-radius: var(--jj-r-pill, 999px);
+        padding: 1.5px 8px;
+        background: var(--jj-surface-2);
+        color: var(--jj-fg-muted);
+      }
+      .tag.bookmark {
+        background: var(--jj-accent-soft);
+        color: var(--jj-accent);
+      }
+      .age {
+        font-size: var(--jj-text-xs, 11px);
+        color: var(--jj-fg-faint);
+      }
+      .none-yet {
+        padding: 22px 20px;
+        font-size: var(--jj-text-base, 13px);
+        color: var(--jj-fg-muted);
+      }
+      footer {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 20px;
+        border-top: 1px solid var(--jj-border);
+      }
+      /* The command preview is one line and the destination can be any revset, so
+         it is truncated rather than allowed to push the buttons off the panel. */
+      .hint {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hint code {
+        font-family: var(--jj-mono);
+        color: var(--jj-fg);
+      }
+    `,
+  ];
 
   /** Candidates, in graph order (newest first). */
   @property({ attribute: false }) changes: Change[] = [];
@@ -302,51 +238,27 @@ export class RebasePicker extends LitElement {
 
   @query('input.filter-input') private filterField?: HTMLInputElement;
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-    window.addEventListener('keydown', this.onEscape);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    window.removeEventListener('keydown', this.onEscape);
-    super.disconnectedCallback();
-  }
-
   override firstUpdated() {
     this.filterField?.focus();
   }
 
-  private onBackdrop = (event: MouseEvent) => {
-    // Retargeting: an event from inside the shadow root reports the host as its
-    // target, so only the composed path can tell the scrim from the panel.
-    if (event.composedPath()[0] === this) this.dispatchEvent(new Event('close'));
-  };
-
-  /**
-   * Escape when focus has left the panel — a click on the scrim moves it to the
-   * body, past the panel's own handler. Everything else is handled inside,
-   * where propagation stops.
-   */
-  private onEscape = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
+  protected override dismiss() {
     this.dispatchEvent(new Event('close'));
-  };
+  }
 
   /**
-   * Bound to the panel, not the window, and it stops propagation: the app's
+   * The panel's own keys, and it stops propagation for all of them: the app's
    * global handler treats bare letters as review shortcuts, and it cannot see
    * that a filter box two shadow roots down has focus (the event is retargeted
    * to this host on the way out). Typing `j` in the filter would otherwise
-   * scroll the diff behind the dialog.
+   * scroll the diff behind the dialog. Escape is answered here too, so it never
+   * reaches the window listener the base binds for a scrim click.
    */
   private onKey = (event: KeyboardEvent) => {
     event.stopPropagation();
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.dispatchEvent(new Event('close'));
+      this.dismiss();
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -527,8 +439,8 @@ export class RebasePicker extends LitElement {
             : 'Pick a destination.'}
         </span>
         <span class="spacer"></span>
-        <button class="action" @click=${() => this.dispatchEvent(new Event('close'))}>Cancel</button>
-        <button class="action primary" ?disabled=${!this.destination} @click=${this.confirm}>
+        <button class="btn" @click=${this.dismiss}>Cancel</button>
+        <button class="btn primary" ?disabled=${!this.destination} @click=${this.confirm}>
           Rebase
         </button>
       </footer>

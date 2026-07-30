@@ -98,12 +98,3 @@ export const iconFiles = icon(svg`
 /** Review: comments on a line. */
 export const iconComment = icon(svg`
   <path d="M14 9.7a1.5 1.5 0 0 1-1.5 1.5H5.2L2 14V3.5A1.5 1.5 0 0 1 3.5 2h9a1.5 1.5 0 0 1 1.5 1.5v6.2Z" />`);
-
-/** A forge proposal. */
-export const iconProposal = icon(svg`
-  <circle cx="4.2" cy="3.6" r="1.8" />
-  <circle cx="4.2" cy="12.4" r="1.8" />
-  <circle cx="11.8" cy="12.4" r="1.8" />
-  <path d="M4.2 5.4v5.2" />
-  <path d="M11.8 10.6V7.4a2 2 0 0 0-2-2H6.6" />
-  <path d="m8.2 3.8-1.6 1.6 1.6 1.6" />`);

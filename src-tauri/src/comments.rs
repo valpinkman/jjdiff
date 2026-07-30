@@ -295,7 +295,7 @@ impl CommentStore {
                     "**{} — {}**\n\n{}\n",
                     line_label,
                     top.author,
-                    indent_body(&top.body)
+                    normalize_lines(&top.body)
                 ));
                 // Children.
                 let children: Vec<&Comment> = group
@@ -307,7 +307,7 @@ impl CommentStore {
                     out.push_str(&format!(
                         "> **{}**\n>\n> {}\n",
                         child.author,
-                        indent_body(&child.body).replace('\n', "\n> ")
+                        normalize_lines(&child.body).replace('\n', "\n> ")
                     ));
                 }
                 if idx + 1 < top_level.len() {
@@ -347,10 +347,7 @@ fn find_line(files: &[FilePatch], side: Side, text: &str) -> Option<u32> {
     None
 }
 
-/// Indent a comment body by 4 spaces so it renders as a code block in Markdown
-/// when the body contains code, and otherwise just preserves the text. We keep
-/// it simple: wrap the body in a blockquote-style indent only when threaded.
-fn indent_body(body: &str) -> String {
+fn normalize_lines(body: &str) -> String {
     body.lines().collect::<Vec<_>>().join("\n")
 }
 

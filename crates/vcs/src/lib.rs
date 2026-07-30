@@ -199,15 +199,6 @@ impl Repo {
         self.runner.read(&args)
     }
 
-    /// Git-format patch between two revsets.
-    pub fn patch_between(&self, from: &str, to: &str, ignore_whitespace: bool) -> Result<String> {
-        let mut args = vec!["diff", "--git", "--context", "3", "--from", from, "--to", to];
-        if ignore_whitespace {
-            args.push("--ignore-all-space");
-        }
-        self.runner.read(&args)
-    }
-
     /// Git commit id of the working copy's first parent — the base for live fs-vs-tree
     /// diffing (`jjdiff-diff::worktree`). `None` when `@` sits directly on the root commit,
     /// whose tree is empty (the all-zeros id is not a real git object).
@@ -578,14 +569,6 @@ impl Repo {
         Ok(bookmark.to_string())
     }
 
-    pub fn remotes(&self) -> Result<Vec<String>> {
-        let out = self.runner.read(&["git", "remote", "list"])?;
-        Ok(out
-            .lines()
-            .filter_map(|line| line.split_whitespace().next().map(str::to_string))
-            .collect())
-    }
-
     /// Remotes as `(name, url)`. `jj git remote list` prints them space
     /// separated; the URL is everything after the first field, so a URL
     /// containing spaces survives.
@@ -613,12 +596,6 @@ impl Repo {
 
     pub fn op_revert(&self, operation: &str) -> Result<Outcome> {
         self.mutate(&["op", "revert", operation])
-    }
-
-    pub fn user_identity(&self) -> Result<(String, String)> {
-        let name = self.runner.read(&["config", "get", "user.name"])?;
-        let email = self.runner.read(&["config", "get", "user.email"])?;
-        Ok((name.trim().to_string(), email.trim().to_string()))
     }
 
     /// Directory whose contents change whenever an operation lands (watch target).

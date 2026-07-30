@@ -1,6 +1,8 @@
-import { css, html, LitElement } from 'lit';
+import { css, html } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
+
+import { OverlayElement, overlayChrome } from './overlay.js';
 
 /**
  * A walkthrough diagram, large enough to read.
@@ -22,131 +24,121 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
  * Shadow DOM: leaf widget, no cross-boundary selection (DESIGN.md §6).
  */
 @customElement('jj-diagram-view')
-export class DiagramView extends LitElement {
-  static override styles = css`
-    :host {
-      position: fixed;
-      inset: 0;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      background: rgb(0 0 0 / 0.32);
-      backdrop-filter: blur(3px) saturate(0.9);
-      -webkit-backdrop-filter: blur(3px) saturate(0.9);
-      z-index: 110;
-      animation: scrim-in var(--jj-t-2, 180ms) ease-out;
-    }
-    @keyframes scrim-in {
-      from {
-        opacity: 0;
+export class DiagramView extends OverlayElement {
+  static override styles = [
+    overlayChrome,
+    css`
+      /* Centred and darker than the other overlays: the panel is nearly the whole
+         window, and what is behind it is not context here — it is the document
+         this figure was pulled out of. */
+      :host {
+        align-items: center;
+        padding-top: 0;
+        background: rgb(0 0 0 / 0.32);
       }
-    }
-    .panel {
-      display: flex;
-      flex-direction: column;
-      width: min(1400px, 94vw);
-      height: min(900px, 88vh);
-      background: var(--jj-bg-panel);
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-lg, 22px);
-      box-shadow: var(--jj-shadow-pop);
-      overflow: hidden;
-      animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
-    }
-    @keyframes pop {
-      from {
-        opacity: 0;
-        transform: scale(0.975);
-      }
-    }
-    .panel:focus {
-      outline: none;
-    }
-    header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 12px 14px 12px 20px;
-      border-bottom: 1px solid var(--jj-border);
-    }
-    h2 {
-      margin: 0;
-      font-family: var(--jj-sans);
-      font-size: var(--jj-text-md, 13px);
-      font-weight: 650;
-      color: var(--jj-fg);
-    }
-    .hint {
-      font-family: var(--jj-sans);
-      font-size: var(--jj-text-sm, 11.5px);
-      color: var(--jj-fg-muted);
-    }
-    .spacer {
-      flex: 1;
-    }
-    button {
-      border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-sm, 8px);
-      background: var(--jj-surface);
-      color: var(--jj-fg-soft);
-      font-family: var(--jj-sans);
-      font-size: var(--jj-text-sm, 11.5px);
-      font-weight: 550;
-      padding: 4px 10px;
-      cursor: pointer;
-      transition:
-        border-color var(--jj-t-2, 180ms) ease,
-        color var(--jj-t-2, 180ms) ease;
-    }
-    button:hover {
-      border-color: var(--jj-border-strong);
-      color: var(--jj-fg);
-    }
-    button:focus-visible {
-      outline: 2px solid var(--jj-accent);
-      outline-offset: 1px;
-    }
-    /* Fixed width, tabular figures: the readout sits between the two buttons it
-       describes, and letting it size to its content shifted them on every step. */
-    .level {
-      width: 5ch;
-      text-align: center;
-      font-family: var(--jj-mono);
-      font-size: var(--jj-text-sm, 11.5px);
-      font-variant-numeric: tabular-nums;
-      color: var(--jj-fg-muted);
-    }
-    .viewport {
-      position: relative;
-      flex: 1;
-      min-height: 0;
-      overflow: hidden;
-      cursor: grab;
-      touch-action: none;
-    }
-    .viewport.dragging {
-      cursor: grabbing;
-    }
-    .stage {
-      position: absolute;
-      inset: 0;
-      transform-origin: 0 0;
-    }
-    /* mermaid writes its own width and a max-width in a style attribute, sized
-       for the column the figure sat in. The stage is the frame now, so the SVG
-       fills it and its viewBox does the letterboxing. */
-    .stage svg {
-      width: 100% !important;
-      height: 100% !important;
-      max-width: none !important;
-    }
-    @media (prefers-reduced-motion: reduce) {
-      :host,
       .panel {
-        animation: none;
+        display: flex;
+        flex-direction: column;
+        width: min(1400px, 94vw);
+        height: min(900px, 88vh);
+        background: var(--jj-bg-panel);
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-lg, 22px);
+        box-shadow: var(--jj-shadow-pop);
+        overflow: hidden;
+        animation: pop var(--jj-t-3, 260ms) var(--jj-ease-pop, ease-out);
       }
-    }
-  `;
+      /* Replaces the shared keyframes, which are adopted before this sheet: a
+         panel this size sliding down reads as a drop rather than a zoom. */
+      @keyframes pop {
+        from {
+          opacity: 0;
+          transform: scale(0.975);
+        }
+      }
+      .panel:focus {
+        outline: none;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px 12px 20px;
+        border-bottom: 1px solid var(--jj-border);
+      }
+      h2 {
+        margin: 0;
+        font-family: var(--jj-sans);
+        font-size: var(--jj-text-md, 13px);
+        font-weight: 650;
+        color: var(--jj-fg);
+      }
+      .hint {
+        font-family: var(--jj-sans);
+        font-size: var(--jj-text-sm, 11.5px);
+        color: var(--jj-fg-muted);
+      }
+      .spacer {
+        flex: 1;
+      }
+      button {
+        border: 1px solid var(--jj-border);
+        border-radius: var(--jj-r-sm, 8px);
+        background: var(--jj-surface);
+        color: var(--jj-fg-soft);
+        font-family: var(--jj-sans);
+        font-size: var(--jj-text-sm, 11.5px);
+        font-weight: 550;
+        padding: 4px 10px;
+        cursor: pointer;
+        transition:
+          border-color var(--jj-t-2, 180ms) ease,
+          color var(--jj-t-2, 180ms) ease;
+      }
+      button:hover {
+        border-color: var(--jj-border-strong);
+        color: var(--jj-fg);
+      }
+      button:focus-visible {
+        outline: 2px solid var(--jj-accent);
+        outline-offset: 1px;
+      }
+      /* Fixed width, tabular figures: the readout sits between the two buttons it
+         describes, and letting it size to its content shifted them on every step. */
+      .level {
+        width: 5ch;
+        text-align: center;
+        font-family: var(--jj-mono);
+        font-size: var(--jj-text-sm, 11.5px);
+        font-variant-numeric: tabular-nums;
+        color: var(--jj-fg-muted);
+      }
+      .viewport {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        cursor: grab;
+        touch-action: none;
+      }
+      .viewport.dragging {
+        cursor: grabbing;
+      }
+      .stage {
+        position: absolute;
+        inset: 0;
+        transform-origin: 0 0;
+      }
+      /* mermaid writes its own width and a max-width in a style attribute, sized
+         for the column the figure sat in. The stage is the frame now, so the SVG
+         fills it and its viewBox does the letterboxing. */
+      .stage svg {
+        width: 100% !important;
+        height: 100% !important;
+        max-width: none !important;
+      }
+    `,
+  ];
 
   /** Rendered, already-scrubbed SVG markup. */
   @property() svg = '';
@@ -161,43 +153,20 @@ export class DiagramView extends LitElement {
   private static readonly MIN = 0.4;
   private static readonly MAX = 8;
 
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-    window.addEventListener('keydown', this.onWindowKey);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    window.removeEventListener('keydown', this.onWindowKey);
-    super.disconnectedCallback();
-  }
-
   override firstUpdated() {
     // The panel owns the keyboard while it is open, so it has to be able to
     // receive keys in the first place.
     this.renderRoot.querySelector<HTMLElement>('.panel')?.focus();
   }
 
-  private onBackdrop = (event: MouseEvent) => {
-    // Retargeting: a listener on the host sees inside clicks as the host too, so
-    // the composed path's origin is the only thing that distinguishes them.
-    if (event.composedPath()[0] === this) this.close();
-  };
-
   /**
-   * Escape only. Every other key is handled on the panel and stopped there —
-   * `App.onGlobalKey` reads `event.target`, which by the time an event from
-   * inside a shadow root reaches window is this host, so `+` and `0` would fall
-   * through to the diff behind the dialog.
+   * The zoom keys, stopped here rather than let through: `App.onGlobalKey`
+   * reads `event.target`, which by the time an event from inside a shadow root
+   * reaches window is this host, so `+` and `0` would fall through to the diff
+   * behind the dialog. Escape is not one of them — the base's window listener
+   * owns it, which is also what catches it after a click on the scrim.
    */
-  private onWindowKey = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    this.close();
-  };
-
-  private onPanelKey = (event: KeyboardEvent) => {
+  protected override onPanelKey = (event: KeyboardEvent) => {
     const step = event.shiftKey ? 2 : 1.25;
     if (event.key === '+' || event.key === '=') {
       this.zoomAtCentre(step);
@@ -214,7 +183,7 @@ export class DiagramView extends LitElement {
     event.stopPropagation();
   };
 
-  private close() {
+  protected override dismiss() {
     this.dispatchEvent(new Event('close'));
   }
 
@@ -291,7 +260,7 @@ export class DiagramView extends LitElement {
         <span class="level">${Math.round(this.scale * 100)}%</span>
         <button title="Zoom in (+)" @click=${() => this.zoomAtCentre(1.25)}>+</button>
         <button title="Fit the diagram to the pane (0)" @click=${this.reset}>Fit</button>
-        <button title="Close (Esc)" @click=${this.close}>Close</button>
+        <button title="Close (Esc)" @click=${this.dismiss}>Close</button>
       </header>
       <div
         class="viewport ${this.dragging ? 'dragging' : ''}"

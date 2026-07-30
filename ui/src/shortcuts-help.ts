@@ -1,7 +1,8 @@
-import { css, html, LitElement } from 'lit';
+import { css, html } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 
 import { shortcutReference } from './keys.js';
+import { OverlayElement } from './overlay.js';
 
 /**
  * The `?` shortcut sheet. A leaf overlay with no cross-boundary text selection,
@@ -9,7 +10,7 @@ import { shortcutReference } from './keys.js';
  * custom properties, which do pierce the boundary.
  */
 @customElement('jj-shortcuts-help')
-export class ShortcutsHelp extends LitElement {
+export class ShortcutsHelp extends OverlayElement {
   static override styles = css`
     :host {
       position: fixed;
@@ -92,26 +93,16 @@ export class ShortcutsHelp extends LitElement {
   /** The configured command-palette binding, e.g. "Mod+k". */
   @property() commandBar = 'Mod+k';
 
-  private close() {
+  /**
+   * `App.onGlobalKey` opens and closes this sheet — `?` toggles it and Escape
+   * is answered in the same chain — so a window listener here would be a second
+   * one closing it on the same keystroke.
+   */
+  protected override escapeOnWindow = false;
+
+  protected override dismiss() {
     this.dispatchEvent(new Event('close'));
   }
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    super.disconnectedCallback();
-  }
-
-  private onBackdrop = (event: MouseEvent) => {
-    // `event.target` is retargeted to the host for a listener bound to the host,
-    // so an inside click reads as an outside one. The composed path's first
-    // entry is the real origin — the host itself only when the scrim was hit.
-    if (event.composedPath()[0] === this) this.close();
-  };
 
   protected override render() {
     return html`

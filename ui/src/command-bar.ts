@@ -1,5 +1,7 @@
-import { css, html, LitElement, nothing, type PropertyValues } from 'lit';
+import { css, html, nothing, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
+
+import { OverlayElement } from './overlay.js';
 
 export interface Command {
   id: string;
@@ -12,7 +14,7 @@ export interface Command {
 
 /** Cmd/Ctrl+Shift+P command palette: filter, arrows, enter, escape. */
 @customElement('jj-command-bar')
-export class CommandBar extends LitElement {
+export class CommandBar extends OverlayElement {
   static override styles = css`
     /* The palette is the app's one genuinely floating surface, so it is the one
        place the full elevation and blur budget is spent. */
@@ -145,6 +147,13 @@ export class CommandBar extends LitElement {
     }
   `;
 
+  /**
+   * Escape arrives on the panel — the filter box has focus the whole time the
+   * palette is up — and the palette must not stop the keys it does not use, or
+   * the binding that opened it would no longer close it.
+   */
+  protected override escapeOnWindow = false;
+
   @property({ attribute: false }) commands: Command[] = [];
 
   @state() private filter = '';
@@ -196,12 +205,12 @@ export class CommandBar extends LitElement {
     return this.commands.filter((command) => command.label.toLowerCase().includes(needle));
   }
 
-  private close() {
+  protected override dismiss() {
     this.dispatchEvent(new Event('close'));
   }
 
   private pick(command: Command) {
-    this.close();
+    this.dismiss();
     command.run();
   }
 
@@ -209,7 +218,11 @@ export class CommandBar extends LitElement {
     const matches = this.filtered;
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.close();
+      // Stopped, unlike the keys below: dismissing here clears the flag
+      // `App.onGlobalKey` guards on, so the same Escape would go on to end the
+      // review behind the palette it just closed.
+      event.stopPropagation();
+      this.dismiss();
     } else if (event.key === 'ArrowDown') {
       event.preventDefault();
       this.active = Math.min(this.active + 1, matches.length - 1);
@@ -260,23 +273,6 @@ export class CommandBar extends LitElement {
       </div>
     `;
   }
-
-  override connectedCallback() {
-    super.connectedCallback();
-    this.addEventListener('click', this.onBackdrop);
-  }
-
-  override disconnectedCallback() {
-    this.removeEventListener('click', this.onBackdrop);
-    super.disconnectedCallback();
-  }
-
-  private onBackdrop = (event: MouseEvent) => {
-    // `event.target` is retargeted to the host for a listener bound to the host,
-    // so an inside click reads as an outside one. The composed path's first
-    // entry is the real origin — the host itself only when the scrim was hit.
-    if (event.composedPath()[0] === this) this.close();
-  };
 }
 
 declare global {

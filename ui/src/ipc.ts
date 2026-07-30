@@ -285,8 +285,15 @@ export interface ChangeVersion {
 /** True inside the Tauri shell; false in a plain browser (`pnpm dev`), where fixtures serve. */
 const IN_TAURI = '__TAURI_INTERNALS__' in window;
 
-const mock = async <T>(load: (m: typeof import('./mock.js')) => T): Promise<T> =>
-  load(await import('./mock.js'));
+/**
+ * `T | PromiseLike<T>` so a loader that is itself async infers `T` as what it
+ * resolves to: typed as plain `T`, an async fixture came back as
+ * `Promise<Promise<X>>`, which two call sites flattened with an `.then` that
+ * read as a no-op and was quietly load-bearing.
+ */
+const mock = async <T>(
+  load: (m: typeof import('./mock.js')) => T | PromiseLike<T>,
+): Promise<T> => load(await import('./mock.js'));
 
 export const getLaunchOptions = (): Promise<LaunchOptions> =>
   IN_TAURI
@@ -319,7 +326,7 @@ export const generateWalkthrough = (
         ignoreWhitespace,
         context,
       })
-    : mock((m) => m.mockGenerateWalkthrough(changeId)).then((walkthrough) => walkthrough);
+    : mock((m) => m.mockGenerateWalkthrough(changeId));
 export const getConfig = (): Promise<Config> =>
   IN_TAURI ? invoke<Config>('get_config') : mock((m) => m.mockConfig);
 export const getRepoState = (revset?: string): Promise<RepoState> =>
@@ -460,9 +467,6 @@ export const gitPush = (options: {
         operation: 'mock-op',
         pullRequestUrl: 'https://example.test/pulls/new?sourceBranch=demo',
       });
-export const getRemotes = (): Promise<string[]> =>
-  IN_TAURI ? invoke<string[]>('remotes') : Promise.resolve(['origin']);
-
 // -- Operation log / undo --
 export const getOperationLog = (limit = 100): Promise<Operation[]> =>
   IN_TAURI ? invoke<Operation[]>('operation_log', { limit }) : mock((m) => m.mockOperations);
@@ -524,9 +528,6 @@ export const setCommentResolved = (id: number, resolved: boolean) =>
 
 export const deleteComment = (id: number) =>
   IN_TAURI ? invoke<void>('delete_comment', { id }) : Promise.resolve();
-
-export const updateComment = (id: number, body: string) =>
-  IN_TAURI ? invoke<void>('update_comment', { id, body }) : Promise.resolve();
 
 /** Re-anchor comments against the current diff; returns how many moved. */
 export const refreshCommentAnchors = (
@@ -786,7 +787,6 @@ export const setConfigValue = (
     ? invoke<string>('set_config_value', { table, key, value })
     : Promise.resolve('(mock) ~/.config/jjdiff/config.toml');
 
-/** Where the settings live, so the page can name the file it edits. */
 /**
  * Write a commit message for the diff with the configured agent CLI.
  *
@@ -800,14 +800,16 @@ export const generateDescription = (
 ): Promise<string> =>
   IN_TAURI
     ? invoke<string>('generate_description', { revset, ignoreWhitespace })
-    : mock(async (m) => m.mockGeneratedDescription()).then((text) => text);
+    : mock(async (m) => m.mockGeneratedDescription());
 
+/** Where the settings live, so the page can name the file it edits. */
 export const getConfigPath = (): Promise<string> =>
   IN_TAURI ? invoke<string>('config_file_path') : Promise.resolve('~/.config/jjdiff/config.toml');
 
 /**
  * Open a repo-relative path in the configured editor. Rejects with a message
- * naming the config key when `[editor] command` is unset.
+ * beginning "no editor configured" when `[editor] command` is unset — the app
+ * matches that prefix to offer the setting instead of the raw error.
  */
 export const openInEditor = (path: string, line?: number): Promise<void> =>
   IN_TAURI

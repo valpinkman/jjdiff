@@ -32,20 +32,26 @@ pub fn diff_worktree(
     base_commit: Option<&str>,
     options: WorktreeDiffOptions,
 ) -> Result<Vec<FilePatch>, DiffError> {
-    let gix_err = |error: &dyn std::fmt::Display| DiffError::Gix(error.to_string());
+    // The repo-wide reads name the root rather than a file: there is no one path
+    // they are about, and the operation is what tells them apart.
+    let root = repo_root.display().to_string();
 
-    let repo = gix::open(repo_root).map_err(|e| gix_err(&e))?;
+    let repo =
+        gix::open(repo_root).map_err(|e| DiffError::gix(&root, "opening the repository", e))?;
     let mut base = BTreeMap::new();
     let mut conflicted: Vec<String> = Vec::new();
     if let Some(hex) = base_commit {
-        let oid = gix::ObjectId::from_hex(hex.as_bytes()).map_err(|e| gix_err(&e))?;
+        let oid = gix::ObjectId::from_hex(hex.as_bytes())
+            .map_err(|e| DiffError::gix(&root, "reading the base commit id", e))?;
         let commit = repo
             .find_object(oid)
-            .map_err(|e| gix_err(&e))?
+            .map_err(|e| DiffError::gix(&root, "reading the base commit", e))?
             .try_into_commit()
-            .map_err(|e| gix_err(&e))?;
-        let tree = commit.tree().map_err(|e| gix_err(&e))?;
-        collect_tree(&tree, &mut base, &mut conflicted).map_err(|e| gix_err(&e))?;
+            .map_err(|e| DiffError::gix(&root, "reading the base commit", e))?;
+        let tree = commit
+            .tree()
+            .map_err(|e| DiffError::gix(&root, "reading the base tree", e))?;
+        collect_tree(&root, &tree, &mut base, &mut conflicted)?;
     }
 
     let mut worktree = collect_worktree(repo_root, global_excludes(&repo).as_deref())?;
@@ -148,14 +154,21 @@ fn detect_renames(patches: &mut Vec<FilePatch>) {
 }
 
 /// Walk `tree` recording blob entries; `.jjconflict-*` subtrees become conflicted paths.
+///
+/// Reports `DiffError` like everything else in the crate: it used to hand back a
+/// boxed error that the caller flattened into the same variant as the blob
+/// reads, so a failed tree walk was indistinguishable from an unreadable file.
 fn collect_tree(
+    root: &str,
     tree: &gix::Tree<'_>,
     out: &mut BTreeMap<String, gix::ObjectId>,
     conflicted: &mut Vec<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), DiffError> {
     use gix::traverse::tree::Recorder;
     let mut recorder = Recorder::default();
-    tree.traverse().breadthfirst(&mut recorder)?;
+    tree.traverse()
+        .breadthfirst(&mut recorder)
+        .map_err(|e| DiffError::gix(root, "walking the base tree", e))?;
     for entry in recorder.records {
         let path = entry.filepath.to_string();
         if let Some(position) = path.find(".jjconflict") {
@@ -299,13 +312,14 @@ fn unchanged(
 ) -> Result<bool, DiffError> {
     let header = repo
         .find_header(oid)
-        .map_err(|e| DiffError::Gix(e.to_string()))?;
+        .map_err(|e| DiffError::gix(path, "reading the base blob header", e))?;
     if header.size() != fs_size {
         return Ok(false);
     }
-    let data = std::fs::read(root.join(path))?;
+    let data =
+        std::fs::read(root.join(path)).map_err(|e| DiffError::io(path, "reading the file", e))?;
     let fs_oid = gix::objs::compute_hash(repo.object_hash(), gix::objs::Kind::Blob, &data)
-        .map_err(|e| DiffError::Gix(e.to_string()))?;
+        .map_err(|e| DiffError::gix(path, "hashing the file", e))?;
     Ok(fs_oid == oid)
 }
 
@@ -345,7 +359,7 @@ fn diff_pair(
     let old_bytes = match old {
         Some(oid) => repo
             .find_object(oid)
-            .map_err(|e| DiffError::Gix(e.to_string()))?
+            .map_err(|e| DiffError::gix(path, "reading the base blob", e))?
             .detach()
             .data,
         None => Vec::new(),
@@ -354,7 +368,9 @@ fn diff_pair(
         return Ok(Some(skipped_patch(path.to_string(), status, "file too large")));
     }
     let new_bytes = match new {
-        Some((root, _)) => std::fs::read(root.join(path))?,
+        Some((root, _)) => {
+            std::fs::read(root.join(path)).map_err(|e| DiffError::io(path, "reading the file", e))?
+        }
         None => Vec::new(),
     };
 
@@ -490,6 +506,16 @@ fn strip_ws(line: &str) -> String {
 mod tests {
     use super::*;
     use std::process::Command;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Concurrent `jj git init` invocations are flaky ("Failed to check out the initial
+    /// commit"); serialize every jj-backed test. Also serializes the one test that
+    /// moves the process-global cwd against the three that shell out.
+    static JJ_LOCK: Mutex<()> = Mutex::new(());
+
+    fn jj_serial() -> MutexGuard<'static, ()> {
+        JJ_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn jj(dir: &Path, args: &[&str]) {
         let out = Command::new("jj")
@@ -550,6 +576,7 @@ mod tests {
     /// change. Hence the cwd loop rather than a single call.
     #[test]
     fn global_excludes_apply_from_any_working_directory() {
+        let _guard = jj_serial();
         if Command::new("jj").arg("--version").output().is_err() {
             eprintln!("skipping: jj not installed");
             return;
@@ -614,6 +641,7 @@ mod tests {
     /// this up, and it produced 1467 phantom deletions on one repo.
     #[test]
     fn tracked_files_survive_an_ignore_rule_that_matches_them() {
+        let _guard = jj_serial();
         if Command::new("jj").arg("--version").output().is_err() {
             eprintln!("skipping: jj not installed");
             return;
@@ -707,6 +735,7 @@ mod tests {
     /// project showed up as 44 phantom additions in a review.
     #[test]
     fn a_nested_git_repository_is_not_part_of_this_one() {
+        let _guard = jj_serial();
         if Command::new("jj").arg("--version").output().is_err() {
             eprintln!("skipping: jj not installed");
             return;
@@ -744,6 +773,7 @@ mod tests {
 
     #[test]
     fn diffs_live_worktree_without_snapshotting() {
+        let _guard = jj_serial();
         if Command::new("jj").arg("--version").output().is_err() {
             eprintln!("skipping: jj not installed");
             return;

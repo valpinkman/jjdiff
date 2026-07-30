@@ -19,6 +19,12 @@
 //!    match the ones jj itself would have chosen: any correct cut of the same
 //!    left→right change composes back to the same right.
 //!
+//! Both hold verbatim, but over lines rather than bytes: a file whose every
+//! line ends in `\r` is stripped of them before either check and terminated
+//! with them again afterwards, because no plan line carries a `\r` and a CRLF
+//! file would otherwise fail guard 1 on every hunk. Mixed endings are compared
+//! as they sit on disk and refused, rather than rewritten into one convention.
+//!
 //! Offsets are all old-side, and unselected regions are copied from the old
 //! side verbatim, so no offset arithmetic is needed between hunks.
 
@@ -66,6 +72,28 @@ pub fn apply_selected_hunks(
     let (left_lines, left_newline) = split_lines(left);
     let (right_lines, right_newline) = split_lines(right);
 
+    // A plan's text never carries a `\r`: it comes from `jj diff --git`, parsed
+    // with `str::lines`, which treats `\r\n` as the terminator. `left` and
+    // `right` are jj's own bytes, which keep it. Compared as they are, every
+    // hunk of a CRLF file is refused over a terminator nobody touched, so strip
+    // the `\r` here and put it back in `join`. Only when *every* line of both
+    // sides carries one: a file with mixed endings is compared exactly as it
+    // sits on disk and fails safe, rather than being quietly rewritten into one
+    // convention. Within the normalised domain the comparison stays exact —
+    // both guards still catch a plan that differs from the file by a line.
+    //
+    // A CR-only file is uniform by this test and loses its final byte, because
+    // its whole content is one line and `join` writes no terminator after the
+    // last one. It cannot arrive here: `supportsHunkSelection` needs more than
+    // one hunk and a one-line file has one. Loosen that and this needs a rule
+    // for an unterminated last line first.
+    let carriage_returns = left_lines.iter().chain(&right_lines).all(|line| line.ends_with('\r'));
+    let (left_lines, right_lines) = if carriage_returns {
+        (strip_carriage_returns(&left_lines), strip_carriage_returns(&right_lines))
+    } else {
+        (left_lines, right_lines)
+    };
+
     let whole = compose(path, &left_lines, hunks, |_| true)?;
     if whole.lines != right_lines {
         return Err(ApplyError::Mismatch { path: path.to_string() });
@@ -79,7 +107,7 @@ pub fn apply_selected_hunks(
     // guessing "always newline" would silently add a byte to a file that never
     // had one.
     let newline = if picked.tail_from_left { left_newline } else { right_newline };
-    Ok(join(&picked.lines, newline))
+    Ok(join(&picked.lines, newline, carriage_returns))
 }
 
 struct Composed<'a> {
@@ -157,10 +185,15 @@ fn split_lines(text: &str) -> (Vec<&str>, bool) {
     (lines, newline)
 }
 
-fn join(lines: &[&str], newline: bool) -> String {
-    let mut out = lines.join("\n");
+fn strip_carriage_returns<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    lines.iter().map(|&line| line.strip_suffix('\r').unwrap_or(line)).collect()
+}
+
+fn join(lines: &[&str], newline: bool, carriage_returns: bool) -> String {
+    let terminator = if carriage_returns { "\r\n" } else { "\n" };
+    let mut out = lines.join(terminator);
     if newline && !lines.is_empty() {
-        out.push('\n');
+        out.push_str(terminator);
     }
     out
 }
@@ -292,16 +325,99 @@ mod tests {
         assert_eq!(apply_selected_hunks("f", left, right, &hunks).unwrap(), "one\nTWO\n");
     }
 
+    /// A plan's text never contains a `\r` — no producer emits one — so a CRLF
+    /// file only works if both sides are normalised before the arithmetic and
+    /// the terminators written back afterwards.
     #[test]
     fn carriage_returns_survive_a_split() {
-        let left = "one\r\ntwo\r\n";
-        let right = "ONE\r\ntwo\r\n";
+        let left = "one\r\ntwo\r\nthree\r\n";
+        let right = "ONE\r\ntwo\r\nTHREE\r\n";
+        let hunks = vec![
+            PlanHunk {
+                selected: true,
+                old_start: 1,
+                old_lines: 2,
+                lines: vec![
+                    line(LineKind::Removed, "one"),
+                    line(LineKind::Added, "ONE"),
+                    line(LineKind::Context, "two"),
+                ],
+            },
+            PlanHunk {
+                selected: false,
+                old_start: 3,
+                old_lines: 1,
+                lines: vec![line(LineKind::Removed, "three"), line(LineKind::Added, "THREE")],
+            },
+        ];
+        let picked = apply_selected_hunks("f", left, right, &hunks).unwrap();
+        assert_eq!(picked, "ONE\r\ntwo\r\nthree\r\n");
+    }
+
+    /// Normalising is only safe where it changes nothing: in a file that mixes
+    /// terminators, agreeing with the plan would mean rewriting the endings of
+    /// lines the reviewer never selected, so the exact comparison stands and
+    /// the split is refused instead.
+    #[test]
+    fn a_file_with_mixed_line_endings_is_refused_rather_than_normalised() {
+        let left = "one\r\ntwo\nthree\r\n";
+        let right = "ONE\r\ntwo\nthree\r\n";
         let hunks = vec![PlanHunk {
             selected: true,
             old_start: 1,
             old_lines: 1,
-            lines: vec![line(LineKind::Removed, "one\r"), line(LineKind::Added, "ONE\r")],
+            lines: vec![line(LineKind::Removed, "one"), line(LineKind::Added, "ONE")],
         }];
-        assert_eq!(apply_selected_hunks("f", left, right, &hunks).unwrap(), right);
+        let error = apply_selected_hunks("f.txt", left, right, &hunks).unwrap_err();
+        assert!(matches!(error, ApplyError::Stale { line: 1, .. }), "{error}");
+    }
+
+    /// The seam every other test here steps over: the plan the frontend sends
+    /// is built from parsed `jj diff --git` output, and it is that parse — not
+    /// the arithmetic — that decides what a plan line looks like.
+    #[test]
+    fn a_parsed_crlf_patch_applies_to_the_file_it_came_from() {
+        // Headers are git's own bytes and end in `\n`; body lines are the
+        // file's, so they carry its `\r`.
+        let patch = concat!(
+            "diff --git a/f.txt b/f.txt\n",
+            "index 1111111111..2222222222 100644\n",
+            "--- a/f.txt\n",
+            "+++ b/f.txt\n",
+            "@@ -1,4 +1,4 @@\n",
+            "-one\r\n",
+            "+ONE\r\n",
+            " two\r\n",
+            " three\r\n",
+            " four\r\n",
+            "@@ -6,4 +6,4 @@\n",
+            " six\r\n",
+            " seven\r\n",
+            " eight\r\n",
+            "-nine\r\n",
+            "+NINE\r\n",
+        );
+        let left = "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\n";
+        let right = "ONE\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nNINE\r\n";
+
+        // What `App.buildSplitPlan` does: the hunk on screen, verbatim.
+        let files = crate::parse_git_patch(patch).unwrap();
+        let plan: Vec<PlanHunk> = files[0]
+            .hunks
+            .iter()
+            .enumerate()
+            .map(|(index, hunk)| PlanHunk {
+                selected: index == 0,
+                old_start: hunk.old_start,
+                old_lines: hunk.old_lines,
+                lines: hunk.lines.iter().map(|l| line(l.kind, &l.text)).collect(),
+            })
+            .collect();
+
+        let picked = apply_selected_hunks("f.txt", left, right, &plan).unwrap();
+        assert_eq!(
+            picked,
+            "ONE\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\n"
+        );
     }
 }

@@ -35,12 +35,36 @@ pub struct ReviewStore {
 }
 
 impl ReviewStore {
+    /// Three cases, not one. No file yet is the ordinary first run. A file we
+    /// cannot read or cannot parse is a *loss*: the store stays writable, so the
+    /// next toggle would write an empty map over walkthroughs that cost minutes
+    /// of agent time each. Rename it aside first, timestamped so a second
+    /// failure does not clobber the first rescue.
     pub fn load(path: PathBuf) -> ReviewStore {
-        let data = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default();
+        let data = match std::fs::read_to_string(&path) {
+            Ok(raw) => match serde_json::from_str(&raw) {
+                Ok(data) => data,
+                Err(error) => Self::rescue(&path, error),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Data::default(),
+            Err(error) => Self::rescue(&path, error),
+        };
         ReviewStore { path: Some(path), data }
+    }
+
+    fn rescue(path: &std::path::Path, error: impl std::fmt::Display) -> Data {
+        eprintln!("jjdiff: ignoring unreadable {}: {error}", path.display());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or(0);
+        let aside = path.with_extension(format!("bad.{stamp}"));
+        if let Err(error) = std::fs::rename(path, &aside) {
+            eprintln!("jjdiff: could not set aside {}: {error}", path.display());
+        } else {
+            eprintln!("jjdiff: kept the old review state at {}", aside.display());
+        }
+        Data::default()
     }
 
     fn key(repo: &str, change_id: &str) -> String {
@@ -105,8 +129,16 @@ impl ReviewStore {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(json) = serde_json::to_string(&self.data) {
-            let _ = std::fs::write(path, json);
+        match serde_json::to_string(&self.data) {
+            Ok(json) => {
+                if let Err(error) = std::fs::write(path, json) {
+                    eprintln!(
+                        "jjdiff: could not save review state to {}: {error}",
+                        path.display()
+                    );
+                }
+            }
+            Err(error) => eprintln!("jjdiff: could not serialize review state: {error}"),
         }
     }
 }
@@ -135,6 +167,45 @@ mod tests {
         assert!(reloaded.viewed("/elsewhere", "abcd").is_empty());
         assert_eq!(reloaded.reviewed_commit("/repo", "abcd").as_deref(), Some("commit111"));
         assert_eq!(reloaded.reviewed_commit("/repo", "wxyz"), None);
+    }
+
+    #[test]
+    fn a_corrupt_file_is_set_aside_rather_than_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("review.json");
+        std::fs::write(&file, "{ not json").unwrap();
+
+        let mut store = ReviewStore::load(file.clone());
+        store.set_viewed("/repo", "abcd", "src/main.rs", true);
+
+        let rescued: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("review.bad."))
+            .collect();
+        assert_eq!(rescued.len(), 1, "the unparseable file should still be on disk");
+        assert_eq!(std::fs::read_to_string(rescued[0].path()).unwrap(), "{ not json");
+    }
+
+    /// `repo\u{1}change_id` is a file format, not an implementation detail: a
+    /// user's viewed flags and reviewed commits are already on disk under
+    /// exactly these strings, and a store that spelled the key differently
+    /// would read as an empty first run rather than as an error. Parsing a file
+    /// written by hand is the point — a round-trip through this build would
+    /// agree with whatever format it invented.
+    #[test]
+    fn reads_state_stored_under_the_documented_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("review.json");
+        std::fs::write(
+            &file,
+            r#"{"viewed":{"/repo\u0001abcd":["src/main.rs"]},"reviewed":{"/repo\u0001abcd":"commit111"}}"#,
+        )
+        .unwrap();
+
+        let store = ReviewStore::load(file);
+        assert_eq!(store.viewed("/repo", "abcd"), vec!["src/main.rs"]);
+        assert_eq!(store.reviewed_commit("/repo", "abcd").as_deref(), Some("commit111"));
     }
 
     #[test]
