@@ -250,7 +250,15 @@ top edge — that is what reads as height on a dark page.
   a rounded row inside a padded list reads as a card in a stack of cards. Log rows,
   palette entries, and any list added later. Two exceptions: the keyboard cursor in the
   diff keeps its 3px inset bar (it is a *cursor*, not a selection), and the icon rail
-  has no bar at all, because its leading edge is the window's.
+  has no bar at all, because its leading edge is the window's. And a **card** is marked on
+  its border, not filled: the workspace you are in carries the accent-tinted border the
+  walkthrough banner carries, because a rounded card in a padded list is the case the rule
+  above already rules out — the fill is `accent-soft` over a surface, a third colour that is
+  neither, and the bar has no edge of the pane to sit on, so it hangs in the gutter beside
+  the card instead of on it. That is what settles the one row in the diff the cursor
+  exception above does not fit: a **file header** is the lid of a card, rounded and inset
+  like any other, so the cursor marks it on its border while every line row under it keeps
+  the 3px bar. The rule is the row's shape, not which list it is in.
 - **Tabs are a segmented control** on a recessed track, and the active pane is marked by a
   raised slab that *slides* between segments. The movement is what says the panes are
   neighbours on one strip; a fill that blinks on somewhere else does not.

@@ -2800,7 +2800,6 @@ jj-app .workspace-new {
 }
 
 jj-app .workspace-item {
-  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--jj-s-1);
@@ -2810,29 +2809,13 @@ jj-app .workspace-item {
   background: var(--jj-surface);
 }
 
-/* The one you are in gets the same cursor bar as a selected log row — selection is one
-   shape everywhere in this app. */
+/* The one you are in is marked the way the walkthrough banner marks itself: an accent-tinted
+   border on an ordinary card. It was a gutter bar over an `accent-soft` fill, and the fill was
+   the problem the walk-banner comment already names — accent-soft over a surface is a third
+   colour that is neither, and it landed as a muddy panel with a stripe hanging off its side.
+   The border carries the accent where it stays the accent. */
 jj-app .workspace-item.here {
-  background: var(--jj-accent-soft);
-}
-
-/* Beside the card, not on it. An inset shadow is clipped to the border-radius, so on a
-   rounded card the bar bent around both left corners; inset far enough to clear the curve
-   it just looked short. Out in the pane's own gutter it owes the corners nothing and can
-   run the full height — a marker in the margin, which is what a cursor is.
-
-   `right: calc(100% + …)` rather than a negative `left`: it reads off the card's edge
-   instead of a number that has to be re-derived whenever the padding changes. It stays
-   inside the pane's 8px padding, so the scroll container has nothing to clip or scroll. */
-jj-app .workspace-item.here::before {
-  content: '';
-  position: absolute;
-  right: calc(100% + 3px);
-  top: 1px;
-  bottom: 1px;
-  width: 3px;
-  border-radius: var(--jj-r-pill);
-  background: var(--jj-accent);
+  border-color: color-mix(in srgb, var(--jj-accent) 30%, var(--jj-border));
 }
 
 jj-app .workspace-item.missing {
@@ -4026,6 +4009,22 @@ jj-patch-view .file-header.stuck.closing {
   width: 3px;
   background: var(--jj-accent);
   z-index: 1;
+}
+
+/* Except on the one row that is a card. The comment above describes the bar being
+   fought off the header's rounded corner and won; drawing it as a child stopped it
+   bowing, but it still read as a stripe stuck to the side of a card rather than as a
+   marker in a gutter — there is no gutter here, the card's edge is where the pane's
+   padding ends. So the header is marked the way every other card in the app is marked
+   (the walkthrough banner, the active workspace): the accent on its own border. Only
+   the header — a line row is square and full-bleed, and DESIGN.md keeps the 3px bar
+   there because it is a cursor, not a selection. */
+.file-header.kbd-cursor::before {
+  content: none;
+}
+
+.file-header.kbd-cursor {
+  border-color: color-mix(in srgb, var(--jj-accent) 30%, var(--jj-border));
 }
 
 .search-match {
