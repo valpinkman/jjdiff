@@ -113,6 +113,7 @@ import {
 import { folderIcon } from './file-icons.js';
 import { prMetaItems, proposalState, type PrMetaContext } from './pr-templates.js';
 import type { FileMenuRequest } from './file-tree.js';
+import type { ChangeMenuRequest } from './log-graph.js';
 import {
   iconAbsorb,
   iconChevron,
@@ -552,6 +553,15 @@ export class App extends LitElement {
   @state() private sidebarWidth = 292;
   /** Open file-tree context menu, anchored at viewport coordinates. */
   @state() private fileMenu: FileMenuRequest | null = null;
+  /**
+   * Open log-graph context menu, anchored at viewport coordinates.
+   *
+   * Carries the change it was opened on rather than reading the selection: the
+   * two are the same by the time it renders (opening one selects the row), but
+   * an entry that acted on "whatever is selected now" would act on the wrong
+   * change if anything moved the selection while the menu was up.
+   */
+  @state() private changeMenu: ChangeMenuRequest | null = null;
   /** The `?` shortcut sheet. */
   @state() private shortcutsOpen = false;
   /** Which forge this repo is on, or null when it is on none we can drive. */
@@ -733,6 +743,9 @@ export class App extends LitElement {
     }
     if (this.fileMenu && !inside('file-menu')) {
       this.fileMenu = null;
+    }
+    if (this.changeMenu && !inside('change-menu')) {
+      this.changeMenu = null;
     }
   };
 
@@ -1737,6 +1750,10 @@ export class App extends LitElement {
       }
       if (this.fileMenu) {
         this.fileMenu = null;
+        return;
+      }
+      if (this.changeMenu) {
+        this.changeMenu = null;
         return;
       }
       if (this.searchOpen) {
@@ -4163,6 +4180,15 @@ export class App extends LitElement {
                 .canRebase=${!this.busy}
                 .workspace=${this.repo?.workspace ?? null}
                 @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
+                @change-menu=${(event: CustomEvent<ChangeMenuRequest>) => {
+                  // Select first: every entry acts on the selection, and a menu
+                  // whose verbs applied to a row the rest of the window is not
+                  // showing is the kind of thing you only notice afterwards.
+                  if (event.detail.change.changeId !== this.selected) {
+                    this.select(event.detail.change);
+                  }
+                  this.changeMenu = event.detail;
+                }}
                 @rebase-drop=${(event: CustomEvent<{ source: Change; destination: Change }>) =>
                   void this.rebaseByDrop(event.detail.source, event.detail.destination)}
               ></jj-log-graph>
@@ -4297,7 +4323,10 @@ export class App extends LitElement {
                     ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
                   </span>
                 </span>
-                <span class="spacer"></span>
+                <!-- No spacer: detail-headings already grows, and a second
+                     flex:1 beside it split the free space evenly — so the title
+                     truncated at half the header while the other half sat empty
+                     as the gap in front of the byline. -->
                 <span class="detail-when"
                   >${change.author.name} · ${relativeTime(change.committer.timestamp)}</span
                 >
@@ -4802,6 +4831,7 @@ export class App extends LitElement {
           ></jj-conflict-resolver>`
         : nothing}
       ${this.renderFileMenu()}
+      ${this.renderChangeMenu()}
     `;
   }
 
@@ -5289,6 +5319,108 @@ export class App extends LitElement {
           }}
         >
           Copy Path
+        </button>
+      </div>
+    `;
+  }
+
+  /**
+   * Log-graph context menu: the verbs for the change under the pointer.
+   *
+   * Opening it selects the row first, so the menu never acts on something the
+   * rest of the window is not showing — and the entries can then be the same
+   * `…Selected()` methods the detail card's buttons call, rather than a second
+   * copy of each verb that would drift from them.
+   *
+   * Rendered at the app root like the file menu, because the sidebar is a
+   * scroll container and would clip it.
+   */
+  private renderChangeMenu() {
+    const menu = this.changeMenu;
+    if (!menu) return nothing;
+    const { change } = menu;
+    const WIDTH = 210;
+    // Enough for the eight entries; the clamp only has to keep the last one on
+    // screen, not be exact.
+    const HEIGHT = 300;
+    const left = Math.min(menu.x, window.innerWidth - WIDTH - 8);
+    const top = Math.min(menu.y, window.innerHeight - HEIGHT - 8);
+    const pick = (run: () => void) => () => {
+      this.changeMenu = null;
+      run();
+    };
+    return html`
+      <div
+        class="more-menu change-menu"
+        role="menu"
+        style="left:${left}px; top:${top}px; min-width:${WIDTH}px"
+      >
+        <button
+          role="menuitem"
+          title=${`jj edit — move the working copy onto this change so your edits land in it.${
+            change.immutable ? ' It is immutable; you will be asked to confirm first.' : ''
+          }`}
+          @click=${pick(() => void this.editSelected())}
+        >
+          Work on this change
+        </button>
+        <button
+          role="menuitem"
+          title="jj new — start an empty change on top of this one, leaving it as it is."
+          @click=${pick(() => this.newOnSelected())}
+        >
+          New change on top
+        </button>
+        <button
+          role="menuitem"
+          title="jj bookmark set — name this change, which is what a push needs."
+          @click=${pick(() => void this.createBookmark())}
+        >
+          Create bookmark…
+        </button>
+        <button
+          role="menuitem"
+          title=${
+            change.immutable
+              ? 'jj rebase -s --ignore-immutable — this change is immutable; you will be asked to confirm first.'
+              : 'jj rebase -s — move this change and everything built on top of it onto a different parent.'
+          }
+          @click=${pick(() => void this.rebaseSelected())}
+        >
+          Rebase…
+        </button>
+        <button
+          role="menuitem"
+          title="jj duplicate — copy this change to a second, independent change with the same content."
+          @click=${pick(() => void this.duplicateSelected())}
+        >
+          Duplicate
+        </button>
+        <button
+          role="menuitem"
+          title="jj evolog — every version this change has been, and an interdiff between any two of them."
+          @click=${pick(() => this.openVersions())}
+        >
+          Versions…
+        </button>
+        <button
+          role="menuitem"
+          title="jj backout — add a NEW change that undoes this one, keeping this one in history."
+          @click=${pick(() => void this.backoutSelected())}
+        >
+          Back out
+        </button>
+        <button
+          class="danger"
+          role="menuitem"
+          title=${
+            change.immutable
+              ? 'jj abandon --ignore-immutable — this change is immutable; you will be asked to confirm first.'
+              : 'jj abandon — remove this change from history entirely. Undoable from the Ops tab.'
+          }
+          @click=${pick(() => void this.abandonSelected())}
+        >
+          Abandon
         </button>
       </div>
     `;

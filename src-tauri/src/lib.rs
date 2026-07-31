@@ -108,6 +108,12 @@ fn load_recents(path: &PathBuf) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Add a repository to the Open Recent list.
+///
+/// Callers pass a [`review_key`] — the *repository*, never a workspace path. A workspace is
+/// a second checkout of somewhere already on this list, so recording one both duplicates an
+/// entry and pushes a real repo off the end. Opening a workspace therefore remembers the
+/// repo it belongs to, and the Trees pane is where its own directories are listed.
 fn remember_repo(state: &tauri::State<'_, AppState>, root: &str) {
     let mut recents = state.recents.lock().expect("recents lock");
     recents.retain(|entry| entry != root);
@@ -1447,7 +1453,7 @@ async fn open_repository(
     path: String,
 ) -> Result<(), String> {
     let repo = discover(path).await?;
-    remember_repo(&state, &repo.root().to_string_lossy());
+    remember_repo(&state, &review_key(&repo));
     let launch = LaunchOptions {
         repo_path: repo.root().to_path_buf(),
         revset: None,
@@ -1476,7 +1482,7 @@ async fn open_repo_window(
             return Ok(());
         }
     }
-    remember_repo(&state, &repo.root().to_string_lossy());
+    remember_repo(&state, &review_key(&repo));
     let launch = LaunchOptions {
         repo_path: repo.root().to_path_buf(),
         revset: None,
@@ -1562,9 +1568,27 @@ async fn pick_repository(app: AppHandle) -> Result<Option<String>, String> {
     Ok(picked.map(|p| p.to_string()))
 }
 
+/// The Open Recent list, with generated workspaces filtered out.
+///
+/// `remember_repo` only records repositories now, but the file on disk outlives that change
+/// and anyone who opened a workspace before it has one stored. Filtering on the way out
+/// costs a string comparison and means the list corrects itself rather than waiting for the
+/// entry to age off the end.
+///
+/// The test is the same prefix `workspaces::is_generated` uses, so it is one rule and not
+/// two: a workspace jjdiff made lives under `[workspace] root`, and one the user made
+/// somewhere of their own choosing is a directory they picked and may reasonably reopen.
 #[tauri::command]
 fn recent_repos(state: tauri::State<'_, AppState>) -> Vec<String> {
-    state.recents.lock().expect("recents lock").clone()
+    let generated_root = config::load().workspace.resolved_root();
+    state
+        .recents
+        .lock()
+        .expect("recents lock")
+        .iter()
+        .filter(|path| !workspaces::is_generated(generated_root.as_deref(), Path::new(path)))
+        .cloned()
+        .collect()
 }
 
 /// Open `path` (repo-relative) in the configured editor, optionally at `line`.
@@ -1962,7 +1986,7 @@ pub fn run(args: Args) {
                         walkthrough_file: parsed.walkthrough_file.clone(),
                         pull_request: parsed.pull_request,
                     };
-                    remember_repo(&state, &repo.root().to_string_lossy());
+                    remember_repo(&state, &review_key(&repo));
                     if let Err(error) = spawn_window(app, &state, repo, launch) {
                         eprintln!("jjdiff: {error}");
                     }
@@ -2084,7 +2108,7 @@ pub fn run(args: Args) {
             // UI still works, it just won't live-refresh.
             let launch = state.launch.clone();
             if let Ok(repo) = Repo::discover(&launch.repo_path) {
-                remember_repo(&state, &repo.root().to_string_lossy());
+                remember_repo(&state, &review_key(&repo));
                 bind_window(app.handle(), &state, MAIN_WINDOW, repo, launch);
             }
             Ok(())

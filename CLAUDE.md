@@ -68,10 +68,12 @@ It and `--diff` compute that diff through the same `compute_diff` the app uses, 
 
 **Light DOM above the diff pane.** `jj-app` and `jj-patch-view` override `createRenderRoot()` to return `this`. A shadow root anywhere above a diff row severs `theme.css` from it and breaks cross-row text selection — this shipped as a real bug. Shadow DOM is fine for leaf widgets (file tree, command bar, walkthrough panel).
 
-**A backtick inside a `css` tagged template ends it.** Twice now, both times in a comment
-explaining a rule (`` `draggable` ``, `` `build@` ``), and the failure is 30 lines of
-"';' expected" pointing at the *class body* rather than at the comment. Write marker syntax
-in CSS comments without backticks.
+**A backtick inside a `css` *or* `html` tagged template ends it.** Three times now, always in
+a comment explaining a rule (`` `draggable` ``, `` `build@` ``, `` `flex: 1` ``), and the
+failure is a page of "';' expected" pointing at the *class body* or some unrelated method
+rather than at the comment. It bites `html` comments exactly as it bites CSS ones — an
+`<!-- … -->` is still inside the template literal. Write marker syntax in both without
+backticks.
 
 **No margins on virtualized rows.** All rows across all files are one flat `virtualize()` list; the virtualizer measures `offsetHeight`, so gaps must come from padding or transparent borders inside the row.
 

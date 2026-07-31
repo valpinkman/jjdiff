@@ -254,6 +254,23 @@ export class LogGraph extends LitElement {
   }
 
   /**
+   * Right-click a row: the verbs for that change, at the pointer.
+   *
+   * Escapes this shadow root like the file tree's does, because the sidebar is a
+   * scroll container and a menu positioned inside it is clipped by it.
+   */
+  private openMenu(event: MouseEvent, change: Change) {
+    event.preventDefault();
+    this.dispatchEvent(
+      new CustomEvent<ChangeMenuRequest>('change-menu', {
+        detail: { change, x: event.clientX, y: event.clientY },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  /**
    * Commit ids the dragged change cannot land on: itself and its descendants.
    *
    * The same exclusion the rebase picker makes, for the same reason — a commit
@@ -389,6 +406,7 @@ export class LogGraph extends LitElement {
               }`
         }
         @click=${() => this.pick(change)}
+        @contextmenu=${(event: MouseEvent) => this.openMenu(event, change)}
         @dragstart=${(event: DragEvent) => this.onDragStart(event, change)}
         @dragend=${this.onDragEnd}
         @dragover=${(event: DragEvent) => this.onDragOver(event, change)}
@@ -439,11 +457,20 @@ const LANE_COLOURS = 6;
 
 const laneStroke = (lane: number) => `stroke: var(--jj-lane-${lane % LANE_COLOURS})`;
 
+/** A right-click on a graph row, and where to put the menu. */
+export interface ChangeMenuRequest {
+  change: Change;
+  /** Viewport coordinates to anchor the menu at. */
+  x: number;
+  y: number;
+}
+
 declare global {
   interface HTMLElementTagNameMap {
     'jj-log-graph': LogGraph;
   }
   interface HTMLElementEventMap {
     'rebase-drop': CustomEvent<{ source: Change; destination: Change }>;
+    'change-menu': CustomEvent<ChangeMenuRequest>;
   }
 }

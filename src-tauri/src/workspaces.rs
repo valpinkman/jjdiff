@@ -136,4 +136,22 @@ mod tests {
             "with no configured root, nothing is ours"
         );
     }
+
+    /// The same rule decides what Open Recent hides, so a workspace cannot take
+    /// a slot in a list of repositories — it *is* one of those repositories,
+    /// checked out a second time.
+    #[test]
+    fn a_generated_workspace_is_not_a_repository_to_reopen() {
+        let root = PathBuf::from("/home/x/.jjdiff/workspaces");
+        let recents = [
+            "/home/x/projects/codiff",
+            "/home/x/.jjdiff/workspaces/codiff/Yolo",
+            "/home/x/projects/other",
+        ];
+        let kept: Vec<&str> = recents
+            .into_iter()
+            .filter(|path| !is_generated(Some(&root), Path::new(path)))
+            .collect();
+        assert_eq!(kept, ["/home/x/projects/codiff", "/home/x/projects/other"]);
+    }
 }

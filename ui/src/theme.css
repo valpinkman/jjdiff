@@ -820,6 +820,10 @@ jj-app .repo-menu {
   max-width: 440px;
   background: var(--jj-surface);
   border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  /* Clips the full-bleed rows to the corners; without it a hover fill squares
+     the radius off from the inside. */
+  overflow: hidden;
   box-shadow: var(--jj-shadow-pop);
   /* Vertical only: the rows carry their own horizontal padding so a hover fill
      reaches both edges instead of floating as an inset pill. */
@@ -1391,10 +1395,15 @@ jj-app .pr-review-body:focus {
 
 /* File-tree context menu. Anchored to the pointer at the app root (the sidebar
    would clip it), so it is fixed-positioned rather than absolute. */
+/* One popover shape everywhere: this, the repo switcher and the overflow menu
+   all carry the same radius, so a menu is recognisable as one wherever it
+   opens. `overflow` clips the full-bleed rows to those corners. */
 jj-app .file-menu {
   position: fixed;
   background: var(--jj-surface);
   border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  overflow: hidden;
   box-shadow: var(--jj-shadow-pop);
   padding: var(--jj-s-1) 0;
   z-index: 60;
@@ -2498,16 +2507,27 @@ jj-app .more-root .fold-chevron svg {
 
 /* Fixed, not absolute: the change detail card scrolls, and an absolute menu is
    clipped by it — the entry that fell off the bottom was Abandon. Coordinates
-   come from the trigger's rect at open time (`toggleMore`). */
+   come from the trigger's rect at open time (`toggleMore`), or from the pointer
+   for the log graph's context menu, which wears the same clothes. */
 jj-app .more-menu {
   position: fixed;
   min-width: 190px;
   z-index: 50;
   padding: var(--jj-s-1) 0;
   border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  /* The corners have to clip their contents, or the full-bleed rows — the
+     danger entry's fill especially — square off the radius from the inside. */
+  overflow: hidden;
   background: var(--jj-surface);
   box-shadow: var(--jj-shadow-pop);
   animation: jj-pop var(--jj-t-2) var(--jj-ease-pop);
+}
+
+/* The context menu opens at the pointer, so it anchors left; the overflow hangs
+   off its trigger's right edge. Same menu otherwise. */
+jj-app .change-menu {
+  z-index: 60;
 }
 
 jj-app .more-menu button {
@@ -2780,6 +2800,7 @@ jj-app .workspace-new {
 }
 
 jj-app .workspace-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--jj-s-1);
@@ -2792,8 +2813,26 @@ jj-app .workspace-item {
 /* The one you are in gets the same cursor bar as a selected log row — selection is one
    shape everywhere in this app. */
 jj-app .workspace-item.here {
-  box-shadow: inset 2px 0 0 var(--jj-accent);
   background: var(--jj-accent-soft);
+}
+
+/* Beside the card, not on it. An inset shadow is clipped to the border-radius, so on a
+   rounded card the bar bent around both left corners; inset far enough to clear the curve
+   it just looked short. Out in the pane's own gutter it owes the corners nothing and can
+   run the full height — a marker in the margin, which is what a cursor is.
+
+   `right: calc(100% + …)` rather than a negative `left`: it reads off the card's edge
+   instead of a number that has to be re-derived whenever the padding changes. It stays
+   inside the pane's 8px padding, so the scroll container has nothing to clip or scroll. */
+jj-app .workspace-item.here::before {
+  content: '';
+  position: absolute;
+  right: calc(100% + 3px);
+  top: 1px;
+  bottom: 1px;
+  width: 3px;
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-accent);
 }
 
 jj-app .workspace-item.missing {
