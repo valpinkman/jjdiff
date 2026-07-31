@@ -8,6 +8,7 @@ import './evolog-drawer.js';
 import './rebase-picker.js';
 import type { RebaseMode } from './rebase-picker.js';
 import './conflict-resolver.js';
+import './pr-compose.js';
 import type { Command } from './command-bar.js';
 import './file-tree.js';
 import './log-graph.js';
@@ -27,6 +28,8 @@ import {
   getOperationLog,
   gitFetch,
   gitPush,
+  createPullRequest,
+  defaultBranch,
   rebaseChange,
   restoreOperation,
   restorePaths,
@@ -114,6 +117,7 @@ import { folderIcon } from './file-icons.js';
 import { prMetaItems, proposalState, type PrMetaContext } from './pr-templates.js';
 import type { FileMenuRequest } from './file-tree.js';
 import type { ChangeMenuRequest } from './log-graph.js';
+import type { ComposeRequest } from './pr-compose.js';
 import {
   iconAbsorb,
   iconChevron,
@@ -133,6 +137,7 @@ import {
 } from './icons.js';
 import { formatShortcut, matchesShortcut, parseShortcut, type Shortcut } from './keys.js';
 import { relativeTime as age } from './time.js';
+import { unpushedAndUnnamed, worstTracking } from './tracking.js';
 import { askConfirm, askText } from './prompt.js';
 import './patch-view.js';
 import type { PatchView } from './patch-view.js';
@@ -197,6 +202,16 @@ function activityKey(entry: { createdAt: string; url: string }, index: number): 
 const PROPOSAL_REFRESH_MS = 15_000;
 
 /**
+ * Stands in for `RepoState.unpushed` before a repo is loaded.
+ *
+ * Module-level so it is the *same* array every time. `App.unpushed` caches its
+ * `Set` against the identity of the array it was built from, and a fresh `[]`
+ * per call would defeat that on exactly the renders where there is nothing to
+ * show.
+ */
+const EMPTY_UNPUSHED: readonly string[] = Object.freeze([]);
+
+/**
  * Every field on the app that belongs to a *repository* rather than to the app.
  *
  * The list is a type so that `freshRepoScope` can be checked against it: a name
@@ -246,6 +261,7 @@ type RepoScoped =
   | 'stackReview'
   | 'diagram'
   | 'rebasing'
+  | 'composingProposal'
   | 'proposalPicker'
   | 'fileMenu'
   | 'viewMode'
@@ -322,6 +338,7 @@ function freshRepoScope() {
     // have — the proposal list holds entries closed over its PR numbers, and the
     // file menu names a file that is no longer on screen.
     rebasing: null,
+    composingProposal: null,
     proposalPicker: null,
     fileMenu: null,
 
@@ -508,6 +525,20 @@ export class App extends LitElement {
     path: string;
     shape: string;
     content: ConflictedContent | null;
+  } | null = null;
+  /**
+   * The compose dialog for a new proposal; null when closed.
+   *
+   * It carries the change it was opened on rather than reading the selection
+   * when the button is pressed. The dialog is on screen while its fields are
+   * filled in — which can be a while, and a repo watcher firing behind it moves
+   * nothing on screen but would change what "the selected change" means. The
+   * proposal is opened against the change the dialog was opened *for*.
+   */
+  @state() private composingProposal: {
+    change: Change;
+    /** Branches offered as a base, the forge's default first. */
+    bases: string[];
   } | null = null;
   /** Evolog drawer: every recorded version of the selected change. */
   @state() private versionsOpen = false;
@@ -990,14 +1021,44 @@ export class App extends LitElement {
     await this.syncMatchedProposal(true);
   }
 
-  /**
-   * Tracking state for one bookmark. A bookmark can track several remotes; the
-   * one that has drifted is the one worth reporting, so a diverged remote wins
-   * over a synced one rather than whichever happened to be listed first.
-   */
+  /** Tracking state for one bookmark. See `worstTracking` for which remote wins. */
   private tracking(bookmark: string): BookmarkStatus | null {
-    const all = this.repo?.bookmarks.filter((entry) => entry.name === bookmark) ?? [];
-    return all.find((entry) => entry.ahead || entry.behind) ?? all[0] ?? null;
+    return worstTracking(this.repo?.bookmarks ?? [], bookmark);
+  }
+
+  /**
+   * One line for the whole repository: is there work here that is on no remote?
+   *
+   * The graph answers this per row and the detail card per bookmark, and both
+   * require you to be looking at the right thing. This is the answer you get
+   * without asking — but only ever a *count*, never a verb. Which bookmark to
+   * push, and whether to push at all, is a question about a particular change,
+   * and the button for it is on that change.
+   *
+   * `null` when there is nothing to say, which includes every repo with no
+   * remote: the backend sends an empty list there rather than its whole history
+   * (see `Repo::unpushed`), so this goes quiet on its own.
+   */
+  private get unpushedSummary(): { count: number; title: string } | null {
+    const count = this.unpushed.size;
+    if (count === 0) return null;
+    const ahead = (this.repo?.bookmarks ?? []).filter((entry) => entry.ahead);
+    const lines = ahead.map(
+      (entry) => `${entry.name} — ${entry.ahead} ahead of ${entry.remote}`,
+    );
+    // Named bookmarks and nameless work are counted differently on purpose: the
+    // first number is commits, the second is changes, and adding them would be
+    // a total of nothing in particular.
+    const nameless = this.repo?.graph.filter((change) =>
+      unpushedAndUnnamed(change, this.unpushed, this.repo?.bookmarks ?? []),
+    ).length;
+    if (nameless) {
+      lines.push(`${nameless} change${nameless === 1 ? '' : 's'} with no bookmark`);
+    }
+    return {
+      count,
+      title: `${count} change${count === 1 ? '' : 's'} not on any remote\n${lines.join('\n')}`,
+    };
   }
 
   /**
@@ -1694,6 +1755,7 @@ export class App extends LitElement {
       || this.rebasing !== null
       || this.diagram !== null
       || this.resolving !== null
+      || this.composingProposal !== null
     );
   }
 
@@ -1845,6 +1907,27 @@ export class App extends LitElement {
     return this.allComments.filter((c) => !c.resolved);
   }
 
+  /**
+   * Change ids that are on no remote, as a set.
+   *
+   * Cached against the array it came from rather than rebuilt per render, and
+   * that is not a micro-optimisation: this is bound into `jj-log-graph` as a
+   * property, lit compares properties by identity, and a fresh `Set` every time
+   * would mark the whole graph dirty on every render of the app — including the
+   * ones caused by typing in the search box. `filteredGraph` above hands back
+   * `repo.graph` itself for exactly the same reason.
+   */
+  private unpushedFrom: readonly string[] = [];
+  private unpushedSet: ReadonlySet<string> = new Set();
+  private get unpushed(): ReadonlySet<string> {
+    const source = this.repo?.unpushed ?? EMPTY_UNPUSHED;
+    if (source !== this.unpushedFrom) {
+      this.unpushedFrom = source;
+      this.unpushedSet = new Set(source);
+    }
+    return this.unpushedSet;
+  }
+
   /** The log graph filtered by the search bar (change id, commit id, description). */
   private get filteredGraph(): Change[] {
     if (!this.repo) return [];
@@ -1935,6 +2018,7 @@ export class App extends LitElement {
       } else if (this.viewMode === 'interdiff' && this.selectedChange && this.changedSinceReview) {
         const interdiff = await getInterdiffSinceReviewed(
           this.selectedChange.changeId,
+          revisionOf(this.selectedChange),
           this.ignoreWhitespace,
         );
         this.files = interdiff.files;
@@ -2047,7 +2131,7 @@ export class App extends LitElement {
       return;
     }
     try {
-      const list: ConflictedFile[] = await getConflicts(change.changeId);
+      const list: ConflictedFile[] = await getConflicts(revisionOf(change));
       this.conflicts = new Map(list.map((entry) => [entry.path, entry.description]));
     } catch {
       this.conflicts = new Map();
@@ -2479,8 +2563,11 @@ export class App extends LitElement {
     const change = this.selectedChange;
     if (!change) return null;
     return {
+      // The two ids, each answering its own question: `key` is what review state
+      // is filed under and has to survive a rewrite, `revset` is what jj is
+      // handed and has to resolve. See `revsetFor`.
       key: change.changeId,
-      revset: this.isWorkingCopySelected ? null : change.changeId,
+      revset: this.revsetFor(change),
       commitId: change.commitId,
       label: `change ${change.changeId.slice(0, 8)}: ${
         change.description.split('\n')[0] || '(no description)'
@@ -2507,7 +2594,10 @@ export class App extends LitElement {
    * here. Falling back to the selection covers a proposal with neither.
    */
   private get contentRevset(): string | null {
-    const selection = this.isWorkingCopySelected ? null : this.selected;
+    // The selected change's *commit*, not `this.selected` — that is a change id,
+    // and `jj file show -r` refuses a divergent one exactly as `jj diff` does.
+    const change = this.selectedChange;
+    const selection = change ? this.revsetFor(change) : null;
     const proposal = this.pullRequest;
     if (!this.prRevset || !proposal) return selection;
     const localHead = this.repo?.graph.some((change) =>
@@ -2569,8 +2659,30 @@ export class App extends LitElement {
     return this.stackReview.findIndex((change) => change.changeId === id);
   }
 
+  /**
+   * How a change is named **to jj**. The commit id, never the change id.
+   *
+   * This is the other half of "review state is keyed by change id" (CLAUDE.md),
+   * and the two are opposite answers to questions that look like one. A change
+   * id is the right *key*, because it survives the rewrites review state has to
+   * survive. It is the wrong *revset*, because it does not always resolve: a
+   * **divergent** change — one change id with several visible commits, which is
+   * what an obsolete commit rewritten a second time produces — makes jj refuse
+   * every command that takes it, with `Change ID … is divergent`. Diff, file
+   * show, evolog, resolve, edit, describe, rebase, duplicate, abandon and
+   * bookmark set were all reachable that way, so a divergent change was one you
+   * could select and then do nothing with, including look at.
+   *
+   * A commit id resolves to one commit by construction, so the question cannot
+   * arise. And it is the *better* answer regardless of divergence: the graph row
+   * that was clicked is one specific commit, and that is the one to act on.
+   *
+   * `null` for the working copy, which is not a revset at all — it means "diff
+   * the live filesystem", the path that never snapshots. A *command* aimed at
+   * the working copy still needs to name it, which is what `revisionOf` is for.
+   */
   private revsetFor(change: Change): string | null {
-    return change.workingCopy ? null : change.changeId;
+    return change.workingCopy ? null : revisionOf(change);
   }
 
   /** Guided review of every reviewable change in the stack, oldest first (PR-style). */
@@ -2932,7 +3044,7 @@ export class App extends LitElement {
     if (!change) return;
     if (!(await this.confirmImmutableRewrite(change, 'Rewrite'))) return;
     await this.command('describe', () =>
-      describeChange(change.changeId, this.description, change.immutable),
+      describeChange(revisionOf(change), this.description, change.immutable),
     );
     // Back to reading on success only. A failed describe keeps the box open
     // with the text still in it, rather than discarding what was typed.
@@ -2943,7 +3055,7 @@ export class App extends LitElement {
     const change = this.selectedChange;
     if (!change) return;
     void this.command('commit', async () => {
-      await describeChange(change.changeId, this.description);
+      await describeChange(revisionOf(change), this.description);
       const outcome = await newChange();
       this.selected = null;
       this.seededFor = null;
@@ -2964,7 +3076,7 @@ export class App extends LitElement {
     // lands on it and every subsequent save rewrites it.
     if (!(await this.confirmImmutableRewrite(change, 'Work on'))) return;
     void this.command('edit', async () => {
-      const outcome = await editChange(change.changeId, change.immutable);
+      const outcome = await editChange(revisionOf(change), change.immutable);
       this.selected = null;
       this.seededFor = null;
       this.detailView = false;
@@ -2976,7 +3088,7 @@ export class App extends LitElement {
     const change = this.selectedChange;
     if (!change) return;
     void this.command('new', async () => {
-      const outcome = await newChange([change.changeId]);
+      const outcome = await newChange([revisionOf(change)]);
       this.selected = null;
       this.seededFor = null;
       this.detailView = false;
@@ -3078,7 +3190,7 @@ export class App extends LitElement {
         });
     if (!ok) return;
     void this.command('abandon', async () => {
-      const outcome = await abandonChange(change.changeId, change.immutable);
+      const outcome = await abandonChange(revisionOf(change), change.immutable);
       this.selected = null;
       this.detailView = false;
       return outcome;
@@ -3088,13 +3200,13 @@ export class App extends LitElement {
   private duplicateSelected() {
     const change = this.selectedChange;
     if (!change) return;
-    void this.command('duplicate', () => duplicateChange(change.changeId));
+    void this.command('duplicate', () => duplicateChange(revisionOf(change)));
   }
 
   private backoutSelected() {
     const change = this.selectedChange;
     if (!change) return;
-    void this.command('backout', () => backoutChange(change.changeId));
+    void this.command('backout', () => backoutChange(revisionOf(change)));
   }
 
   private async rebaseSelected() {
@@ -3109,7 +3221,7 @@ export class App extends LitElement {
   private runRebase(change: Change, mode: RebaseMode, destination: string) {
     this.rebasing = null;
     void this.command('rebase', () =>
-      rebaseChange(mode, change.changeId, destination, change.immutable),
+      rebaseChange(mode, revisionOf(change), destination, change.immutable),
     );
   }
 
@@ -3138,7 +3250,7 @@ export class App extends LitElement {
       confirmLabel: 'Rebase',
     });
     if (!ok) return;
-    this.runRebase(source, 'source', destination.changeId);
+    this.runRebase(source, 'source', revisionOf(destination));
   }
 
   private async splitSelectedFiles() {
@@ -3151,7 +3263,7 @@ export class App extends LitElement {
       return;
     }
     if (!(await this.confirmImmutableRewrite(change, 'Split'))) return;
-    void this.command('split', () => splitPaths(change.changeId, paths, change.immutable));
+    void this.command('split', () => splitPaths(revisionOf(change), paths, change.immutable));
   }
 
   // ---- Hunk-level split and squash ----
@@ -3319,7 +3431,7 @@ export class App extends LitElement {
     const plan = this.buildHunkPlan(selection);
     this.cancelHunkPick();
     void this.command('split', () =>
-      splitHunks(change.changeId, plan, message.trim(), change.immutable),
+      splitHunks(revisionOf(change), plan, message.trim(), change.immutable),
     );
   }
 
@@ -3354,7 +3466,7 @@ export class App extends LitElement {
     const plan = this.buildHunkPlan(selection);
     this.cancelHunkPick();
     void this.command('squash', () =>
-      squashHunks(change.changeId, into.changeId, plan, change.immutable || into.immutable),
+      squashHunks(revisionOf(change), revisionOf(into), plan, change.immutable || into.immutable),
     );
   }
 
@@ -3372,12 +3484,98 @@ export class App extends LitElement {
     void this.command('restore', () => restorePaths(paths));
   }
 
+  /**
+   * Collect what a new proposal needs, against the selected change.
+   *
+   * The base list is asked of the forge (`default_branch`) rather than guessed:
+   * `main` is a convention, `trunk()` resolves against what happens to be
+   * fetched here, and neither knows the repository's default was changed on the
+   * server. Getting it wrong opens a proposal against the wrong branch, which is
+   * public and tedious to correct.
+   *
+   * A failure to learn the default is not a failure to open the dialog — the
+   * remote bookmarks are still a usable list, and refusing to compose because
+   * one call did not answer would be worse than starting on the wrong entry.
+   */
+  private async openProposalComposer() {
+    const change = this.selectedChange;
+    if (!change || !this.forge) return;
+    await this.act({ busy: 'proposal' }, async () => {
+      const remote = [
+        ...new Set((this.repo?.bookmarks ?? []).map((status) => status.name)),
+      ].sort();
+      let fallback: string | null = null;
+      try {
+        fallback = await defaultBranch();
+      } catch (error) {
+        // Reported, not thrown: the dialog is still worth opening.
+        this.actionInfo = `Could not read the default branch (${String(error)}); pick one.`;
+      }
+      const bases = [...new Set([fallback, ...remote].filter((name): name is string => !!name))];
+      this.composingProposal = { change, bases };
+    });
+  }
+
+  /**
+   * Open the proposal the dialog collected: push, then create, in that order.
+   *
+   * `gh` resolves the head branch against what the *forge* can see, so the push
+   * is not an optimisation — a bookmark that exists only locally fails there
+   * with a message about a branch that, from where the user is sitting, plainly
+   * exists.
+   *
+   * One `act`, not a `command` per step. The mutations here are real jj
+   * mutations and each writes its own operation, so they are in the Ops tab and
+   * individually revertable from it — but `command` is `act` plus a refresh, and
+   * `act` holds a re-entry guard, so calling it from inside this one would
+   * refuse itself. What that costs is jj's narration for the push, and the
+   * narration that matters is the last line anyway: the proposal's URL.
+   *
+   * The outcome deliberately carries no operation id even though the push has
+   * one. Reverting the push would leave the proposal open and pointing at a
+   * branch the remote no longer has — a worse state than either end, and not
+   * what an Undo beside "Opened …" would look like it does.
+   */
+  private async submitNewProposal(request: ComposeRequest) {
+    const composing = this.composingProposal;
+    if (!composing) return;
+    const { change } = composing;
+    await this.act({ busy: 'proposal' }, async () => {
+      // A head the change does not carry is one we are being asked to create.
+      // `bookmark set` rather than `push --change`: the name is the user's, and
+      // jj's auto-naming would quietly publish it under a different one.
+      if (!change.bookmarks.includes(request.head)) {
+        await setBookmark(request.head, revisionOf(change));
+      }
+      await gitPush({ bookmark: request.head });
+      const created = await createPullRequest(request);
+      this.composingProposal = null;
+      this.lastOutcome = {
+        message: `Opened ${created.url}`,
+        // No operation: `jj op revert` cannot close a pull request, and
+        // `renderOutcome` reads this field to decide whether to offer an Undo —
+        // one beside this would be a button that lies about what it undoes.
+        operation: '',
+      };
+      await this.refresh();
+      // Two mutations happened, so the Ops tab is stale if it is what is open.
+      // `command` does this for its own callers; this path has to do it itself.
+      if (this.viewMode === 'ops') await this.loadOperations();
+      // The branch now has a proposal, so the ordinary match puts the banner up.
+      // Done through the cache-clearing path rather than by setting
+      // `pullRequest` from `created`: that is one code path for "this branch's
+      // proposal" instead of two, and it works whether or not the number could
+      // be read out of the URL.
+      await this.refreshProposals();
+    });
+  }
+
   private async createBookmark() {
     const change = this.selectedChange;
     if (!change) return;
     const name = await askText({ heading: 'Bookmark name', confirmLabel: 'Create' });
     if (!name?.trim()) return;
-    void this.command('bookmark', () => setBookmark(name.trim(), change.changeId));
+    void this.command('bookmark', () => setBookmark(name.trim(), revisionOf(change)));
   }
 
   private async removeBookmark(name: string) {
@@ -3484,7 +3682,7 @@ export class App extends LitElement {
     this.versionsLoading = true;
     void (async () => {
       try {
-        this.versions = await getChangeVersions(change.changeId);
+        this.versions = await getChangeVersions(revisionOf(change));
       } catch (error) {
         this.report(error);
         this.versionsOpen = false;
@@ -3626,8 +3824,9 @@ export class App extends LitElement {
     this.describing = true;
     this.actionError = null;
     try {
+      const change = this.selectedChange;
       const message = await generateDescription(
-        this.isWorkingCopySelected ? null : this.selected,
+        change ? this.revsetFor(change) : null,
         this.ignoreWhitespace,
       );
       this.description = message;
@@ -3738,6 +3937,15 @@ export class App extends LitElement {
     add('Repository', [
       { id: 'jj-fetch', label: 'Fetch (jj git fetch)', run: () => this.runFetch() },
       { id: 'jj-push', label: 'Push (jj git push)', run: () => this.runPush() },
+      // Beside Push, because that is the verb it follows. Absent without a forge
+      // for the same reason every other forge affordance is: an entry that can
+      // only fail is worse than one that is not offered.
+      !!this.forge &&
+        !!change && {
+          id: 'forge-create-pr',
+          label: `Open a ${this.forge.noun}…  (gh pr create)`,
+          run: () => void this.openProposalComposer(),
+        },
       { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => void this.createBookmark() },
       {
         id: 'jj-workspace-new',
@@ -4038,6 +4246,26 @@ export class App extends LitElement {
             : nothing}
         </span>
         <span class="spacer"></span>
+        <!-- Before the verbs, because it is not one.
+
+             It reports and it navigates: clicking shows the Log, which is the
+             pane where the same fact is broken down per change and where the
+             change to act on can be picked. Deliberately *not* a push button —
+             what "push" means depends on which change you mean, and a header
+             control that pushed some unstated subset of the repo is the kind of
+             thing you would only inspect after it had happened. -->
+        ${(() => {
+          const unpushed = this.unpushedSummary;
+          return unpushed
+            ? html`<button
+                class="tool unpushed-summary"
+                title=${`${unpushed.title}\n\nShow the log.`}
+                @click=${() => this.selectTab('stack')}
+              >
+                <span class="arrow">↑</span>${unpushed.count}
+              </button>`
+            : nothing;
+        })()}
         <!-- Ordered by what the verbs do to the repository, left to right:
              bring work in (fetch), rearrange the work you have (absorb), take a
              step back (undo). The old order put absorb first, which read as
@@ -4179,6 +4407,8 @@ export class App extends LitElement {
                 .selected=${selectedId}
                 .canRebase=${!this.busy}
                 .workspace=${this.repo?.workspace ?? null}
+                .bookmarks=${this.repo?.bookmarks ?? []}
+                .unpushed=${this.unpushed}
                 @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
                 @change-menu=${(event: CustomEvent<ChangeMenuRequest>) => {
                   // Select first: every entry acts on the selection, and a menu
@@ -4404,6 +4634,22 @@ export class App extends LitElement {
                 >
                   Push
                 </button>
+                <!-- Only where there is a forge to open one on, and only while
+                     this change has none: with a proposal already matched, the
+                     banner above the diff is the thing to press, and a second
+                     entry point that would open a *duplicate* is worse than no
+                     entry point at all. Hidden rather than disabled — a
+                     disabled button invites the question of what would enable
+                     it, and the answer here is "nothing you can do". -->
+                ${this.forge && !this.pullRequest
+                  ? html`<button
+                      class="tool propose"
+                      title=${`gh pr create — open a ${this.forge.noun} for this change. You will see the title, the body and the base branch before anything is published.`}
+                      @click=${() => void this.openProposalComposer()}
+                    >
+                      ${sentenceCase(this.forge.noun)}…
+                    </button>`
+                  : nothing}
 
                 <span class="more-root">
                   <button
@@ -4819,6 +5065,31 @@ export class App extends LitElement {
             @close=${() => (this.diagram = null)}
           ></jj-diagram-view>`
         : nothing}
+      ${
+        // The seeds are computed here and read once, on mount: the dialog owns
+        // its fields from then on, so nothing typed into it is at the mercy of
+        // this component re-rendering.
+        this.composingProposal
+          ? html`<jj-pr-compose
+              .noun=${this.forge?.noun ?? 'pull request'}
+              .bases=${this.composingProposal.bases}
+              .headBookmark=${this.composingProposal.change.bookmarks[0] ?? ''}
+              .ahead=${this.tracking(this.composingProposal.change.bookmarks[0] ?? '')?.ahead ?? 0}
+              .seedBase=${this.composingProposal.bases[0] ?? ''}
+              .seedHead=${proposalHead(this.composingProposal.change)}
+              .seedTitle=${this.composingProposal.change.description.split('\n')[0] ?? ''}
+              .seedBody=${this.composingProposal.change.description
+                .split('\n')
+                .slice(1)
+                .join('\n')
+                .trim()}
+              ?busy=${this.busy === 'proposal'}
+              @create=${(event: CustomEvent<ComposeRequest>) =>
+                void this.submitNewProposal(event.detail)}
+              @close=${() => (this.composingProposal = null)}
+            ></jj-pr-compose>`
+          : nothing
+      }
       ${this.resolving
         ? html`<jj-conflict-resolver
             .path=${this.resolving.path}
@@ -5529,6 +5800,52 @@ const RAIL_PANES: { id: SidebarTab; label: string; icon: TemplateResult }[] = [
 ];
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;
+
+/**
+ * How a change is named when jj has to resolve it: its **commit id**.
+ *
+ * A function rather than `.commitId` at each site, because what matters is not
+ * the field but the rule, and the rule is one every new call site has to follow.
+ * A change id is the right key for review state and the wrong argument for jj —
+ * a divergent change (one change id, several visible commits) makes jj refuse
+ * every command that takes it. `App.revsetFor` has the long version.
+ *
+ * If jjdiff ever needs to name a divergent change *as* a change — to offer both
+ * sides, say — this is the one place that answer changes.
+ */
+const revisionOf = (change: Change) => change.commitId;
+
+/**
+ * A forge's noun at the start of a label. The nouns are stored lower-case
+ * because they are usually mid-sentence ("Open a pull request"), and a button is
+ * the one place they are not.
+ */
+const sentenceCase = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * The branch to propose a change under.
+ *
+ * Its own bookmark when it has one — that is the name the work is already known
+ * by, and proposing it under a second one would publish the same commits twice.
+ *
+ * Otherwise a slug of the description, which is a *suggestion*: the field is
+ * editable and the dialog says the bookmark will be created. jj's own
+ * `push --change` auto-name (`push-` plus a change-id prefix) was the other
+ * candidate and is worse here — it names the branch after an identifier nobody
+ * reading the forge can resolve, and the description is right there. Capped at
+ * 48, because the tail of a long summary is not what distinguishes it.
+ */
+function proposalHead(change: Change): string {
+  const [existing] = change.bookmarks;
+  if (existing) return existing;
+  const slug = (change.description.split('\n')[0] ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+    .replace(/-+$/, '');
+  return slug || `push-${change.changeId.slice(0, 12)}`;
+}
 
 declare global {
   interface HTMLElementTagNameMap {

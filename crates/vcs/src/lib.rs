@@ -668,6 +668,43 @@ impl Repo {
         Ok(statuses)
     }
 
+    /// Change ids of every commit that exists here and on no remote.
+    ///
+    /// [`bookmark_statuses`](Self::bookmark_statuses) answers the same question for work
+    /// that has a *name*, and is the only half most tools show. It cannot see the rest:
+    /// a change with no bookmark tracks nothing, so it has no ahead count and appears
+    /// nowhere in that list however long it has sat unpushed. `remote_bookmarks()..` is
+    /// the other half — everything not reachable from any remote ref, named or not.
+    ///
+    /// Two things it deliberately does not report.
+    ///
+    /// **A repo with no git remote gets an empty answer, not every change.** `x..` is
+    /// `x..visible_heads()`, so an empty left side excludes nothing and the revset
+    /// returns the entire repository — which is *true* (none of it is on a remote) and
+    /// useless as a warning, since there is nowhere to push it. Rather than have the UI
+    /// filter what it should never have been told, the question is refused where it is
+    /// meaningless. A repo that *has* a remote with nothing on it yet is a different
+    /// case and does report everything, correctly.
+    ///
+    /// **The empty, undescribed working copy is not unpushed work.** It is what jj
+    /// leaves you standing on after every commit, so counting it means the indicator is
+    /// on permanently, which is the state a badge stops being read in. An empty change
+    /// that has been *described* is kept — that is a commit someone is writing.
+    pub fn unpushed(&self) -> Result<Vec<String>> {
+        if self.remote_urls()?.is_empty() {
+            return Ok(Vec::new());
+        }
+        let out = self.runner.read(&[
+            "log",
+            "--no-graph",
+            "-r",
+            r#"remote_bookmarks().. ~ (empty() & description(exact:""))"#,
+            "-T",
+            r#"change_id ++ "\n""#,
+        ])?;
+        Ok(out.lines().map(str::trim).filter(|line| !line.is_empty()).map(String::from).collect())
+    }
+
     pub fn bookmark_set(&self, name: &str, revset: &str) -> Result<Outcome> {
         self.mutate(&["bookmark", "set", name, "-r", revset])
     }
@@ -1324,6 +1361,128 @@ mod tests {
         jj(&["bookmark", "set", "main", "-r", "main@origin-", "--allow-backwards"]);
         let behind = repo.bookmark_statuses().unwrap();
         assert_eq!((behind[0].ahead, behind[0].behind), (0, 1), "local is behind: {behind:?}");
+    }
+
+    /// The two cases that make `unpushed` more than a revset: a repo with no
+    /// remote must report *nothing* rather than its whole history, and a change
+    /// with no bookmark must be reported even though it can never have a
+    /// tracking status. Both need a real remote to observe, so this drives one.
+    #[test]
+    fn unpushed_reports_nameless_work_and_stays_silent_without_a_remote() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin.git");
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git").args(args).current_dir(dir).output().expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(tmp.path(), &["init", "--bare", "-q", "origin.git"]);
+        init_repo(&work);
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "signing.behavior=drop"])
+                .args(args)
+                .current_dir(&work)
+                .env("JJ_USER", "Test")
+                .env("JJ_EMAIL", "test@example.com")
+                .output()
+                .expect("jj runs");
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let repo = Repo::discover(&work).unwrap();
+
+        // A commit that is on no remote because there *is* no remote. Reporting
+        // it would be true and useless — there is nowhere to push it — and it
+        // would light the indicator on every local-only repo permanently.
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        jj(&["commit", "-m", "before any remote"]);
+        assert!(repo.unpushed().unwrap().is_empty(), "no remote, so nothing to be unpushed from");
+
+        jj(&["git", "remote", "add", "origin", origin.to_str().unwrap()]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "-b", "main"]);
+        assert!(repo.unpushed().unwrap().is_empty(), "everything is published");
+
+        // A described commit with no bookmark on it: invisible to
+        // `bookmark_statuses` forever, which is the gap this closes.
+        std::fs::write(work.join("b.txt"), "two\n").unwrap();
+        jj(&["commit", "-m", "nameless work"]);
+        let nameless = repo.log("@-").unwrap()[0].change_id.clone();
+        assert!(
+            repo.bookmark_statuses().unwrap().iter().all(|status| status.ahead == 0),
+            "no bookmark moved, so tracking says nothing"
+        );
+        assert_eq!(repo.unpushed().unwrap(), vec![nameless], "but the work is still unpushed");
+
+        // The empty undescribed working copy jj leaves behind is not work, and
+        // counting it would leave the badge on for good.
+        jj(&["new"]);
+        assert_eq!(repo.unpushed().unwrap().len(), 1, "the new empty @ is not unpushed work");
+    }
+
+    /// A **divergent** change — one change id over several visible commits — is
+    /// not resolvable by change id, and jj refuses every command that is handed
+    /// one. This pins the property the frontend relies on: whatever the change
+    /// id does, the *commit* id of a change on screen always resolves.
+    ///
+    /// It shipped as a change you could select and then do nothing with, not
+    /// even look at: `jj diff -r <change id>` was how the diff pane asked for
+    /// every non-working-copy change, and the same spelling reached edit,
+    /// describe, rebase, abandon, duplicate, evolog, resolve and bookmark set.
+    #[test]
+    fn a_divergent_change_resolves_by_commit_id_and_not_by_change_id() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let repo = Repo::discover(tmp.path()).unwrap();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "signing.behavior=drop"])
+                .args(args)
+                .current_dir(tmp.path())
+                .env("JJ_USER", "Test")
+                .env("JJ_EMAIL", "test@example.com")
+                .output()
+                .expect("jj runs");
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+
+        std::fs::write(tmp.path().join("f.txt"), "one\n").unwrap();
+        jj(&["describe", "-m", "original"]);
+        let change_id = repo.working_copy().unwrap().change_id;
+        let obsolete = repo.working_copy().unwrap().commit_id;
+
+        // Rewrite once, then rewrite the commit that rewrite obsoleted. Both
+        // land on the same change id, and now two of them are visible — which
+        // is exactly the state a user reaches by editing a hidden commit.
+        jj(&["describe", "-m", "version two"]);
+        jj(&["describe", "-r", &obsolete, "-m", "version one"]);
+        let visible = repo.log(&format!("change_id({change_id})")).unwrap();
+        assert_eq!(visible.len(), 2, "expected a divergent change: {visible:?}");
+
+        // The change id no longer names a revision...
+        let by_change = repo.log(&change_id);
+        assert!(by_change.is_err(), "a divergent change id must not resolve: {by_change:?}");
+
+        // ...but every commit under it does, which is what the UI passes.
+        for change in &visible {
+            let one = repo.log(&change.commit_id).unwrap();
+            assert_eq!(one.len(), 1, "a commit id names exactly one commit");
+            assert_eq!(one[0].commit_id, change.commit_id);
+            // And the diff the pane asks for is available for each of them.
+            repo.patch_for(&change.commit_id, false)
+                .unwrap_or_else(|error| panic!("diff by commit id failed: {error}"));
+        }
     }
 
     /// `--ignore-immutable` is opt-in per handle, and the default handle must

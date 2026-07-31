@@ -178,6 +178,34 @@ impl Verdict {
     }
 }
 
+/// A proposal to open. The fields the compose dialog collects, and nothing the
+/// forge can work out for itself.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewPullRequest {
+    pub title: String,
+    pub body: String,
+    /// Branch to merge into.
+    pub base: String,
+    /// Branch to merge from. Must already be on the remote — the caller pushes
+    /// first, because `gh` resolves this against what the forge can see.
+    pub head: String,
+    pub draft: bool,
+}
+
+/// A proposal that now exists.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Created {
+    /// Read out of the URL the forge printed. `None` if it was not in the shape
+    /// we expect, which is **not** an error: the proposal is open either way, and
+    /// failing here would report a success as a failure. The banner finds it on
+    /// the next refresh regardless — the branch now has a proposal, which is the
+    /// only question `find_by_head` asks.
+    pub number: Option<u32>,
+    pub url: String,
+}
+
 /// One inline comment to post against a line of the proposal's diff.
 ///
 /// This is the payoff of anchoring comments on change ids (C2): the comments a
@@ -211,20 +239,29 @@ pub struct Client {
 }
 
 impl Client {
+    /// Why the CLI could not be started. Shared by both spawn paths: a missing
+    /// `gh` is the single most likely failure here and the one with an
+    /// actionable answer, so "install it and log in" must not depend on which
+    /// helper the call happened to use.
+    fn spawn_error(&self, error: &std::io::Error) -> String {
+        let binary = self.kind.binary();
+        match error.kind() {
+            std::io::ErrorKind::NotFound => format!(
+                "`{binary}` was not found on PATH — jjdiff reviews {}s through the \
+                 {binary} CLI, so install it and run `{binary} auth login`",
+                self.kind.noun()
+            ),
+            _ => format!("cannot run `{binary}`: {error}"),
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Result<String, String> {
         let binary = self.kind.binary();
         let output = Command::new(binary)
             .args(args)
             .current_dir(&self.root)
             .output()
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => format!(
-                    "`{binary}` was not found on PATH — jjdiff reviews {}s through the \
-                     {binary} CLI, so install it and run `{binary} auth login`",
-                    self.kind.noun()
-                ),
-                _ => format!("cannot run `{binary}`: {error}"),
-            })?;
+            .map_err(|error| self.spawn_error(&error))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(format!("{binary} {}: {stderr}", args.join(" ")));
@@ -318,6 +355,64 @@ impl Client {
         Ok(entries)
     }
 
+    /// The branch a proposal should target unless told otherwise.
+    ///
+    /// Asked of the forge rather than guessed from the local repo. `main` is only
+    /// a convention, jj's `trunk()` resolves against whatever is *fetched* here,
+    /// and neither knows that a repo's default was changed on the server. Getting
+    /// this wrong opens a proposal against the wrong branch, which is public and
+    /// annoying to correct, so it is worth the call.
+    pub fn default_branch(&self) -> Result<String, String> {
+        match self.kind {
+            Kind::GitHub => {
+                let raw = self.run(&["repo", "view", "--json", "defaultBranchRef"])?;
+                github::parse_default_branch(&raw)
+            }
+        }
+    }
+
+    /// Open a proposal.
+    ///
+    /// Outward-facing and not undoable from here — the caller confirms, and the
+    /// head branch is already pushed by the time this runs.
+    ///
+    /// The body goes on **stdin**, not in an argument. A description is
+    /// arbitrary user text of unbounded length: as an argv entry it runs into
+    /// `ARG_MAX` on a long one, and every backtick and `$` in it is one
+    /// misplaced shell away from being executed. `--body-file -` has neither
+    /// problem and is what `gh` documents for exactly this.
+    pub fn create(&self, request: &NewPullRequest) -> Result<Created, String> {
+        match self.kind {
+            Kind::GitHub => {
+                let mut args = vec![
+                    "pr",
+                    "create",
+                    "--base",
+                    &request.base,
+                    "--head",
+                    &request.head,
+                    "--title",
+                    &request.title,
+                    "--body-file",
+                    "-",
+                ];
+                if request.draft {
+                    args.push("--draft");
+                }
+                let out = self.run_with_stdin(&args, &request.body)?;
+                let url = out
+                    .split_whitespace()
+                    .rev()
+                    .find(|token| token.starts_with("http"))
+                    .ok_or_else(|| {
+                        format!("gh pr create said nothing that looks like a URL: {}", out.trim())
+                    })?
+                    .to_string();
+                Ok(Created { number: pull_request_number(&url), url })
+            }
+        }
+    }
+
     /// Like [`Self::run`], but feeds `stdin` — `gh api --input -` wants its
     /// JSON body there, and nested arrays cannot be expressed with `-f` flags.
     fn run_with_stdin(&self, args: &[&str], stdin: &str) -> Result<String, String> {
@@ -330,7 +425,7 @@ impl Client {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            .map_err(|error| format!("cannot run `{binary}`: {error}"))?;
+            .map_err(|error| self.spawn_error(&error))?;
         child
             .stdin
             .take()
@@ -439,6 +534,22 @@ pub struct Submitted {
 
 fn first_line(text: &str) -> String {
     text.lines().find(|line| !line.trim().is_empty()).unwrap_or(text).trim().to_string()
+}
+
+/// The proposal number in a forge URL — the trailing path segment after `pull`
+/// (GitHub) or `merge_requests` (the shape a restored GitLab would print).
+///
+/// Deliberately reads the segment *after the keyword* rather than the last
+/// number in the string: `…/pull/12/files#discussion_r34` ends in neither, and
+/// an owner or repo with digits in its name sits earlier in the same path.
+fn pull_request_number(url: &str) -> Option<u32> {
+    let mut segments = url.split('/');
+    while let Some(segment) = segments.next() {
+        if segment == "pull" || segment == "pulls" || segment == "merge_requests" {
+            return segments.next()?.parse().ok();
+        }
+    }
+    None
 }
 
 /// Render comments as Markdown beneath `body` — the fallback when they cannot
@@ -752,6 +863,26 @@ mod github {
         updated_at: String,
     }
 
+    /// `gh repo view --json defaultBranchRef` → `{"defaultBranchRef":{"name":"main"}}`.
+    /// The key is null on an empty repository with no commits and so no branches.
+    pub fn parse_default_branch(raw: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Repo {
+            default_branch_ref: Option<Named>,
+        }
+        #[derive(Deserialize)]
+        struct Named {
+            name: String,
+        }
+        let repo: Repo =
+            serde_json::from_str(raw).map_err(|error| format!("cannot read gh output: {error}"))?;
+        repo.default_branch_ref
+            .map(|branch| branch.name)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "this repository has no default branch yet".to_string())
+    }
+
     pub fn parse_list(raw: &str) -> Result<Vec<Summary>, String> {
         let rows: Vec<RawSummary> =
             serde_json::from_str(raw).map_err(|error| format!("cannot read gh output: {error}"))?;
@@ -809,6 +940,39 @@ mod tests {
     fn head_refs_and_bookmarks_are_namespaced() {
         assert_eq!(Kind::GitHub.head_ref(75), "refs/pull/75/head");
         assert_eq!(Kind::GitHub.local_bookmark(75), "jjdiff-pr-75");
+    }
+
+    /// Captured verbatim from `gh repo view --json defaultBranchRef` against
+    /// this repository.
+    #[test]
+    fn reads_the_default_branch_gh_reports() {
+        assert_eq!(
+            github::parse_default_branch(r#"{"defaultBranchRef":{"name":"main"}}"#).unwrap(),
+            "main"
+        );
+        // A repository with no commits has no default branch. That is a real
+        // state, and an error naming it beats opening a proposal against "".
+        assert!(github::parse_default_branch(r#"{"defaultBranchRef":null}"#).is_err());
+    }
+
+    /// The number is what the banner hangs off, and it is read out of a URL
+    /// rather than returned by `gh pr create` in any structured form.
+    #[test]
+    fn reads_the_proposal_number_out_of_the_url_gh_prints() {
+        assert_eq!(
+            pull_request_number("https://github.com/valpinkman/jjdiff/pull/12"),
+            Some(12),
+            "the shape `gh pr create` prints"
+        );
+        // Not "the last number in the string" and not "the first": an owner or
+        // repo may contain digits, and a deep link carries its own.
+        assert_eq!(
+            pull_request_number("https://github.com/user2/repo90/pull/7/files#discussion_r34"),
+            Some(7)
+        );
+        // Unparseable is `None`, not a panic and not a zero — the caller reports
+        // the proposal as open without a number rather than as a failure.
+        assert_eq!(pull_request_number("https://github.com/valpinkman/jjdiff"), None);
     }
 
     /// Captured verbatim from `gh pr view 4 --json …` against this repository,

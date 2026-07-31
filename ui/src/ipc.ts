@@ -71,6 +71,13 @@ export interface RepoState {
   graph: Change[];
   /** Tracking state per bookmark; empty when the repo has no remotes. */
   bookmarks: BookmarkStatus[];
+  /**
+   * Change ids of work that exists on no remote — the half `bookmarks` cannot
+   * see. A change with no bookmark tracks nothing, so it has no ahead count and
+   * would never appear there however long it went unpushed. Empty when the repo
+   * has no remote at all, where "unpushed" means nothing.
+   */
+  unpushed: string[];
   /** Every workspace attached to this repo, this one included — so always at least one. */
   workspaces: Workspace[];
   /** The name of the one this window is showing. */
@@ -399,12 +406,20 @@ export const getDiff = (revset: string | null, ignoreWhitespace: boolean): Promi
     ? invoke<FilePatch[]>('diff', { revset, ignoreWhitespace })
     : mock((m) => m.mockFiles);
 /** How a change's diff evolved since it was last marked reviewed. */
+/**
+ * Both ids, and they answer different questions: `changeId` is the key the
+ * reviewed baseline is stored under, `toCommit` is the revision to diff it
+ * against. The backend used to resolve the second from the first, which a
+ * divergent change makes impossible — only the caller knows which commit is on
+ * screen.
+ */
 export const getInterdiffSinceReviewed = (
   changeId: string,
+  toCommit: string,
   ignoreWhitespace: boolean,
 ): Promise<Interdiff> =>
   IN_TAURI
-    ? invoke<Interdiff>('interdiff_since_reviewed', { changeId, ignoreWhitespace })
+    ? invoke<Interdiff>('interdiff_since_reviewed', { changeId, toCommit, ignoreWhitespace })
     : mock((m) => m.mockInterdiff);
 /** Every recorded version of a change — the evolog drawer's list. */
 export const getChangeVersions = (changeId: string): Promise<ChangeVersion[]> =>
@@ -865,6 +880,42 @@ export const openPullRequest = (number: number): Promise<OpenedPullRequest> =>
   IN_TAURI
     ? invoke<OpenedPullRequest>('open_pull_request', { number })
     : mock((m) => m.mockOpenedPullRequest);
+
+/** What the compose dialog collects; everything else the forge works out. */
+export interface NewPullRequest {
+  title: string;
+  body: string;
+  /** Branch to merge into. */
+  base: string;
+  /** Branch to merge from. Must already be on the remote — push first. */
+  head: string;
+  draft: boolean;
+}
+
+export interface CreatedPullRequest {
+  /**
+   * Read out of the URL the forge printed, so `null` when it was not in the
+   * expected shape. Not an error: the proposal is open either way, and the
+   * banner finds it on the next refresh through the ordinary branch match.
+   */
+  number: number | null;
+  url: string;
+}
+
+/** The branch a new proposal targets by default, as the forge reports it. */
+export const defaultBranch = (): Promise<string> =>
+  IN_TAURI ? invoke<string>('default_branch') : Promise.resolve('main');
+
+/**
+ * Open a proposal. Outward-facing and public the moment it returns.
+ *
+ * `head` has to be on the remote already — this does not push, so that the push
+ * stays an ordinary jj mutation with its own narration and undo.
+ */
+export const createPullRequest = (request: NewPullRequest): Promise<CreatedPullRequest> =>
+  IN_TAURI
+    ? invoke<CreatedPullRequest>('create_pull_request', { request })
+    : Promise.resolve({ number: 99, url: `https://example.invalid/pull/99` });
 
 /**
  * Outward-facing and effectively irreversible — confirm before calling.

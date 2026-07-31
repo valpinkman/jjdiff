@@ -2087,6 +2087,33 @@ jj-app .tag-track {
   opacity: 0.72;
 }
 
+/* The header's "there is work here that is on no remote" count.
+   A `.tool` so it sits in the header's own vocabulary rather than inventing a
+   chip, but narrower and monospaced: it is a reading, and readings are digits.
+   Amber, the ref hue — this is about what is and is not published, which is the
+   one thing that colour means in this app (DESIGN.md) — and soft-filled rather
+   than outlined so it reads as a state and not as a fifth button. */
+jj-app .unpushed-summary {
+  gap: 3px;
+  padding: 0 9px;
+  font-family: var(--jj-mono);
+  font-variant-numeric: tabular-nums;
+  border-color: color-mix(in srgb, var(--jj-ref) 35%, var(--jj-border));
+  background: var(--jj-ref-soft);
+  color: var(--jj-ref);
+}
+
+jj-app .unpushed-summary:hover {
+  background: color-mix(in srgb, var(--jj-ref) 22%, var(--jj-surface));
+  color: var(--jj-ref);
+}
+
+/* The arrow is the unit, not part of the number — same relationship as the `↑`
+   in a tracking badge, and it should not compete with the digit for weight. */
+jj-app .unpushed-summary .arrow {
+  opacity: 0.75;
+}
+
 jj-app .badge.warn,
 jj-app .tag.warn {
   background: var(--jj-removed-bg);
@@ -2473,6 +2500,28 @@ jj-app .detail-actions {
   align-items: center;
   gap: var(--jj-s-2);
   margin-bottom: var(--jj-s-4);
+}
+
+/* The one verb in the row that leaves the machine.
+   Everything beside it rearranges commits locally and is undoable from the Ops
+   tab; this one publishes, and it is the thing you came to the card to do once
+   the change is ready. So it carries the accent on its border — the same mark
+   the walkthrough banner and the active workspace carry, which is what the
+   accent means on a bordered surface in this app — plus the soft fill, which is
+   what makes it the *first* thing read in a row of five rather than merely a
+   distinguishable one. The fill is right here and wrong on those two for the
+   same reason: they are large surfaces where accent-soft over a panel is a
+   muddy third colour, and this is a 100px pill where it is a highlight. */
+jj-app .tool.propose {
+  border-color: color-mix(in srgb, var(--jj-accent) 45%, var(--jj-border));
+  background: var(--jj-accent-soft);
+  color: var(--jj-accent);
+  font-weight: 600;
+}
+
+jj-app .tool.propose:hover:not(:disabled) {
+  border-color: var(--jj-accent);
+  background: color-mix(in srgb, var(--jj-accent) 20%, var(--jj-surface));
 }
 
 /* A toolbar across the top of the card, reading left to right from the primary

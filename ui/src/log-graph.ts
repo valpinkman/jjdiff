@@ -2,8 +2,9 @@ import { css, html, LitElement, nothing, svg, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import { layoutGraph, type GraphRow } from './graph.js';
-import type { Change } from './ipc.js';
+import type { BookmarkStatus, Change } from './ipc.js';
 import { relativeTime } from './time.js';
+import { unpushedAndUnnamed, worstTracking } from './tracking.js';
 
 const LANE_W = 12;
 /* Taller than the text needs. A commit list is scanned, not read, and rows this
@@ -174,6 +175,25 @@ export class LogGraph extends LitElement {
       background: var(--jj-removed-bg);
       color: var(--jj-removed-fg);
     }
+    /* Inside the bookmark's own pill rather than beside it: the count belongs to
+       that ref, and a second free-standing tag would compete with the name for
+       the width the description needs. Held off the name by a hairline for the
+       same reason the tool-group draws its own seams. */
+    .tag .ahead {
+      margin-left: 5px;
+      padding-left: 5px;
+      border-left: 1px solid color-mix(in srgb, var(--jj-ref) 35%, transparent);
+      font-family: var(--jj-mono);
+    }
+    /* Not the bookmark colour: this is the absence of a ref, not one. Neutral,
+       like the workspace tag, so a row of them does not read as a row of things
+       that have names. */
+    .tag.unpushed {
+      background: var(--jj-surface-2);
+      color: var(--jj-fg-muted);
+      font-family: var(--jj-mono);
+      padding: 2px 6px;
+    }
     /* A workspace is a place, not a ref — neutral rather than the bookmark colour, so the
        eye does not read a name@ tag as something publishable. */
     .tag.workspace {
@@ -236,6 +256,14 @@ export class LogGraph extends LitElement {
   @property() selected: string | null = null;
   /** The workspace this window is showing — the one whose `name@` tag is left off. */
   @property() workspace: string | null = null;
+  /** Tracking state per bookmark, for the `↑n` on a tag. Empty without remotes. */
+  @property({ attribute: false }) bookmarks: readonly BookmarkStatus[] = [];
+  /**
+   * Change ids that are on no remote. The graph is the pane you *scan*, so this
+   * is where "none of this is published" has to be legible without selecting
+   * anything — the detail card can only ever answer for one change at a time.
+   */
+  @property({ attribute: false }) unpushed: ReadonlySet<string> = new Set();
   /**
    * Whether rows can be dragged onto each other to rebase. Off while the graph
    * is showing something a rebase makes no sense against.
@@ -428,7 +456,40 @@ export class LogGraph extends LitElement {
             r=${DOT_R}
           />
         </svg>
-        ${change.bookmarks.map((bookmark) => html`<span class="tag">${bookmark}</span>`)}
+        ${change.bookmarks.map((bookmark) => {
+          const status = worstTracking(this.bookmarks, bookmark);
+          return html`<span
+            class="tag"
+            title=${
+              status?.ahead
+                ? `${bookmark} is ${status.ahead} commit${
+                    status.ahead === 1 ? '' : 's'
+                  } ahead of ${status.remote} — a push would send ${
+                    status.ahead === 1 ? 'it' : 'them'
+                  }`
+                : bookmark
+            }
+            >${bookmark}${
+              // Only ahead. `behind` is on the detail card, because it is not a
+              // property of *this* row: the commits the remote has and we do not
+              // are somewhere else entirely, and a `↓` here points at nothing on
+              // screen.
+              status?.ahead ? html`<span class="ahead">↑${status.ahead}</span>` : nothing
+            }</span
+          >`;
+        })}
+        ${
+          // Unpushed work with no bookmark to hang a count on. Deliberately not a
+          // number: there is no remote ref to be ahead *of*, so the honest claim
+          // is the binary one — this exists here and nowhere else.
+          unpushedAndUnnamed(change, this.unpushed, this.bookmarks)
+            ? html`<span
+                class="tag unpushed"
+                title="Not on any remote — this change has never been pushed, and has no bookmark to push it under"
+                >↑</span
+              >`
+            : nothing
+        }
         ${
           // `name@`, as jj writes it in its own log — for every workspace holding this
           // commit *except* this window's own. That one is already marked by the dot and

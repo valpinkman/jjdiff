@@ -95,6 +95,10 @@ export const mockRepoState: RepoState = {
     { name: 'streaming', remote: 'origin', ahead: 0, behind: 3 },
     { name: 'main', remote: 'origin', ahead: 0, behind: 0 },
   ],
+  // The other half, and the case bookmarks cannot express: `pool` carries no
+  // bookmark at all, so nothing above says it is unpushed. `retry` is on
+  // `sync-retries`, which is ahead — the two renderings have to differ.
+  unpushed: [wc.changeId, retry.changeId, pool.changeId],
   // Three workspaces, because one would exercise none of the pane: the current one, a
   // second holding a different change, and one whose directory has been deleted — the
   // state whose only remaining action is to forget it.

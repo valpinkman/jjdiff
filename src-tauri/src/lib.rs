@@ -219,6 +219,11 @@ struct RepoState {
     /// Ahead/behind for every bookmark tracking a remote. Empty on a repo with
     /// no remotes, which is not an error — it is most repos jjdiff opens.
     bookmarks: Vec<BookmarkStatus>,
+    /// Change ids of work that is on no remote — the other half of `bookmarks`.
+    /// A change with no bookmark tracks nothing, so it can never appear there
+    /// however long it goes unpushed; this is what makes it visible. Empty when
+    /// the repo has no remote at all, where the question means nothing.
+    unpushed: Vec<String>,
     /// Every workspace attached to this repo, this one included. Always at least one, so
     /// the pane can tell "one workspace" from "not loaded yet".
     workspaces: Vec<WorkspaceView>,
@@ -436,6 +441,8 @@ async fn repo_state(
             // be read is still perfectly reviewable, and failing the whole
             // repo_state call would black out the window over a badge.
             bookmarks: repo.bookmark_statuses().unwrap_or_default(),
+            // Same tolerance, same reason: this drives a badge.
+            unpushed: repo.unpushed().unwrap_or_default(),
             workspaces,
             workspace,
         })
@@ -482,12 +489,24 @@ async fn diff(
     blocking(move || compute_diff(&repo, revset.as_deref(), ignore_whitespace)).await
 }
 
-/// Interdiff from the last-reviewed commit of `change_id` to its current commit.
+/// Interdiff from the last-reviewed commit of `change_id` to `to_commit`.
+///
+/// Both ids, because this is the one command that needs both: `change_id` is the
+/// **key** the reviewed baseline is filed under, and `to_commit` is the
+/// **revision** to diff it against. It used to take only the change id and
+/// resolve the second with `repo.log(&change_id)`, which is the pattern that
+/// broke on a divergent change — one change id over several visible commits,
+/// which jj refuses to resolve at all. The caller is the only party that knows
+/// which of them is on screen, so it says.
+///
+/// Dropping the `log` also drops a subprocess: the frontend already had the
+/// commit in hand.
 #[tauri::command]
 async fn interdiff_since_reviewed(
     window: tauri::Window,
     state: tauri::State<'_, AppState>,
     change_id: String,
+    to_commit: String,
     ignore_whitespace: bool,
 ) -> Result<Interdiff, String> {
     let repo = repo_handle(&state, &window)?;
@@ -499,15 +518,11 @@ async fn interdiff_since_reviewed(
         .reviewed_commit(&repo_key, &change_id)
         .ok_or_else(|| "change has no reviewed commit recorded".to_string())?;
     blocking(move || {
-        let current = vcs(repo.log(&change_id))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| format!("change {change_id} not found"))?;
-        let patch = vcs(repo.interdiff(&from, &current.commit_id, ignore_whitespace))?;
+        let patch = vcs(repo.interdiff(&from, &to_commit, ignore_whitespace))?;
         Ok(Interdiff {
             files: jjdiff_diff::parse_git_patch(&patch).map_err(|e| e.to_string())?,
             from_commit: from,
-            to_commit: current.commit_id,
+            to_commit,
         })
     })
     .await
@@ -1764,6 +1779,37 @@ async fn open_pull_request(
     Ok(opened)
 }
 
+/// The branch a new proposal should target by default.
+///
+/// Its own command rather than a field on [`forge_info`]: that runs on every
+/// repo open and this is a network call only the compose dialog needs.
+#[tauri::command]
+async fn default_branch(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.default_branch()).await
+}
+
+/// Open a proposal. Outward-facing and public the moment it succeeds — the UI
+/// collects and shows every field before this is reached.
+///
+/// The head branch must already be on the remote: `gh` asks the forge to
+/// resolve it, so a bookmark that exists only locally fails here rather than
+/// pushing implicitly. The frontend pushes first, through the ordinary
+/// [`git_push`] path, so that half is a jj mutation with jj's own narration and
+/// an operation to undo — which is exactly what opening a proposal is not.
+#[tauri::command]
+async fn create_pull_request(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    request: forge::NewPullRequest,
+) -> Result<forge::Created, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || forge_client(&repo)?.create(&request)).await
+}
+
 /// Submit a review. Outward-facing and effectively irreversible — the UI
 /// confirms, naming the verdict, before this is reached.
 #[tauri::command]
@@ -2050,6 +2096,8 @@ pub fn run(args: Args) {
             pull_request,
             pull_request_activity,
             open_pull_request,
+            default_branch,
+            create_pull_request,
             submit_review,
             file_content,
             file_bytes,

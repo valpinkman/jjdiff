@@ -309,18 +309,29 @@ export class RebasePicker extends OverlayElement {
     });
   }
 
-  /** What would be passed to `-d`: the typed revset, else the highlighted row. */
+  /**
+   * What would be passed to `-d`: the typed revset, else the highlighted row.
+   *
+   * The row's **commit** id. A change id is what the list shows and what a
+   * person would read out, but it is not always resolvable: a divergent change
+   * — one change id over several visible commits — makes jj refuse the rebase
+   * outright. The row picked is one commit, so name that one.
+   */
   private get destination(): string {
     const typed = this.revset.trim();
     if (typed) return typed;
-    return this.candidates[this.active]?.changeId ?? '';
+    return this.candidates[this.active]?.commitId ?? '';
   }
 
   /**
-   * The destination as the command preview should show it. A change id from
-   * the list is abbreviated the way jj itself prints one — the full 32
-   * characters are what gets passed, but they are unreadable in a line meant
-   * to be read, and a truncation with an ellipsis looks like a mistake.
+   * The destination as the command preview should show it. An id from the list
+   * is abbreviated the way jj itself prints one — the full string is what gets
+   * passed, but it is unreadable in a line meant to be read, and a truncation
+   * with an ellipsis looks like a mistake.
+   *
+   * The **change** id, unlike `destination`: this line is for a human, and the
+   * change id is the one they can find again on the graph after the rebase has
+   * rewritten every commit id in sight.
    */
   private get destinationLabel(): string {
     if (this.revset.trim()) return this.revset.trim();
