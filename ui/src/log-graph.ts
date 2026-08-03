@@ -250,6 +250,22 @@ export class LogGraph extends LitElement {
       opacity: 0.35;
       cursor: no-drop;
     }
+    /* A bookmark is a thing you can pick up, and grab is the cursor that says
+       so. Only on hover: shown always it would claim the whole row is draggable
+       when the row's own gesture is a different one. */
+    .tag[draggable='true'] {
+      -webkit-user-drag: element;
+    }
+    .tag[draggable='true']:hover {
+      cursor: grab;
+      border-color: var(--jj-accent);
+    }
+    /* The tag being moved recedes where it came from, the way a dragged row
+       does — so the graph shows the name leaving one change for another rather
+       than appearing to be in both. */
+    .tag.moving {
+      opacity: 0.35;
+    }
   `;
 
   @property({ attribute: false }) changes: Change[] = [];
@@ -274,6 +290,18 @@ export class LogGraph extends LitElement {
   @state() private draggingId: string | null = null;
   /** The change id currently under the pointer, when it can accept the drop. */
   @state() private overId: string | null = null;
+  /**
+   * The bookmark being dragged off its change, when the drag started on a tag
+   * rather than on the row.
+   *
+   * A separate piece of state, not a mode on `draggingId`, because the two
+   * gestures differ in what they mean and in what can accept them: a rebase
+   * moves the change and is barred from its own descendants, a bookmark move
+   * moves only a name and can land anywhere except where it already is. They
+   * are told apart at `dragstart`, which is the only moment the distinction is
+   * available — by `drop` both look like a row under a pointer.
+   */
+  @state() private draggingBookmark: { name: string; from: Change } | null = null;
 
   private pick(change: Change) {
     this.dispatchEvent(
@@ -329,13 +357,43 @@ export class LogGraph extends LitElement {
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   }
 
+  /**
+   * Start dragging a bookmark off the change it is on.
+   *
+   * `stopPropagation` is what keeps this from also being a rebase: the tag sits
+   * inside a row that is itself draggable, so without it the row's handler runs
+   * on the way up and the drop would carry both intentions.
+   *
+   * Unconditional, unlike the rebase drag. `canRebase` is off when the graph is
+   * showing something a rebase makes no sense against — a proposal's commits,
+   * say — and a bookmark still means the same thing there.
+   */
+  private onBookmarkDragStart(event: DragEvent, name: string, from: Change) {
+    event.stopPropagation();
+    this.draggingBookmark = { name, from };
+    this.draggingId = null;
+    this.overId = null;
+    event.dataTransfer?.setData('text/plain', name);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
   private onDragEnd = () => {
     this.draggingId = null;
+    this.draggingBookmark = null;
     this.overId = null;
   };
 
+  /** Rows this drag cannot land on, whichever drag it is. */
+  private refuses(change: Change): boolean {
+    // A bookmark can go anywhere but where it already is — moving a name is not
+    // constrained by ancestry the way moving a commit is.
+    if (this.draggingBookmark) return this.draggingBookmark.from.changeId === change.changeId;
+    return this.barred.has(change.commitId);
+  }
+
   private onDragOver(event: DragEvent, change: Change) {
-    if (!this.draggingId || this.barred.has(change.commitId)) return;
+    if (!this.draggingId && !this.draggingBookmark) return;
+    if (this.refuses(change)) return;
     // Without this the drop never fires: the default action for dragover is to
     // refuse the drop.
     event.preventDefault();
@@ -346,12 +404,24 @@ export class LogGraph extends LitElement {
   private onDrop(event: DragEvent, destination: Change) {
     event.preventDefault();
     const source = this.changes.find((change) => change.changeId === this.draggingId);
+    const bookmark = this.draggingBookmark;
     // Read the exclusions before clearing the drag: they are derived from it.
-    const barred = this.barred;
+    const refused = this.refuses(destination);
     this.draggingId = null;
+    this.draggingBookmark = null;
     this.overId = null;
+    if (refused) return;
+    if (bookmark) {
+      this.dispatchEvent(
+        new CustomEvent<BookmarkDrop>('bookmark-drop', {
+          detail: { name: bookmark.name, from: bookmark.from, to: destination },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return;
+    }
     if (!source || source.changeId === destination.changeId) return;
-    if (barred.has(destination.commitId)) return;
     this.dispatchEvent(
       new CustomEvent('rebase-drop', {
         detail: { source, destination },
@@ -407,8 +477,8 @@ export class LogGraph extends LitElement {
         : change.immutable
           ? 'dot-immutable'
           : 'dot-mutable';
-    const dragging = this.draggingId !== null;
-    const barred = dragging && this.barred.has(change.commitId);
+    const dragging = this.draggingId !== null || this.draggingBookmark !== null;
+    const barred = dragging && this.refuses(change);
     const rowClass = [
       'row',
       change.changeId === this.selected ? 'selected' : '',
@@ -425,13 +495,17 @@ export class LogGraph extends LitElement {
         class=${rowClass}
         draggable=${this.canRebase ? 'true' : 'false'}
         title=${
-          dragging
+          this.draggingBookmark
             ? barred
-              ? `${change.changeId.slice(0, 12)} — cannot hold this change; it is descended from it`
-              : `Drop here to rebase onto ${change.changeId.slice(0, 12)}`
-            : `${change.changeId.slice(0, 12)} — ${summary || '(no description)'}${
-                this.canRebase ? '\nDrag onto another change to rebase it there.' : ''
-              }`
+              ? `${this.draggingBookmark.name} is already here`
+              : `Drop here to move ${this.draggingBookmark.name} to ${change.changeId.slice(0, 12)}`
+            : dragging
+              ? barred
+                ? `${change.changeId.slice(0, 12)} — cannot hold this change; it is descended from it`
+                : `Drop here to rebase onto ${change.changeId.slice(0, 12)}`
+              : `${change.changeId.slice(0, 12)} — ${summary || '(no description)'}${
+                  this.canRebase ? '\nDrag onto another change to rebase it there.' : ''
+                }`
         }
         @click=${() => this.pick(change)}
         @contextmenu=${(event: MouseEvent) => this.openMenu(event, change)}
@@ -458,17 +532,21 @@ export class LogGraph extends LitElement {
         </svg>
         ${change.bookmarks.map((bookmark) => {
           const status = worstTracking(this.bookmarks, bookmark);
+          const moving = this.draggingBookmark?.name === bookmark;
           return html`<span
-            class="tag"
+            class="tag ${moving ? 'moving' : ''}"
+            draggable="true"
             title=${
               status?.ahead
                 ? `${bookmark} is ${status.ahead} commit${
                     status.ahead === 1 ? '' : 's'
                   } ahead of ${status.remote} — a push would send ${
                     status.ahead === 1 ? 'it' : 'them'
-                  }`
-                : bookmark
+                  }\nDrag onto another change to move the bookmark there.`
+                : `${bookmark}\nDrag onto another change to move the bookmark there.`
             }
+            @dragstart=${(event: DragEvent) =>
+              this.onBookmarkDragStart(event, bookmark, change)}
             >${bookmark}${
               // Only ahead. `behind` is on the detail card, because it is not a
               // property of *this* row: the commits the remote has and we do not
@@ -517,6 +595,19 @@ export class LogGraph extends LitElement {
 const LANE_COLOURS = 6;
 
 const laneStroke = (lane: number) => `stroke: var(--jj-lane-${lane % LANE_COLOURS})`;
+
+/**
+ * A bookmark dragged off one change and dropped on another.
+ *
+ * Carries `from` as well as `to` even though jj needs only the destination:
+ * the confirmation names both ends, and this is the one moment both are known
+ * — after the move the graph no longer says where the name used to be.
+ */
+export interface BookmarkDrop {
+  name: string;
+  from: Change;
+  to: Change;
+}
 
 /** A right-click on a graph row, and where to put the menu. */
 export interface ChangeMenuRequest {

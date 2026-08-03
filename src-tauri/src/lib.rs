@@ -832,6 +832,11 @@ async fn restore_paths(
     run_mutation(&app, &state, repo, move |repo| repo.restore_paths(&paths)).await
 }
 
+/// Point a bookmark at a revision, creating it if it is a new name.
+///
+/// `allow_backwards` is threaded from the caller rather than decided here, for
+/// the reason `allow_immutable` is: it waives one of jj's accident guards, and
+/// the frontend is where the confirmation naming what it waives lives.
 #[tauri::command]
 async fn set_bookmark(
     app: AppHandle,
@@ -839,9 +844,13 @@ async fn set_bookmark(
     state: tauri::State<'_, AppState>,
     name: String,
     revset: String,
+    allow_backwards: bool,
 ) -> Result<Outcome, String> {
     let repo = repo_handle(&state, &window)?;
-    run_mutation(&app, &state, repo, move |repo| repo.bookmark_set(&name, &revset)).await
+    run_mutation(&app, &state, repo, move |repo| {
+        repo.bookmark_set(&name, &revset, allow_backwards)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1792,6 +1801,21 @@ async fn default_branch(
     blocking(move || forge_client(&repo)?.default_branch()).await
 }
 
+/// The repository's proposal template, when it has one.
+///
+/// Beside [`default_branch`] and asked at the same moment, for the same reason:
+/// both are things the compose dialog needs and nothing else does. A repo with
+/// no forge has no template convention to read, so the missing client is `None`
+/// rather than an error — the dialog opens regardless.
+#[tauri::command]
+async fn proposal_template(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || Ok(forge_client(&repo).ok().and_then(|client| client.template()))).await
+}
+
 /// Open a proposal. Outward-facing and public the moment it succeeds — the UI
 /// collects and shows every field before this is reached.
 ///
@@ -2097,6 +2121,7 @@ pub fn run(args: Args) {
             pull_request_activity,
             open_pull_request,
             default_branch,
+            proposal_template,
             create_pull_request,
             submit_review,
             file_content,

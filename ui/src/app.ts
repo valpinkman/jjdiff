@@ -30,6 +30,7 @@ import {
   gitPush,
   createPullRequest,
   defaultBranch,
+  proposalTemplate,
   rebaseChange,
   restoreOperation,
   restorePaths,
@@ -116,7 +117,7 @@ import {
 import { folderIcon } from './file-icons.js';
 import { prMetaItems, proposalState, type PrMetaContext } from './pr-templates.js';
 import type { FileMenuRequest } from './file-tree.js';
-import type { ChangeMenuRequest } from './log-graph.js';
+import type { BookmarkDrop, ChangeMenuRequest } from './log-graph.js';
 import type { ComposeRequest } from './pr-compose.js';
 import {
   iconAbsorb,
@@ -539,6 +540,18 @@ export class App extends LitElement {
     change: Change;
     /** Branches offered as a base, the forge's default first. */
     bases: string[];
+    /**
+     * The message the proposal is composed from, and the one the commit will
+     * carry. Usually the change's own, but on the working copy it is whatever
+     * is in the describe box — that card's message lives there until Describe
+     * commits it, and proposing from `@` is exactly the moment someone has
+     * typed one and not pressed it. `submitNewProposal` describes the change
+     * with this before pushing, or the forge would show a title and body the
+     * commit under them does not have.
+     */
+    description: string;
+    /** The repository's proposal template, or null when it has none. */
+    template: string | null;
   } | null = null;
   /** Evolog drawer: every recorded version of the selected change. */
   @state() private versionsOpen = false;
@@ -1566,12 +1579,50 @@ export class App extends LitElement {
     this.moreAt = { right: Math.max(8, window.innerWidth - rect.right), y: rect.bottom + 6 };
   };
 
+  /**
+   * The More button and its menu, shared by both cards.
+   *
+   * One function because the menu behind it is one menu: every verb in it
+   * applies to the working copy as readily as to any other change, and the card
+   * that had no More was the reason "Squash by hunk…" — move these hunks into
+   * another change — could not be reached from the place people most want it.
+   */
+  private renderMore(change: Change) {
+    return html`<span class="more-root">
+      <button
+        class="tool"
+        title="Discard, rebase, split, squash, duplicate, back out, abandon"
+        aria-expanded=${this.moreAt !== null}
+        @click=${this.toggleMore}
+      >
+        More
+        <span class="fold-chevron ${this.moreAt ? 'up' : ''}">${iconChevron}</span>
+      </button>
+      ${this.moreAt ? this.renderMoreMenu(change, this.moreAt) : nothing}
+    </span>`;
+  }
+
   private renderMoreMenu(change: Change, at: { right: number; y: number }) {
     const pick = (run: () => void) => () => {
       this.moreAt = null;
       run();
     };
     return html`<div class="more-menu" role="menu" style="right: ${at.right}px; top: ${at.y}px">
+      <!-- Only the working copy has uncommitted edits to throw away, so this is
+           the one entry that is not offered on both cards. It sits at the top
+           rather than beside Abandon at the bottom because it is the verb the
+           working copy actually reaches for; it is not destructive to history,
+           only to work that was never recorded. -->
+      ${this.isWorkingCopySelected
+        ? html`<button
+            role="menuitem"
+            title="jj restore — throw away the focused file's uncommitted changes, or all of them when no file is focused. Undoable from the Ops tab."
+            ?disabled=${this.files.length === 0}
+            @click=${pick(() => void this.restoreSelectedFile())}
+          >
+            Discard…
+          </button>`
+        : nothing}
       <button
         role="menuitem"
         title=${
@@ -3500,6 +3551,11 @@ export class App extends LitElement {
   private async openProposalComposer() {
     const change = this.selectedChange;
     if (!change || !this.forge) return;
+    // The box on the working-copy card, the commit's own message anywhere else.
+    // Only `@` is read out of the box: the detail card's editor has an explicit
+    // Save beside it, so a draft sitting in it is one the user has not yet said
+    // to keep, and publishing from it would commit an edit by a side door.
+    const description = this.isWorkingCopySelected ? this.description : change.description;
     await this.act({ busy: 'proposal' }, async () => {
       const remote = [
         ...new Set((this.repo?.bookmarks ?? []).map((status) => status.name)),
@@ -3511,8 +3567,11 @@ export class App extends LitElement {
         // Reported, not thrown: the dialog is still worth opening.
         this.actionInfo = `Could not read the default branch (${String(error)}); pick one.`;
       }
+      // Same policy: a repo with no template and a template that could not be
+      // read are one answer, and neither is a reason not to compose.
+      const template = await proposalTemplate().catch(() => null);
       const bases = [...new Set([fallback, ...remote].filter((name): name is string => !!name))];
-      this.composingProposal = { change, bases };
+      this.composingProposal = { change, bases, description, template };
     });
   }
 
@@ -3541,6 +3600,13 @@ export class App extends LitElement {
     if (!composing) return;
     const { change } = composing;
     await this.act({ busy: 'proposal' }, async () => {
+      // Describe before pushing, not after: `jj git push` refuses a commit with
+      // no description, so on the working copy this is not a nicety but the
+      // step that makes the push legal at all. It runs only when the two differ,
+      // which off the working copy is never — see `composingProposal`.
+      if (composing.description !== change.description) {
+        await describeChange(revisionOf(change), composing.description);
+      }
       // A head the change does not carry is one we are being asked to create.
       // `bookmark set` rather than `push --change`: the name is the user's, and
       // jj's auto-naming would quietly publish it under a different one.
@@ -3570,12 +3636,71 @@ export class App extends LitElement {
     });
   }
 
+  /**
+   * Name this change, or move a name onto it.
+   *
+   * `jj bookmark set` is both verbs, and typing a name that already exists
+   * *moves* it — silently, off whatever it was on, which is a change the dialog
+   * never mentioned and the user may not have realised they were touching. So
+   * the name is checked before the write and a move goes through the same
+   * confirmation a dropped bookmark does.
+   */
   private async createBookmark() {
     const change = this.selectedChange;
     if (!change) return;
-    const name = await askText({ heading: 'Bookmark name', confirmLabel: 'Create' });
-    if (!name?.trim()) return;
-    void this.command('bookmark', () => setBookmark(name.trim(), revisionOf(change)));
+    const name = await askText({ heading: 'Bookmark name', confirmLabel: 'Set' });
+    const wanted = name?.trim();
+    if (!wanted) return;
+    const from = this.changeCarrying(wanted);
+    if (from && from.changeId !== change.changeId) {
+      await this.moveBookmark({ name: wanted, from, to: change });
+      return;
+    }
+    void this.command('bookmark', () => setBookmark(wanted, revisionOf(change)));
+  }
+
+  /** The visible change a bookmark is currently on, if jjdiff can see it. */
+  private changeCarrying(name: string): Change | null {
+    const carries = (change: Change) => change.bookmarks.includes(name);
+    return (
+      this.repo?.stack.find(carries) ??
+      this.repo?.graph.find(carries) ??
+      (this.repo && carries(this.repo.workingCopy) ? this.repo.workingCopy : null)
+    );
+  }
+
+  /**
+   * Move a bookmark from one change to another, having said so first.
+   *
+   * `allowBackwards` is passed because this *is* the ask: jj refuses a move
+   * that is not a fast-forward on the grounds that it is usually a mistyped
+   * revset, and a bookmark dragged onto a row under the pointer is neither
+   * mistyped nor unseen. The dialog names both ends, which is the check jj's
+   * guard stands in for at a terminal.
+   *
+   * Undoable like every other mutation, and the dialog says so rather than
+   * dressing the move up as dangerous — what it costs is one entry in the Ops
+   * tab.
+   */
+  private async moveBookmark({ name, from, to }: BookmarkDrop) {
+    if (from.changeId === to.changeId) return;
+    const label = (change: Change) =>
+      change.description.split('\n')[0] || change.changeId.slice(0, 8);
+    const tracking = this.tracking(name);
+    const ok = await askConfirm({
+      heading: `Move "${name}" to "${label(to)}"?`,
+      detail:
+        `The bookmark is on "${label(from)}" and would point at "${label(to)}" instead ` +
+        '(jj bookmark set). No commits move, and nothing is published until you push.\n\n' +
+        (tracking
+          ? `It tracks ${tracking.remote}, so the next push sends the new position — ` +
+            'which the remote may only accept as a force-push.\n\n'
+          : '') +
+        'Undoable from the Ops tab.',
+      confirmLabel: 'Move',
+    });
+    if (!ok) return;
+    void this.command('bookmark', () => setBookmark(name, revisionOf(to), true));
   }
 
   private async removeBookmark(name: string) {
@@ -3592,14 +3717,31 @@ export class App extends LitElement {
     void this.command('fetch', () => gitFetch());
   }
 
-  /** Push the selected change: an existing bookmark if it has one, else --change. */
+  /**
+   * Push the selected change: an existing bookmark if it has one, else
+   * `--change`, which is jj naming the bookmark itself from the change id.
+   *
+   * On the working copy the message is usually still in the describe box rather
+   * than on the commit, and `jj git push` refuses a commit with no description —
+   * so the describe is part of the push here for the same reason it is part of
+   * opening a proposal, and under the same condition. Elsewhere the two never
+   * differ and this does nothing.
+   */
   private runPush() {
     const change = this.selectedChange;
     if (!change) return;
     const bookmark = change.bookmarks[0];
+    const pending = this.isWorkingCopySelected ? this.description : change.description;
     void this.command('push', async () => {
+      if (pending !== change.description) await describeChange(revisionOf(change), pending);
+      // `--change` takes a revision, so it gets the commit id like every other
+      // argument to jj. The change id reads as the natural thing to pass and is
+      // the one spelling that cannot work: a divergent change resolves to
+      // several commits and jj refuses it. The bookmark jj derives is named
+      // from the change id either way — that is jj reading it off the revision,
+      // not us handing one in.
       const result = await gitPush(
-        bookmark ? { bookmark } : { change: change.changeId },
+        bookmark ? { bookmark } : { change: revisionOf(change) },
       );
       this.lastOutcome = result;
       // A push either creates the branch a proposal will attach to, or moves an
@@ -4421,6 +4563,8 @@ export class App extends LitElement {
                 }}
                 @rebase-drop=${(event: CustomEvent<{ source: Change; destination: Change }>) =>
                   void this.rebaseByDrop(event.detail.source, event.detail.destination)}
+                @bookmark-drop=${(event: CustomEvent<BookmarkDrop>) =>
+                  void this.moveBookmark(event.detail)}
               ></jj-log-graph>
               </div>`
           : this.sidebarTab === 'workspaces'
@@ -4577,7 +4721,21 @@ export class App extends LitElement {
                    reads as a menu rather than a toolbar. First in the DOM as
                    well as on screen, so the tab order matches. -->
               <div class="detail-main">
-              <!-- Four verbs out, the rest behind "More". The split is by how
+              <!-- ONE ORDER, HERE AND ON THE WORKING-COPY CARD:
+                     primary · message · refs · flow · More.
+                   Grouped by what each verb touches, and the two cards must
+                   agree — a toolbar that reshuffles when the selection moves to
+                   the working copy costs the reader the muscle memory the
+                   toolbar is for.
+                   The working-copy card fills the same slots with its own
+                   verbs: Commit & New for the primary, Describe for the
+                   message, Discard… in its More.
+                   The labels differ only where the verb does. "Edit
+                   description" opens an editor; the working copy's "Describe"
+                   commits the box that is already on screen. Same slot, two
+                   different acts, and naming them alike would be the kind of
+                   consistency that lies.
+                   Four verbs out, the rest behind More: the split is by how
                    often a hand reaches for them, not by what jj calls them. -->
               <div class="detail-actions detail-verbs">
                 <button
@@ -4591,18 +4749,9 @@ export class App extends LitElement {
                 >
                   Work on this
                 </button>
-                <button
-                  class="tool"
-                  title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
-                  @click=${this.newOnSelected}
-                >
-                  New on top
-                </button>
-                <!-- Third, because the row is grouped by what each verb touches:
-                     the working copy, then this change's own message, then the
-                     refs pointing at it. Hidden while the editor is open — Save
-                     and Cancel are down in the prose column with the text they
-                     act on — and during guided review, which is a reading mode. -->
+                <!-- Hidden while the editor is open — Save and Cancel are down
+                     in the prose column with the text they act on — and during
+                     guided review, which is a reading mode. -->
                 ${this.editingDescription || this.walkActive
                   ? nothing
                   : html`<button
@@ -4650,19 +4799,14 @@ export class App extends LitElement {
                       ${sentenceCase(this.forge.noun)}…
                     </button>`
                   : nothing}
-
-                <span class="more-root">
-                  <button
-                    class="tool"
-                    title="Rebase, split, duplicate, back out, abandon"
-                    aria-expanded=${this.moreAt !== null}
-                    @click=${this.toggleMore}
-                  >
-                    More
-                    <span class="fold-chevron ${this.moreAt ? 'up' : ''}">${iconChevron}</span>
-                  </button>
-                  ${this.moreAt ? this.renderMoreMenu(change, this.moreAt) : nothing}
-                </span>
+                <button
+                  class="tool"
+                  title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
+                  @click=${this.newOnSelected}
+                >
+                  New on top
+                </button>
+                ${this.renderMore(change)}
               </div>
                 <div class="detail-prose">
               <!-- Guided review is a *reading* mode: you are being walked
@@ -4741,6 +4885,25 @@ export class App extends LitElement {
                     </span>
                   </span>
                   <span class="spacer"></span>
+                  <!-- THE SAME ORDER AS THE DETAIL CARD:
+                       primary · message · refs · flow · More.
+                       The working copy is a change like any other and its
+                       toolbar has to read like one — this row used to run
+                       Rewrite, Describe, Push, PR, Discard, New on top, Commit
+                       & New, which shares five verbs with the other card and
+                       agrees with it on the position of none of them. Where a
+                       slot's verb genuinely differs the label does too: the
+                       primary here commits and moves on rather than moving the
+                       working copy onto something, and Describe saves the box
+                       below rather than opening an editor. -->
+                  <button
+                    class="tool primary"
+                    ?disabled=${this.files.length === 0 || !this.description.trim()}
+                    title="Describe @ and start a new change on top (jj describe + jj new)"
+                    @click=${this.commitAndNew}
+                  >
+                    Commit &amp; New
+                  </button>
                   <!-- Fills the box; it does not describe the change. A
                        generated message is a draft, and Describe beside it is
                        still what commits one — a button that wrote straight to
@@ -4760,24 +4923,65 @@ export class App extends LitElement {
                   <button
                     class="tool"
                     ?disabled=${this.description === change.description}
+                    title="jj describe — save this message onto the working copy."
                     @click=${this.saveDescription}
                   >
                     Describe
                   </button>
                   <button
                     class="tool"
-                    ?disabled=${this.files.length === 0}
-                    title="Discard the focused file's changes (or all when none is focused)"
-                    @click=${this.restoreSelectedFile}
+                    title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
+                    @click=${this.createBookmark}
                   >
-                    Discard…
+                    Bookmark…
                   </button>
-                  <!-- Always available, unlike Commit & New beside it. That one
-                       needs a description and something to commit; this is a
-                       plain jj new, which is exactly what you reach for to park
-                       finished work and start something else — including on an
-                       empty or undescribed working copy, where the other is
-                       disabled and the only route was the palette. -->
+                  <!-- The working copy is pushable like any other change, and
+                       had no way to be pushed from its own card — only from the
+                       palette, where it failed on jj's "no description" for a
+                       message that was sitting in the box right here. Same gate
+                       as the proposal beside it, and the same bookmark rule as
+                       the detail card's Push: the one it has, or jj naming one
+                       from the change id. -->
+                  <button
+                    class="tool"
+                    ?disabled=${this.files.length === 0 || !this.description.trim()}
+                    title=${!this.description.trim()
+                      ? 'Describe this change first — jj will not push a commit without a message.'
+                      : change.bookmarks.length
+                        ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
+                        : 'jj git push --change — push the working copy, auto-naming a bookmark from its change id.'}
+                    @click=${this.runPush}
+                  >
+                    Push
+                  </button>
+                  <!-- Disabled rather than hidden, which is the opposite of the
+                       detail card's rule and for the reason that rule gives: a
+                       disabled button is only bad when nothing the user can do
+                       would enable it, and here the two things are Describe and
+                       editing a file — both a press away, both named in the
+                       tooltip. Gated on the box, not on the commit's message:
+                       the commit's is empty right up until Describe, and waiting
+                       for that would leave the button dead through the whole
+                       moment someone would reach for it. -->
+                  ${this.forge && !this.pullRequest
+                    ? html`<button
+                        class="tool propose"
+                        ?disabled=${this.files.length === 0 || !this.description.trim()}
+                        title=${!this.description.trim()
+                          ? `Describe this change first — a ${this.forge.noun} needs a title, and jj will not push a commit without a message.`
+                          : this.files.length === 0
+                            ? `Nothing to propose yet — the working copy is empty.`
+                            : `gh pr create — open a ${this.forge.noun} for the working copy. It will be described, given a bookmark and pushed first; you will see the title, the body and the base branch before anything is published.`}
+                        @click=${() => void this.openProposalComposer()}
+                      >
+                        ${sentenceCase(this.forge.noun)}…
+                      </button>`
+                    : nothing}
+                  <!-- Always available, unlike Commit & New. That one needs a
+                       description and something to commit; this is a plain jj
+                       new, which is exactly what you reach for to park finished
+                       work and start something else — including on an empty or
+                       undescribed working copy. -->
                   <button
                     class="tool"
                     title="jj new — start an empty change on top of this one, leaving it as it is."
@@ -4785,14 +4989,7 @@ export class App extends LitElement {
                   >
                     New on top
                   </button>
-                  <button
-                    class="tool primary"
-                    ?disabled=${this.files.length === 0 || !this.description.trim()}
-                    title="Describe @ and start a new change on top (jj describe + jj new)"
-                    @click=${this.commitAndNew}
-                  >
-                    Commit &amp; New
-                  </button>
+                  ${this.renderMore(change)}
                 </div>
                 <textarea
                   placeholder="Describe this change…"
@@ -5076,13 +5273,15 @@ export class App extends LitElement {
               .headBookmark=${this.composingProposal.change.bookmarks[0] ?? ''}
               .ahead=${this.tracking(this.composingProposal.change.bookmarks[0] ?? '')?.ahead ?? 0}
               .seedBase=${this.composingProposal.bases[0] ?? ''}
-              .seedHead=${proposalHead(this.composingProposal.change)}
-              .seedTitle=${this.composingProposal.change.description.split('\n')[0] ?? ''}
-              .seedBody=${this.composingProposal.change.description
-                .split('\n')
-                .slice(1)
-                .join('\n')
-                .trim()}
+              .seedHead=${proposalHead(
+                this.composingProposal.change,
+                this.composingProposal.description,
+              )}
+              .seedTitle=${this.composingProposal.description.split('\n')[0] ?? ''}
+              .seedBody=${proposalBody(
+                this.composingProposal.description,
+                this.composingProposal.template,
+              )}
               ?busy=${this.busy === 'proposal'}
               @create=${(event: CustomEvent<ComposeRequest>) =>
                 void this.submitNewProposal(event.detail)}
@@ -5823,6 +6022,29 @@ const revisionOf = (change: Change) => change.commitId;
 const sentenceCase = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /**
+ * What the compose dialog's body starts as: the description's body, then the
+ * repository's template under it.
+ *
+ * Both, in that order, and neither replacing the other. They are different
+ * things — the description is what the author wrote about the change, the
+ * template is what the repository asks every proposal to answer — and a rule
+ * that dropped one would drop it silently. Template-only loses prose that is
+ * often the whole explanation; description-only means a repo with a template
+ * never sees it on any described change, which is every change jjdiff can
+ * propose. Above rather than below, because a summary read before a form is a
+ * summary; read after one it is an appendix.
+ *
+ * Nothing is merged *into* the template — no guessing which heading the prose
+ * belongs under. The box is editable and on screen; moving a paragraph is a
+ * thing a person does better than a heuristic.
+ */
+function proposalBody(description: string, template: string | null): string {
+  const body = description.split('\n').slice(1).join('\n').trim();
+  if (!template?.trim()) return body;
+  return body ? `${body}\n\n${template.trim()}\n` : `${template.trim()}\n`;
+}
+
+/**
  * The branch to propose a change under.
  *
  * Its own bookmark when it has one — that is the name the work is already known
@@ -5832,13 +6054,18 @@ const sentenceCase = (text: string) => text.charAt(0).toUpperCase() + text.slice
  * editable and the dialog says the bookmark will be created. jj's own
  * `push --change` auto-name (`push-` plus a change-id prefix) was the other
  * candidate and is worse here — it names the branch after an identifier nobody
- * reading the forge can resolve, and the description is right there. Capped at
- * 48, because the tail of a long summary is not what distinguishes it.
+ * reading the forge can resolve, and the description is right there. It stays
+ * as the last resort, for a description that slugs to nothing. Capped at 48,
+ * because the tail of a long summary is not what distinguishes it.
+ *
+ * The message is passed in rather than read off the change, because the working
+ * copy's is still in the describe box at this point and a branch named after
+ * the commit's empty one would be the fallback every time.
  */
-function proposalHead(change: Change): string {
+function proposalHead(change: Change, description: string): string {
   const [existing] = change.bookmarks;
   if (existing) return existing;
-  const slug = (change.description.split('\n')[0] ?? '')
+  const slug = (description.split('\n')[0] ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')

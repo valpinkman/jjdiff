@@ -851,19 +851,33 @@ export class PatchView extends LitElement {
   ): TemplateResult {
     const tokens = this.highlights.tokensFor(this.files[fileIndex]!, hl);
     const file = this.files[fileIndex]!;
-    const numClick = (side: CommentSide, num: number | null) => (e: MouseEvent) => {
+    // A unified row is one line of code however many numbers precede it, so it
+    // has one comment anchor — and it must be the one `buildRows` files
+    // existing comments under, or a saved comment renders nowhere: a removed
+    // line belongs to the old side, everything else to the new.
+    //
+    // Both numbers open that one anchor. They used to open their own side
+    // each, which put every comment on a context line's *left* number under a
+    // key unified never reads back. The composer under the row was separately
+    // unreachable on the new side: it was picked with `??` over the two sides,
+    // and the miss value is lit's `nothing` — a symbol, not null, so the first
+    // call always won and every added line silently swallowed the composer.
+    const side: CommentSide = line.kind === 'removed' ? 'old' : 'new';
+    const anchor = side === 'old' ? line.oldLine : line.newLine;
+    const clickable = this.canComment && anchor !== null;
+    const numClick = (e: MouseEvent) => {
       e.stopPropagation();
-      if (num === null || !this.canComment) return;
-      this.openComposer(file.path, side, num, line.text);
+      if (!clickable) return;
+      this.openComposer(file.path, side, anchor!, line.text);
     };
     return html`<div class="line unified ${line.kind} ${markerClass(line.text)} ${extra}">
-      <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('old', line.oldLine)}>${line.oldLine ?? ''}</span>
-      <span class="num ${this.canComment ? 'clickable' : ''}" @click=${numClick('new', line.newLine)}>${line.newLine ?? ''}</span>
+      <span class="num ${clickable ? 'clickable' : ''}" @click=${numClick}>${line.oldLine ?? ''}</span>
+      <span class="num ${clickable ? 'clickable' : ''}" @click=${numClick}>${line.newLine ?? ''}</span>
       <span class="sign">${sign(line.kind)}</span>
       <span class="content"
         ><span class="pan">${renderLineContent(line.text, tokens, line.spans)}</span></span
       >
-    </div>${this.renderComposerForLine(file.path, 'old', line.oldLine) ?? this.renderComposerForLine(file.path, 'new', line.newLine) ?? nothing}`;
+    </div>${this.renderComposerForLine(file.path, side, anchor)}`;
   }
 
   private renderCell(

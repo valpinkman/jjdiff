@@ -705,8 +705,24 @@ impl Repo {
         Ok(out.lines().map(str::trim).filter(|line| !line.is_empty()).map(String::from).collect())
     }
 
-    pub fn bookmark_set(&self, name: &str, revset: &str) -> Result<Outcome> {
-        self.mutate(&["bookmark", "set", name, "-r", revset])
+    /// Point `name` at `revset`, creating it if it does not exist.
+    ///
+    /// `allow_backwards` is jj's own guard, opted into per call. `jj bookmark
+    /// set` refuses to move a bookmark anywhere that is not a descendant of
+    /// where it already is — "backwards or sideways" — because in a terminal
+    /// that is nearly always a mistyped revset, and doing it silently loses the
+    /// commits the bookmark used to name. Dragging a bookmark onto a change is
+    /// the case where it is not a mistake, and the caller confirms, naming both
+    /// ends, before passing `true`.
+    ///
+    /// A parameter rather than a mode, like `allowing_immutable`: nothing stores
+    /// it, so a confirmed move does not disarm the guard for the next one.
+    pub fn bookmark_set(&self, name: &str, revset: &str, allow_backwards: bool) -> Result<Outcome> {
+        let mut args = vec!["bookmark", "set", name, "-r", revset];
+        if allow_backwards {
+            args.push("--allow-backwards");
+        }
+        self.mutate(&args)
     }
 
     pub fn bookmark_delete(&self, name: &str) -> Result<Outcome> {
@@ -1297,6 +1313,59 @@ mod tests {
             matches!(error, VcsError::CommandFailed { .. }),
             "expected CommandFailed, got {error:?}"
         );
+    }
+
+    /// Moving a bookmark to somewhere that is not a descendant of where it sits
+    /// is refused by jj unless asked, and dragging one across a graph is mostly
+    /// that move. Pinned because the flag is invisible in the happy direction:
+    /// forward moves pass either way, so a build that dropped it would look
+    /// correct until someone dragged a bookmark *up* the graph.
+    #[test]
+    fn moving_a_bookmark_backwards_needs_asking_and_forwards_does_not() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        init_repo(&work);
+        let repo = Repo::discover(&work).unwrap();
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "signing.behavior=drop"])
+                .args(args)
+                .current_dir(&work)
+                .env("JJ_USER", "Test")
+                .env("JJ_EMAIL", "test@example.com")
+                .output()
+                .expect("jj runs");
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+
+        // Three commits, so there is an ancestor to move back to.
+        for name in ["one", "two", "three"] {
+            std::fs::write(work.join(format!("{name}.txt")), name).unwrap();
+            jj(&["commit", "-m", name]);
+        }
+
+        // Created where nothing was: no direction to be wrong about.
+        repo.bookmark_set("b", "@--", false).unwrap();
+
+        // Forward, onto a descendant. This is the fast-forward jj allows.
+        repo.bookmark_set("b", "@-", false).unwrap();
+
+        // Backwards, onto an ancestor — refused, and the refusal names itself.
+        let error = repo.bookmark_set("b", "@---", false).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("backwards") || text.contains("sideways"),
+            "expected jj's backwards guard, got {text}"
+        );
+
+        // The same move, asked for.
+        repo.bookmark_set("b", "@---", true).unwrap();
     }
 
     /// The counts are inverted relative to the template keywords they come from,

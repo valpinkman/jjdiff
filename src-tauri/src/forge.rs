@@ -371,6 +371,38 @@ impl Client {
         }
     }
 
+    /// The repository's proposal template, when it has one.
+    ///
+    /// Read off disk rather than asked of the forge. A template is an ordinary
+    /// tracked file and [`Repo::discover`] guarantees the workspace is
+    /// colocated, so it is already sitting in `root` — going through
+    /// `gh api …/contents` would be a network round trip, an authentication
+    /// dependency and a rate limit for a file we are standing on.
+    ///
+    /// `None` is the answer for a repo with no template, and so is an
+    /// unreadable one. This seeds a text box the user is about to edit; there
+    /// is nothing for them to do about a permissions error on a file they did
+    /// not know was consulted, and refusing to open the dialog over it would be
+    /// absurd.
+    ///
+    /// Only the single-file form. GitHub also supports a
+    /// `PULL_REQUEST_TEMPLATE/` *directory* of several templates chosen by a
+    /// query parameter on the web form — that is a picker, not a lookup, and
+    /// wants a control in the dialog before it wants a reader here.
+    pub fn template(&self) -> Option<String> {
+        match self.kind {
+            // Root, `docs/` and `.github/`, which is where GitHub looks and in
+            // that precedence. The whole directory is listed rather than the
+            // dozen candidate paths stat'd, because the name is
+            // case-insensitive and the extension optional: PULL_REQUEST_TEMPLATE,
+            // pull_request_template.md and Pull_Request_Template.txt are all
+            // valid and all real in the wild.
+            Kind::GitHub => ["", "docs", ".github"]
+                .iter()
+                .find_map(|dir| template_in(&self.root.join(dir))),
+        }
+    }
+
     /// Open a proposal.
     ///
     /// Outward-facing and not undoable from here — the caller confirms, and the
@@ -534,6 +566,33 @@ pub struct Submitted {
 
 fn first_line(text: &str) -> String {
     text.lines().find(|line| !line.trim().is_empty()).unwrap_or(text).trim().to_string()
+}
+
+/// The proposal template directly inside `dir`, if one is there.
+///
+/// Entries are sorted before the scan. `read_dir` yields in whatever order the
+/// filesystem holds, so a directory carrying both `.md` and `.txt` spellings
+/// would otherwise resolve to a different one on different machines — the kind
+/// of difference that shows up as "it works on mine".
+///
+/// A template that is empty or only whitespace is treated as absent. Seeding
+/// the body with a blank string is what happens anyway, and reporting one found
+/// would be a claim with nothing behind it.
+fn template_in(dir: &std::path::Path) -> Option<String> {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.file_name())
+        .collect();
+    names.sort();
+    let name = names.iter().find(|name| {
+        let name = name.to_string_lossy().to_lowercase();
+        let stem = name.strip_suffix(".md").or_else(|| name.strip_suffix(".txt")).unwrap_or(&name);
+        stem == "pull_request_template"
+    })?;
+    let body = std::fs::read_to_string(dir.join(name)).ok()?;
+    (!body.trim().is_empty()).then_some(body)
 }
 
 /// The proposal number in a forge URL — the trailing path segment after `pull`
@@ -953,6 +1012,63 @@ mod tests {
         // A repository with no commits has no default branch. That is a real
         // state, and an error naming it beats opening a proposal against "".
         assert!(github::parse_default_branch(r#"{"defaultBranchRef":null}"#).is_err());
+    }
+
+    /// A helper matching what `Client::template` walks, so the cases below can
+    /// state a directory layout and ask what comes out of it.
+    fn template_of(files: &[(&str, &str)]) -> Option<String> {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, body) in files {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        ["", "docs", ".github"].iter().find_map(|sub| template_in(&dir.path().join(sub)))
+    }
+
+    /// Every spelling GitHub accepts, because a template it finds and jjdiff
+    /// does not is a silent miss: the dialog opens with an empty body and looks
+    /// exactly like a repo that has no template at all.
+    #[test]
+    fn finds_the_proposal_template_in_every_place_github_looks() {
+        for path in [
+            "PULL_REQUEST_TEMPLATE.md",
+            "pull_request_template.md",
+            // The name is case-insensitive and the extension optional.
+            "Pull_Request_Template.md",
+            "PULL_REQUEST_TEMPLATE",
+            "pull_request_template.txt",
+            "docs/PULL_REQUEST_TEMPLATE.md",
+            ".github/PULL_REQUEST_TEMPLATE.md",
+            ".github/pull_request_template.md",
+        ] {
+            assert_eq!(
+                template_of(&[(path, "## Summary\n")]).as_deref(),
+                Some("## Summary\n"),
+                "{path} is a template GitHub honours"
+            );
+        }
+
+        // No template is `None`, and so is a file that merely looks close — a
+        // near-miss seeding the body would be worse than reading nothing.
+        assert_eq!(template_of(&[]), None);
+        assert_eq!(template_of(&[("ISSUE_TEMPLATE.md", "x")]), None);
+        assert_eq!(template_of(&[(".github/pull_request_template.rst", "x")]), None);
+
+        // An empty template is absent. It seeds the same empty box either way,
+        // and "found one" would be a claim with nothing behind it.
+        assert_eq!(template_of(&[("PULL_REQUEST_TEMPLATE.md", "  \n\n")]), None);
+
+        // Root beats `docs/` beats `.github/`, which is GitHub's own order.
+        assert_eq!(
+            template_of(&[
+                (".github/PULL_REQUEST_TEMPLATE.md", "github"),
+                ("docs/PULL_REQUEST_TEMPLATE.md", "docs"),
+                ("PULL_REQUEST_TEMPLATE.md", "root"),
+            ])
+            .as_deref(),
+            Some("root")
+        );
     }
 
     /// The number is what the banner hangs off, and it is read out of a URL

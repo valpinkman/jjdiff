@@ -279,7 +279,13 @@ body {
    "Controls are pills" is a rule about things one line tall, where a full
    radius reads as a capsule. Applied to a textarea it produces a lozenge with
    the text sitting in a shrinking middle band — the corners eat the first and
-   last lines. Square, like every other thing you put content into. */
+   last lines. Square, like every other thing you put content into.
+
+   This is a selector, so it stops at every shadow boundary — and the pill it
+   corrects arrives as a custom property, which does not. A leaf widget styling
+   its own textarea therefore inherits the bug and not the fix, which is how
+   both the compose dialog and the conflict resolver shipped with lozenges.
+   A shadow root with a textarea in it must restate this. */
 textarea {
   border-radius: 0;
 }
@@ -695,19 +701,27 @@ jj-app > header {
   align-items: center;
   gap: var(--jj-s-3);
   /* The title bar is an Overlay (tauri.conf.json), so the traffic lights float
-     over the page rather than sitting in a strip above it. The header clears
-     them *vertically* — the repo name sits below the lights, at the same left
-     edge as everything else — rather than being pushed 78px right to sit beside
-     them, which left the masthead floating in the middle of nothing.
+     over the page rather than sitting in a strip above it — and this row sits
+     *beside* them, on their line, the way Linear and every other app built this
+     way does. It used to clear them vertically instead, which bought a
+     full-width header at the cost of a 40px band of nothing across the top of
+     the window: two rows of chrome to say what one row says.
 
-     macOS-specific, and it costs a row of empty pixels elsewhere; that is the
-     price of one layout for every platform, and it reads as breathing room
-     rather than as a mistake.
+     The left inset is the lights plus a gap. They start at 20px and the set is
+     ~54px wide on macOS, so 78 clears the last one with the same 8px breathing
+     room the row's right edge has. A token would imply it is a spacing choice;
+     it is a measurement of someone else's widget.
 
-     The left inset is 8px, not 12: `.repo-button` carries 4px of its own
-     padding around the chip, and the two together put the chip's centre at
-     26px — the same axis the rail's icons sit on, one row below. */
-  padding: var(--jj-s-8) var(--jj-s-4) var(--jj-s-4) var(--jj-s-3);
+     `min-height` rather than padding for the vertical: the row has to be at
+     least as tall as the lights are, and stating that as a height keeps it true
+     when the content inside it is shorter than they are.
+
+     macOS-specific, and on other platforms it is a left margin with nothing in
+     it — the same trade the vertical version made, spent on the axis where the
+     window controls actually are. */
+  padding: var(--jj-s-2) var(--jj-s-4) var(--jj-s-2) 78px;
+  min-height: 38px;
+  box-sizing: border-box;
   background: var(--jj-bg);
   z-index: 20;
   /* This row is the window's drag handle (`data-tauri-drag-region`). Selecting
@@ -2352,10 +2366,19 @@ jj-app .describe textarea:focus {
 
 /* ---- Change detail ---- */
 
+/* The card is as tall as what is in it, up to the whole pane.
+   `flex: 0 1 auto` against the diff's `flex: 1 1 0` is what states that in one
+   line: with room to spare the card sits at its content height and the diff
+   takes the rest, and when the content overruns the pane the shrink is charged
+   entirely to the card — a zero flex-basis has a zero scaled shrink factor, so
+   the diff cannot give up height it never claimed. It was `max-height: 44%`,
+   which capped a long description at under half the window and left the reader
+   scrolling a box inside a page. */
 jj-app .detail {
   padding: var(--jj-s-4) var(--jj-s-5) var(--jj-s-5);
   overflow-y: auto;
-  max-height: 44%;
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 /* The hit target is the card's full width. Negative margins cancel the card's
@@ -2441,8 +2464,6 @@ jj-app .detail-desc {
   font-size: var(--jj-text-md);
   line-height: 1.6;
   max-width: 78ch;
-  max-height: 15em;
-  overflow-y: auto;
   white-space: pre-wrap;
   color: var(--jj-fg-soft);
 }

@@ -73,6 +73,32 @@ export class PrCompose extends OverlayElement {
         align-items: end;
         gap: 10px;
       }
+      /* Anchors the chevron below, which has to hang over the select. */
+      .refs label {
+        position: relative;
+      }
+      /* Our chevron, not the platform's.
+         The select is the same object as the input beside it — same box, same
+         type, one statement read left to right — and macOS draws a menulist
+         with its own metrics and a double stepper glyph, so the two sat at
+         different heights with different furniture. Two rotated borders rather
+         than an SVG: it is one glyph, and drawn this way it takes its colour
+         from a theme token instead of freezing a stroke into a data URI that
+         then has to be maintained per palette.
+         On the label rather than the select, because a select's pseudo-elements
+         are not reliably rendered. */
+      .refs label:has(select)::after {
+        content: '';
+        position: absolute;
+        right: 12px;
+        bottom: 15px;
+        width: 5px;
+        height: 5px;
+        border-right: 1.5px solid var(--jj-fg-faint);
+        border-bottom: 1.5px solid var(--jj-fg-faint);
+        transform: rotate(45deg);
+        pointer-events: none;
+      }
       .into {
         padding-bottom: 8px;
         font-size: var(--jj-text-sm, 11.5px);
@@ -93,6 +119,22 @@ export class PrCompose extends OverlayElement {
         font-weight: 400;
         outline: none;
       }
+      /* One height for every single-line field, stated rather than derived.
+         Padding and border are already shared, but the content box is not: the
+         two refs are 12px mono and the title 13px sans, and a select is a
+         native widget that sizes itself. Three fields, three heights — and
+         because the row bottom-aligns, an unequal Base and Head dragged their
+         labels apart too. */
+      input:not([type='checkbox']),
+      select {
+        height: 34px;
+      }
+      /* Off the platform widget, so the box above is the box that renders. */
+      select {
+        appearance: none;
+        -webkit-appearance: none;
+        padding-right: 26px;
+      }
       /* Refs are identifiers, and an identifier you are about to publish is worth
          reading character by character. */
       input.ref,
@@ -100,10 +142,17 @@ export class PrCompose extends OverlayElement {
         font-family: var(--jj-mono);
         font-size: var(--jj-text-sm, 11.5px);
       }
+      /* Square, restating the bare textarea rule in theme.css. A multi-line
+         field is a surface, not a control, and the small radius token is the
+         pill — on a 150px box it draws a lozenge whose corners eat the first
+         and last lines. The rule is written down in the light DOM and cannot
+         reach in here: custom properties cross a shadow boundary, selectors do
+         not, so a shadow root with a textarea has to say it again. */
       textarea {
         min-height: 150px;
         resize: vertical;
         line-height: 1.55;
+        border-radius: 0;
       }
       input:focus,
       select:focus,

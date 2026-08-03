@@ -536,8 +536,21 @@ export const rebaseChange = (
 /** Discard working-copy changes to `paths` (all when empty). */
 export const restorePaths = (paths: string[]): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('restore_paths', { paths }) : mockOutcome('Restored.');
-export const setBookmark = (name: string, revset: string): Promise<Outcome> =>
-  IN_TAURI ? invoke<Outcome>('set_bookmark', { name, revset }) : mockOutcome('Bookmark set.');
+/**
+ * Point a bookmark at a revision, creating it if the name is new.
+ *
+ * `allowBackwards` waives jj's guard against moving a bookmark anywhere that is
+ * not a descendant of where it sits. Per call and never stored, like
+ * `allowImmutable`: the caller confirms that one move, naming both ends.
+ */
+export const setBookmark = (
+  name: string,
+  revset: string,
+  allowBackwards = false,
+): Promise<Outcome> =>
+  IN_TAURI
+    ? invoke<Outcome>('set_bookmark', { name, revset, allowBackwards })
+    : mockOutcome('Bookmark set.');
 export const deleteBookmark = (name: string): Promise<Outcome> =>
   IN_TAURI ? invoke<Outcome>('delete_bookmark', { name }) : mockOutcome('Bookmark deleted.');
 export const gitFetch = (remote?: string): Promise<Outcome> =>
@@ -905,6 +918,20 @@ export interface CreatedPullRequest {
 /** The branch a new proposal targets by default, as the forge reports it. */
 export const defaultBranch = (): Promise<string> =>
   IN_TAURI ? invoke<string>('default_branch') : Promise.resolve('main');
+
+/**
+ * The repository's proposal template, or `null` when it has none.
+ *
+ * Read off disk in the backend rather than fetched — a template is a tracked
+ * file and the workspace is colocated, so it is already here.
+ */
+export const proposalTemplate = (): Promise<string | null> =>
+  IN_TAURI
+    ? invoke<string | null>('proposal_template')
+    : // Inline like `defaultBranch` above, and a real one rather than `null`:
+      // the browser path is where the seeding gets looked at, and a fixture
+      // that returns nothing exercises only the branch that does nothing.
+      Promise.resolve('## Summary\n\n## Test plan\n\n- [ ] Checked in the app\n');
 
 /**
  * Open a proposal. Outward-facing and public the moment it returns.

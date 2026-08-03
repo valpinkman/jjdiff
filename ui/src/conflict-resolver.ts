@@ -157,6 +157,10 @@ export class ConflictResolver extends OverlayElement {
       color: var(--jj-fg-muted);
       margin-bottom: 4px;
     }
+    /* Square for the reason theme.css gives: a multi-line field is a surface,
+       not a control, and the pill radius turns one into a lozenge. Restated
+       here because that rule is a light-DOM selector and this is a shadow
+       root. */
     textarea {
       width: 100%;
       box-sizing: border-box;
@@ -164,7 +168,7 @@ export class ConflictResolver extends OverlayElement {
       resize: vertical;
       padding: 7px 9px;
       border: 1px solid var(--jj-border);
-      border-radius: var(--jj-r-sm, 0px);
+      border-radius: 0;
       background: var(--jj-bg-panel);
       color: var(--jj-fg);
       font-family: var(--jj-mono);
