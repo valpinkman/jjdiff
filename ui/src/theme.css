@@ -1072,14 +1072,13 @@ jj-app .pr-conflict {
    across a long render, and this keeps "a view replaces the pane" as one
    statement instead of a condition repeated on each of them.
 
-   The outcome card and the status line are the exception, because they are not
-   context for the diff — they are what the screen you are on just did. Both of
-   these views act: submitting a review is only reachable from the proposal view,
-   and undo, restore and revert only from the operation log. Hidden, a submission
-   that failed said nothing at all and the composer merely emptied, which reads as
-   success; the narration and the Undo beside it went the same way. */
-jj-app main.showing-pr > *:not(.pr-view):not(.outcome):not(.status),
-jj-app main.showing-ops > *:not(.ops-view):not(.outcome):not(.status) {
+   The outcome card and the status line used to be exceptions here — they are
+   what the screen you are on just *did*, and both of these views act, so hiding
+   them made a failed review submission look like a successful one. They are
+   toasts now, outside this pane entirely, which answers the same problem by
+   construction: there is no rule to exempt them from. */
+jj-app main.showing-pr > *:not(.pr-view),
+jj-app main.showing-ops > *:not(.ops-view) {
   display: none;
 }
 
@@ -1459,9 +1458,17 @@ jj-app .spacer {
    motion vocabulary in miniature: it lifts toward the cursor on hover and is
    pushed back down on press. Lift is `translateY` plus a step up the elevation
    ramp — the shadow is what makes it read as height rather than as a jump. */
+/* A label never breaks, and a button never gives up width to its neighbours.
+   Without both, a toolbar one pixel too wide does not overflow or wrap — every
+   pill in it shrinks and hyphenates its own text, so "New on top" becomes three
+   stacked words in a circle and the row reads as damage rather than as a row
+   that ran out of room. Wrapping to a second line is the honest failure, and
+   `.detail-actions` already allows it. */
 jj-app button.tool,
 jj-app a.tool {
   position: relative;
+  flex: none;
+  white-space: nowrap;
   border: 1px solid var(--jj-border-strong);
   background: var(--jj-surface);
   color: var(--jj-fg-soft);
@@ -2277,9 +2284,7 @@ jj-app .detail,
 jj-app .describe,
 jj-app .walk-banner,
 jj-app .pr-banner,
-jj-app .search-bar,
-jj-app .status,
-jj-app .outcome {
+jj-app .search-bar {
   border: 1px solid var(--jj-border);
   border-radius: var(--jj-r-md);
   background: var(--jj-surface);
@@ -2744,12 +2749,34 @@ jj-app .detail-file-path {
   white-space: nowrap;
 }
 
-jj-app .detail-file-counts .plus {
+/* The per-file counts in the list, and the same two numbers summed for the
+   whole diff beside a file count. One rule, because they are one quantity at
+   two scales — a second pair of colour declarations is a second thing to keep
+   in step with the palette. */
+jj-app .detail-file-counts .plus,
+jj-app .diff-totals .plus {
   color: var(--jj-added-fg);
 }
 
-jj-app .detail-file-counts .minus {
+jj-app .detail-file-counts .minus,
+jj-app .diff-totals .minus {
   color: var(--jj-removed-fg);
+}
+
+/* Tabular figures so the pair does not jitter as the diff is edited under it —
+   this sits beside a live file count on the working-copy card, which rewrites
+   on every save. The numbers own their spacing rather than inheriting the
+   parent's gap: they are one reading, and 8px between the file count and the
+   plus is what separates them from it. */
+jj-app .diff-totals {
+  display: inline-flex;
+  gap: var(--jj-s-2);
+  margin-left: var(--jj-s-3);
+  font-family: var(--jj-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 /* ---- Banners, status, outcome ---- */
@@ -3279,41 +3306,115 @@ jj-app .walk-overview-loading {
   }
 }
 
-jj-app .status {
-  padding: var(--jj-s-3) var(--jj-s-4);
-  font-size: 12px;
-  white-space: pre-wrap;
+/* ---- Toasts ----
+   What just happened, in the corner rather than in the page.
+
+   Bottom-right, not top: the top of this window is the header and the card
+   toolbars, which is where the hand *is* when a mutation is fired, and a
+   message that lands under the cursor covers the button that was just pressed.
+   The bottom-right corner is empty in every view.
+
+   Fixed, and last in the shell so it outranks the pane without needing a z-index
+   war — but below the overlays (z 100+), because a modal is a question and a
+   toast must not land on top of one.
+
+   `pointer-events` is off on the stack and back on for each toast, or the
+   invisible column would eat clicks on the diff beside them. */
+jj-app .toasts {
+  position: fixed;
+  right: var(--jj-s-4);
+  bottom: var(--jj-s-4);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--jj-s-2);
+  width: min(380px, calc(100vw - var(--jj-s-8)));
+  pointer-events: none;
 }
 
-jj-app .status.error {
+jj-app .toast {
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--jj-s-3);
+  padding: var(--jj-s-3) var(--jj-s-4);
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  /* One step up from a card: this floats over the page rather than sitting on
+     it, and the shadow is the only thing saying so once it is off the grid. */
+  box-shadow: var(--jj-shadow-pop);
+  font-size: 12px;
+  animation: jj-rise var(--jj-t-3) var(--jj-ease-out);
+}
+
+jj-app .toast-text {
+  flex: 1;
+  min-width: 0;
+  /* jj's messages arrive with their own line breaks, and long ones are capped
+     rather than allowed to grow into a wall — four lines and a scroller. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6em;
+  overflow-y: auto;
+}
+
+/* Square, quiet, and only as wide as the glyph — this is the corner of a small
+   box, so a pill here would be a third of its width. */
+jj-app .toast-x {
+  flex: none;
+  border: 0;
+  padding: 0 2px;
+  background: none;
+  color: var(--jj-fg-faint);
+  font-size: 14px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+jj-app .toast-x:hover {
+  color: var(--jj-fg);
+}
+
+jj-app .toast.error {
   color: var(--jj-removed-fg);
   background: color-mix(in srgb, var(--jj-removed-bg) 55%, var(--jj-surface));
   border-color: color-mix(in srgb, var(--jj-removed-fg) 22%, var(--jj-border));
 }
 
-jj-app .status.info {
+jj-app .toast.info {
   color: var(--jj-added-fg);
   background: color-mix(in srgb, var(--jj-added-bg) 55%, var(--jj-surface));
   border-color: color-mix(in srgb, var(--jj-added-fg) 22%, var(--jj-border));
 }
 
-jj-app .outcome {
-  display: flex;
-  align-items: center;
-  gap: var(--jj-s-4);
-  padding: var(--jj-s-3) var(--jj-s-4);
+/* The one toast with buttons, so it stacks instead of running across: jj's
+   narration is of no fixed width and two pills beside it in a 380px box would
+   squeeze it to a column of single words. */
+jj-app .toast.outcome {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--jj-s-3);
   border-color: color-mix(in srgb, var(--jj-accent) 30%, var(--jj-border));
-  font-size: var(--jj-text-base);
 }
 
 jj-app .outcome-text {
-  flex: 1;
   font-family: var(--jj-mono);
   font-size: 11.5px;
   white-space: pre-wrap;
-  max-height: 4em;
+  overflow-wrap: anywhere;
+  max-height: 8em;
   overflow-y: auto;
   color: var(--jj-fg-soft);
+}
+
+jj-app .toast-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--jj-s-2);
 }
 
 jj-app .search-bar {

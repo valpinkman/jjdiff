@@ -658,6 +658,23 @@ export class App extends LitElement {
   /** The raw binding string, for display in the shortcut sheet and palette hints. */
   @state() private commandBarBinding = 'Mod+k';
 
+  /**
+   * The width of the pane the cards sit in, watched so the toolbars can shed
+   * verbs into More before they have to wrap.
+   *
+   * Measured rather than asked of a container query, which is the obvious tool
+   * and cannot be used here: `container-type` applies layout containment, and a
+   * containing element becomes the containing block for *fixed* descendants —
+   * which the More menu is, positioned in viewport coordinates from a
+   * `getBoundingClientRect`. Making the card a container would silently move
+   * every menu it opens.
+   *
+   * A window media query was the other candidate and is simply wrong: the
+   * sidebar is resizable, so the pane is not a function of the window.
+   */
+  @state() private paneWidth = Number.POSITIVE_INFINITY;
+  private paneObserver?: ResizeObserver;
+
   override connectedCallback() {
     super.connectedCallback();
     void this.start();
@@ -667,13 +684,53 @@ export class App extends LitElement {
     void onMenuCommand(this.onMenuCommand).then((stop) => (this.unlistenMenu = stop));
   }
 
+  /**
+   * Watch the pane, not the toolbar.
+   *
+   * The pane's width comes from the window and the sidebar and owes nothing to
+   * what is in it, so nothing this observer causes can change what it measures.
+   * Observing the button row itself would be a loop: hide a button, the row
+   * gets narrower, hide another.
+   */
+  override firstUpdated() {
+    const pane = this.querySelector('main');
+    if (!pane) return;
+    this.paneObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) this.paneWidth = width;
+    });
+    this.paneObserver.observe(pane);
+  }
+
   override disconnectedCallback() {
     this.unlisten?.();
     this.unlistenMenu?.();
+    this.paneObserver?.disconnect();
     window.removeEventListener('keydown', this.onGlobalKey);
     window.removeEventListener('click', this.onWindowClick);
     window.removeEventListener('focus', this.onWindowFocus);
     super.disconnectedCallback();
+  }
+
+  /**
+   * Which verbs the toolbar hands to More at this width, least-reached-for
+   * first.
+   *
+   * The primary and More itself never go: one is what the card is for and the
+   * other is where everything that left has gone. Publishing survives longest
+   * of the rest, because a narrow window is not a reason to hide the two verbs
+   * that put work somewhere other than this machine.
+   *
+   * Thresholds are the width at which that many pills stop fitting, found by
+   * narrowing the pane; they are not a device breakpoint and there is no point
+   * rounding them to one.
+   */
+  private get demoted(): ReadonlySet<string> {
+    const shed: string[] = [];
+    if (this.paneWidth < 940) shed.push('bookmark', 'new');
+    if (this.paneWidth < 780) shed.push('describe');
+    if (this.paneWidth < 660) shed.push('push', 'propose');
+    return new Set(shed);
   }
 
   /**
@@ -1535,8 +1592,11 @@ export class App extends LitElement {
         if (change) {
           await this.run(async () => {
             this.walkthrough = await importWalkthrough(
+              // The key, then the revset — two arguments that are the same
+              // string on a change that has never been rewritten, which is why
+              // this went unnoticed. The second was the change id too.
               change.changeId,
-              this.isWorkingCopySelected ? null : change.changeId,
+              this.revsetFor(change),
               this.ignoreWhitespace,
               launch.walkthroughFile!,
             );
@@ -1580,6 +1640,73 @@ export class App extends LitElement {
   };
 
   /**
+   * `+N −M` across the whole diff, to sit after a file count.
+   *
+   * The count says how much of the tree moved; these say how much of it
+   * changed, which is the number that tells you whether this is a rename sweep
+   * or a rewrite. Same two colours and the same minus sign (U+2212, not a
+   * hyphen) as the per-file counts in the file list, because they are the same
+   * quantity summed.
+   *
+   * Absent rather than `+0 −0` when there is nothing: on an empty working copy
+   * the file count already says "No changes yet", and a pair of zeroes after it
+   * is the same statement in arithmetic.
+   */
+  private renderDiffTotals() {
+    const added = this.files.reduce((total, file) => total + file.added, 0);
+    const removed = this.files.reduce((total, file) => total + file.removed, 0);
+    if (!added && !removed) return nothing;
+    return html`<span class="diff-totals"
+      >${added ? html`<span class="plus">+${added}</span>` : nothing}${removed
+        ? html`<span class="minus">−${removed}</span>`
+        : nothing}</span
+    >`;
+  }
+
+  /**
+   * The identity line under a card's title: the change id, the bookmarks
+   * pointing at it, and whatever jj says about its state.
+   *
+   * Shared by both cards, because it answers the same question on both. The
+   * working-copy card carried only a file count, so a bookmark set on `@` — and
+   * a bookmark set on `@` is the normal way to name work before pushing it —
+   * was visible in the graph, in the detail card of every *other* change, and
+   * nowhere on the card for the change you were editing. The delete affordance
+   * comes with it: the place a name is shown is the place to take it off.
+   *
+   * `trailing` is for whatever the card adds after the tags — the working copy's
+   * file count, which has no equivalent on the detail card because that one
+   * lists the files in full further down.
+   */
+  private renderChangeMeta(change: Change, trailing: unknown = nothing) {
+    return html`<span class="detail-meta">
+      <span class="detail-id">${change.changeId.slice(0, 12)}</span>
+      ${change.bookmarks.map(
+        (bookmark) => html`<span class="tag"
+          >${bookmark}${this.renderTracking(bookmark)}
+          <button
+            class="tag-x"
+            title="Delete bookmark"
+            @click=${(event: Event) => {
+              // The detail card's header is itself a click target (it folds), so
+              // this must not reach it. Harmless on the working-copy card, which
+              // does not fold — one handler either way beats two spellings.
+              event.stopPropagation();
+              void this.removeBookmark(bookmark);
+            }}
+          >
+            ×
+          </button></span
+        >`,
+      )}
+      ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
+      ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
+      ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
+      ${trailing}
+    </span>`;
+  }
+
+  /**
    * The More button and its menu, shared by both cards.
    *
    * One function because the menu behind it is one menu: every verb in it
@@ -1607,13 +1734,72 @@ export class App extends LitElement {
       this.moreAt = null;
       run();
     };
+    const wc = this.isWorkingCopySelected;
     return html`<div class="more-menu" role="menu" style="right: ${at.right}px; top: ${at.y}px">
+      <!-- Whatever the toolbar shed on the way down to this width, caught here.
+           This block and the toolbar read the same demoted set from opposite
+           sides, which is the whole safety property: a verb cannot be hidden
+           there without appearing here, because there is one answer to "is it
+           demoted" and both ask it.
+
+           They sit at the top, above the verbs that live here permanently. A
+           demoted verb was on the toolbar a moment ago and at a wider window
+           will be again; putting it under Abandon would make it something the
+           user has to hunt for at exactly the size where hunting is hardest. -->
+      ${this.demoted.has('describe') && !this.editingDescription && !this.walkActive
+        ? html`<button
+            role="menuitem"
+            title="jj describe — this change's message."
+            @click=${pick(() => void (wc ? this.saveDescription() : this.startDescriptionEdit()))}
+            ?disabled=${wc && this.description === change.description}
+          >
+            ${wc ? 'Describe' : 'Edit description…'}
+          </button>`
+        : nothing}
+      ${this.demoted.has('bookmark')
+        ? html`<button
+            role="menuitem"
+            title="jj bookmark set — name this change so it can be pushed and referenced."
+            @click=${pick(() => void this.createBookmark())}
+          >
+            Bookmark…
+          </button>`
+        : nothing}
+      ${this.demoted.has('push')
+        ? html`<button
+            role="menuitem"
+            title="jj git push — send this change to the remote."
+            ?disabled=${wc && (this.files.length === 0 || !this.description.trim())}
+            @click=${pick(() => this.runPush())}
+          >
+            Push
+          </button>`
+        : nothing}
+      ${this.demoted.has('propose') && this.forge && !this.pullRequest
+        ? html`<button
+            role="menuitem"
+            title=${`gh pr create — open a ${this.forge.noun} for this change.`}
+            ?disabled=${wc && (this.files.length === 0 || !this.description.trim())}
+            @click=${pick(() => void this.openProposalComposer())}
+          >
+            ${sentenceCase(this.forge.noun)}…
+          </button>`
+        : nothing}
+      ${this.demoted.has('new')
+        ? html`<button
+            role="menuitem"
+            title="jj new — start an empty change with this one as its parent."
+            @click=${pick(() => this.newOnSelected())}
+          >
+            New on top
+          </button>`
+        : nothing}
       <!-- Only the working copy has uncommitted edits to throw away, so this is
            the one entry that is not offered on both cards. It sits at the top
            rather than beside Abandon at the bottom because it is the verb the
            working copy actually reaches for; it is not destructive to history,
            only to work that was never recorded. -->
-      ${this.isWorkingCopySelected
+      ${wc
         ? html`<button
             role="menuitem"
             title="jj restore — throw away the focused file's uncommitted changes, or all of them when no file is focused. Undoable from the Ops tab."
@@ -2082,8 +2268,14 @@ export class App extends LitElement {
       } else {
         this.viewMode = 'full';
         this.versionPair = null;
+        // Through `revsetFor`, not `this.selected` — that field holds a change
+        // id, which is the key and never the revset. Spelled out here it read
+        // as the same thing and was not: a divergent change made the main diff
+        // load fail with "Change ID … is divergent", so the change you had just
+        // selected was one you could not look at.
+        const selected = this.selectedChange;
         this.files = await getDiff(
-          this.isWorkingCopySelected ? null : this.selected,
+          selected ? this.revsetFor(selected) : null,
           this.ignoreWhitespace,
         );
       }
@@ -2212,7 +2404,12 @@ export class App extends LitElement {
    * it returns reads as a button that does nothing.
    */
   private async openResolver(path: string, shape: string) {
-    const revset = this.isWorkingCopySelected ? '@' : this.selected;
+    // `revisionOf`, not the selection's change id: `jj file show -r` refuses a
+    // divergent one, so a conflict in a divergent change could be listed and
+    // not opened. It names the working copy correctly too, which is why this is
+    // not `revsetFor` — that answers null for `@`, and a command needs a word.
+    const change = this.selectedChange;
+    const revset = change && revisionOf(change);
     if (!revset) return;
     this.resolving = { path, shape, content: null };
     try {
@@ -2252,8 +2449,9 @@ export class App extends LitElement {
     const change = this.selectedChange;
     if (!target || !change) return;
     if (!(await this.confirmImmutableRewrite(change, 'Resolve'))) return;
-    const revset = this.isWorkingCopySelected ? '@' : this.selected;
-    if (!revset) return;
+    // Same rule as `openResolver` above, and it has to be the same answer: this
+    // writes back to the revision that one read from.
+    const revset = revisionOf(change);
     await this.command('resolve', () =>
       resolveConflict(revset, target.path, content, change.immutable),
     );
@@ -4675,27 +4873,7 @@ export class App extends LitElement {
                   <h2 class="detail-title">
                     ${change.description.split('\n')[0] || '(no description)'}
                   </h2>
-                  <span class="detail-meta">
-                    <span class="detail-id">${change.changeId.slice(0, 12)}</span>
-                    ${change.bookmarks.map(
-                      (bookmark) => html`<span class="tag"
-                        >${bookmark}${this.renderTracking(bookmark)}
-                        <button
-                          class="tag-x"
-                          title="Delete bookmark"
-                          @click=${(event: Event) => {
-                            event.stopPropagation();
-                            void this.removeBookmark(bookmark);
-                          }}
-                        >
-                          ×
-                        </button></span
-                      >`,
-                    )}
-                    ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
-                    ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
-                    ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
-                  </span>
+                  ${this.renderChangeMeta(change)}
                 </span>
                 <!-- No spacer: detail-headings already grows, and a second
                      flex:1 beside it split the free space evenly — so the title
@@ -4752,7 +4930,7 @@ export class App extends LitElement {
                 <!-- Hidden while the editor is open — Save and Cancel are down
                      in the prose column with the text they act on — and during
                      guided review, which is a reading mode. -->
-                ${this.editingDescription || this.walkActive
+                ${this.editingDescription || this.walkActive || this.demoted.has('describe')
                   ? nothing
                   : html`<button
                       class="tool"
@@ -4765,24 +4943,28 @@ export class App extends LitElement {
                     >
                       Edit description
                     </button>`}
-                <button
-                  class="tool"
-                  title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
-                  @click=${this.createBookmark}
-                >
-                  Bookmark…
-                </button>
-                <button
-                  class="tool"
-                  title=${
-                    change.bookmarks.length
-                      ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
-                      : 'jj git push --change — push this change, auto-naming a bookmark from its change id.'
-                  }
-                  @click=${this.runPush}
-                >
-                  Push
-                </button>
+                ${this.demoted.has('bookmark')
+                  ? nothing
+                  : html`<button
+                      class="tool"
+                      title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
+                      @click=${this.createBookmark}
+                    >
+                      Bookmark…
+                    </button>`}
+                ${this.demoted.has('push')
+                  ? nothing
+                  : html`<button
+                      class="tool"
+                      title=${
+                        change.bookmarks.length
+                          ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
+                          : 'jj git push --change — push this change, auto-naming a bookmark from its change id.'
+                      }
+                      @click=${this.runPush}
+                    >
+                      Push
+                    </button>`}
                 <!-- Only where there is a forge to open one on, and only while
                      this change has none: with a proposal already matched, the
                      banner above the diff is the thing to press, and a second
@@ -4790,7 +4972,7 @@ export class App extends LitElement {
                      entry point at all. Hidden rather than disabled — a
                      disabled button invites the question of what would enable
                      it, and the answer here is "nothing you can do". -->
-                ${this.forge && !this.pullRequest
+                ${this.forge && !this.pullRequest && !this.demoted.has('propose')
                   ? html`<button
                       class="tool propose"
                       title=${`gh pr create — open a ${this.forge.noun} for this change. You will see the title, the body and the base branch before anything is published.`}
@@ -4799,13 +4981,15 @@ export class App extends LitElement {
                       ${sentenceCase(this.forge.noun)}…
                     </button>`
                   : nothing}
-                <button
-                  class="tool"
-                  title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
-                  @click=${this.newOnSelected}
-                >
-                  New on top
-                </button>
+                ${this.demoted.has('new')
+                  ? nothing
+                  : html`<button
+                      class="tool"
+                      title="jj new — start a fresh empty change with this one as its parent. Leaves this change untouched."
+                      @click=${this.newOnSelected}
+                    >
+                      New on top
+                    </button>`}
                 ${this.renderMore(change)}
               </div>
                 <div class="detail-prose">
@@ -4844,9 +5028,10 @@ export class App extends LitElement {
               </div>
 
               <div class="detail-files">
-                <span class="detail-label">${this.files.length} file${
-                  this.files.length === 1 ? '' : 's'
-                }</span>
+                <span class="detail-label"
+                  >${this.files.length} file${this.files.length === 1 ? '' : 's'}
+                  ${this.renderDiffTotals()}</span
+                >
                 ${this.files.map(
                   (file) => html`<button
                     class="detail-file"
@@ -4878,13 +5063,29 @@ export class App extends LitElement {
                   <span class="chip accent">${iconCommit}</span>
                   <span class="describe-headings">
                     <span class="describe-title">Working copy</span>
-                    <span class="describe-count">
-                      ${this.files.length
-                        ? `${this.files.length} file${this.files.length === 1 ? '' : 's'} changed`
-                        : 'No changes yet'}
-                    </span>
+                    <!-- The same identity line the detail card carries, with the
+                         file count on the end of it. It was the count alone,
+                         which is the one fact about this change that is already
+                         obvious from the diff underneath. -->
+                    ${this.renderChangeMeta(
+                      change,
+                      html`<span class="describe-count"
+                          >${this.files.length
+                            ? `${this.files.length} file${
+                                this.files.length === 1 ? '' : 's'
+                              } changed`
+                            : 'No changes yet'}</span
+                        >${this.renderDiffTotals()}`,
+                    )}
                   </span>
-                  <span class="spacer"></span>
+                </div>
+                <!-- Its own row, as on the detail card, rather than the right
+                     half of the header. Sharing a line with the title meant the
+                     verbs competed with it for width and lost first: on a narrow
+                     pane the title kept its size and eight pills divided what
+                     was left. A full-width row has roughly twice the space and
+                     wraps as a row when it finally runs out. -->
+                <div class="detail-actions detail-verbs">
                   <!-- THE SAME ORDER AS THE DETAIL CARD:
                        primary · message · refs · flow · More.
                        The working copy is a change like any other and its
@@ -4920,21 +5121,25 @@ export class App extends LitElement {
                       ? html`<jj-orbs .size=${13} label="Writing"></jj-orbs> Writing…`
                       : html`${iconSparkle} ${this.description.trim() ? 'Rewrite' : 'Generate'}`}
                   </button>
-                  <button
-                    class="tool"
-                    ?disabled=${this.description === change.description}
-                    title="jj describe — save this message onto the working copy."
-                    @click=${this.saveDescription}
-                  >
-                    Describe
-                  </button>
-                  <button
-                    class="tool"
-                    title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
-                    @click=${this.createBookmark}
-                  >
-                    Bookmark…
-                  </button>
+                  ${this.demoted.has('describe')
+                    ? nothing
+                    : html`<button
+                        class="tool"
+                        ?disabled=${this.description === change.description}
+                        title="jj describe — save this message onto the working copy."
+                        @click=${this.saveDescription}
+                      >
+                        Describe
+                      </button>`}
+                  ${this.demoted.has('bookmark')
+                    ? nothing
+                    : html`<button
+                        class="tool"
+                        title="jj bookmark set — name this change so it can be pushed and referenced (jj's equivalent of a git branch)."
+                        @click=${this.createBookmark}
+                      >
+                        Bookmark…
+                      </button>`}
                   <!-- The working copy is pushable like any other change, and
                        had no way to be pushed from its own card — only from the
                        palette, where it failed on jj's "no description" for a
@@ -4942,18 +5147,20 @@ export class App extends LitElement {
                        as the proposal beside it, and the same bookmark rule as
                        the detail card's Push: the one it has, or jj naming one
                        from the change id. -->
-                  <button
-                    class="tool"
-                    ?disabled=${this.files.length === 0 || !this.description.trim()}
-                    title=${!this.description.trim()
-                      ? 'Describe this change first — jj will not push a commit without a message.'
-                      : change.bookmarks.length
-                        ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
-                        : 'jj git push --change — push the working copy, auto-naming a bookmark from its change id.'}
-                    @click=${this.runPush}
-                  >
-                    Push
-                  </button>
+                  ${this.demoted.has('push')
+                    ? nothing
+                    : html`<button
+                        class="tool"
+                        ?disabled=${this.files.length === 0 || !this.description.trim()}
+                        title=${!this.description.trim()
+                          ? 'Describe this change first — jj will not push a commit without a message.'
+                          : change.bookmarks.length
+                            ? `jj git push -b ${change.bookmarks[0]} — push this bookmark to the remote.`
+                            : 'jj git push --change — push the working copy, auto-naming a bookmark from its change id.'}
+                        @click=${this.runPush}
+                      >
+                        Push
+                      </button>`}
                   <!-- Disabled rather than hidden, which is the opposite of the
                        detail card's rule and for the reason that rule gives: a
                        disabled button is only bad when nothing the user can do
@@ -4963,7 +5170,7 @@ export class App extends LitElement {
                        the commit's is empty right up until Describe, and waiting
                        for that would leave the button dead through the whole
                        moment someone would reach for it. -->
-                  ${this.forge && !this.pullRequest
+                  ${this.forge && !this.pullRequest && !this.demoted.has('propose')
                     ? html`<button
                         class="tool propose"
                         ?disabled=${this.files.length === 0 || !this.description.trim()}
@@ -4982,13 +5189,15 @@ export class App extends LitElement {
                        new, which is exactly what you reach for to park finished
                        work and start something else — including on an empty or
                        undescribed working copy. -->
-                  <button
-                    class="tool"
-                    title="jj new — start an empty change on top of this one, leaving it as it is."
-                    @click=${this.newOnSelected}
-                  >
-                    New on top
-                  </button>
+                  ${this.demoted.has('new')
+                    ? nothing
+                    : html`<button
+                        class="tool"
+                        title="jj new — start an empty change on top of this one, leaving it as it is."
+                        @click=${this.newOnSelected}
+                      >
+                        New on top
+                      </button>`}
                   ${this.renderMore(change)}
                 </div>
                 <textarea
@@ -5152,11 +5361,11 @@ export class App extends LitElement {
               <button class="tool" @click=${this.closeSearch}>Esc</button>
             </div>`
           : nothing}
-        ${this.actionError
-          ? html`<div class="status error">${this.actionError}</div>`
-          : nothing}
-        ${this.actionInfo ? html`<div class="status info">${this.actionInfo}</div>` : nothing}
-        ${this.lastOutcome ? this.renderOutcome(this.lastOutcome) : nothing}
+        <!-- Errors, progress and jj's narration used to sit here, as three more
+             blocks in the pane's flex column — so every one of them shoved the
+             diff down the page and the reader lost their place to a sentence
+             about something that had already finished. They are toasts now,
+             over in the corner, rendered in one place at the end of the shell. -->
         <!-- No breadcrumb: the diff pane pins the current file's own header,
              which names the file *and* carries its actions. A separate crumb
              put the same path on screen twice, one line apart. -->
@@ -5302,7 +5511,49 @@ export class App extends LitElement {
         : nothing}
       ${this.renderFileMenu()}
       ${this.renderChangeMenu()}
+      ${this.renderToasts()}
     `;
+  }
+
+  /**
+   * Everything the app has to say about what just happened, stacked in the
+   * corner: an error, a progress line, and jj's narration of the last mutation.
+   *
+   * Three fields and one place they surface. They were three blocks inside the
+   * pane's flex column, which made every message a layout change — the diff
+   * jumped down by the height of a sentence, and reading resumed somewhere
+   * other than where it stopped. Nothing about "the push worked" is worth a
+   * scroll position.
+   *
+   * Last in the shell and `position: fixed`, so it is over the diff and over
+   * the cards but under the overlays — a modal is a question, and a toast must
+   * not land on top of one.
+   *
+   * Still dismissed by hand, not on a timer. That was the rule when this was a
+   * card in the page and the reason survives the move: jj's narration is often
+   * the only place a command says what it touched, and the Undo beside it is
+   * the whole point of showing the operation id. A toast that takes both away
+   * after four seconds is a toast that punishes reading the diff first.
+   */
+  private renderToasts() {
+    if (!this.actionError && !this.actionInfo && !this.lastOutcome) return nothing;
+    const close = (clear: () => void) =>
+      html`<button class="toast-x" title="Dismiss" @click=${clear}>×</button>`;
+    return html`<div class="toasts" role="status" aria-live="polite">
+      ${this.actionError
+        ? html`<div class="toast error">
+            <span class="toast-text">${this.actionError}</span>
+            ${close(() => (this.actionError = null))}
+          </div>`
+        : nothing}
+      ${this.actionInfo
+        ? html`<div class="toast info">
+            <span class="toast-text">${this.actionInfo}</span>
+            ${close(() => (this.actionInfo = null))}
+          </div>`
+        : nothing}
+      ${this.lastOutcome ? this.renderOutcome(this.lastOutcome) : nothing}
+    </div>`;
   }
 
   /**
@@ -5322,21 +5573,28 @@ export class App extends LitElement {
    * Dismissed by hand, and replaced by whatever the next action reports.
    * Nothing times out: a card that removes itself is motion nobody caused, and
    * jj's narration is often the only place a command says what it touched.
+   *
+   * A toast in the corner (see `renderToasts`), which is why the buttons sit
+   * under the text rather than beside it: the narration is jj's, multi-line and
+   * of no fixed width, and in a 360px box "Bookmark main@origin already matches
+   * main" and two pills cannot share a line without one of them losing.
    */
   private renderOutcome(outcome: Outcome) {
-    return html`<div class="outcome">
+    return html`<div class="toast outcome">
       <span class="outcome-text">${outcome.message}</span>
-      ${outcome.operation
-        ? html`<button
-            class="tool"
-            title="Revert the operation this created"
-            @click=${() =>
-              void this.command('op revert', () => revertOperation(outcome.operation))}
-          >
-            Undo
-          </button>`
-        : nothing}
-      <button class="tool" @click=${() => (this.lastOutcome = null)}>Dismiss</button>
+      <span class="toast-actions">
+        ${outcome.operation
+          ? html`<button
+              class="tool"
+              title="Revert the operation this created"
+              @click=${() =>
+                void this.command('op revert', () => revertOperation(outcome.operation))}
+            >
+              Undo
+            </button>`
+          : nothing}
+        <button class="tool" @click=${() => (this.lastOutcome = null)}>Dismiss</button>
+      </span>
     </div>`;
   }
 
