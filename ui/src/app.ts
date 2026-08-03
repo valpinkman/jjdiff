@@ -6288,7 +6288,8 @@ const RAIL_PANES: { id: SidebarTab; label: string; icon: TemplateResult }[] = [
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path;
 
 /**
- * How a change is named when jj has to resolve it: its **commit id**.
+ * How a change is named when jj has to resolve it: its **commit id** — except
+ * the working copy, which is `@`.
  *
  * A function rather than `.commitId` at each site, because what matters is not
  * the field but the rule, and the rule is one every new call site has to follow.
@@ -6296,10 +6297,27 @@ const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1) || path
  * a divergent change (one change id, several visible commits) makes jj refuse
  * every command that takes it. `App.revsetFor` has the long version.
  *
+ * **The working copy is the exception, and it is not a nicety.** Its commit id
+ * names the snapshot jj had taken when the graph was last read, and jj
+ * snapshots again at the start of the *next* command — so between the pane
+ * loading and a button being pressed, every file saved in an editor makes that
+ * id stale. Handed one, jj does not fail: it resolves the obsolete commit and
+ * rewrites *that*, which forks the change in two. This shipped. `Commit & New`
+ * described the old snapshot, leaving the divergent pair
+ * `a1a37089` (263 lines, carrying the message) and `b5d02142` (346 lines, the
+ * real working copy, undescribed) — the message appeared to vanish, and a
+ * divergent change appeared from nowhere.
+ *
+ * `@` is the only name that cannot go stale, because it is resolved by jj at
+ * the moment the command runs rather than by us beforehand. Note this is the
+ * opposite conclusion from `revsetFor`, whose `null` means "do not name a
+ * revision at all, diff the live filesystem" — that is a *read* that must not
+ * snapshot, and this is a command that must act on what a snapshot produces.
+ *
  * If jjdiff ever needs to name a divergent change *as* a change — to offer both
  * sides, say — this is the one place that answer changes.
  */
-const revisionOf = (change: Change) => change.commitId;
+const revisionOf = (change: Change) => (change.workingCopy ? '@' : change.commitId);
 
 /**
  * A forge's noun at the start of a label. The nouns are stored lower-case

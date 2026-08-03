@@ -252,11 +252,13 @@ export class LogGraph extends LitElement {
     }
     /* A bookmark is a thing you can pick up, and grab is the cursor that says
        so. Only on hover: shown always it would claim the whole row is draggable
-       when the row's own gesture is a different one. */
-    .tag[draggable='true'] {
-      -webkit-user-drag: element;
-    }
-    .tag[draggable='true']:hover {
+       when the row's own gesture is a different one.
+
+       No draggable attribute on the chip. The row is the drag source for both
+       gestures — a chip that was its own source never received dragstart,
+       because a draggable ancestor wins — and the chip is identified by
+       data-bookmark instead, read on pointerdown. */
+    .tag[data-bookmark]:hover {
       cursor: grab;
       border-color: var(--jj-accent);
     }
@@ -347,6 +349,20 @@ export class LogGraph extends LitElement {
   }
 
   private onDragStart(event: DragEvent, change: Change) {
+    // A press that landed on a chip is a bookmark move, whatever element the
+    // browser then chose as the drag source. Unconditional, unlike the rebase
+    // below: `canRebase` is off when the graph shows something a rebase makes
+    // no sense against — a proposal's commits, say — and a bookmark still means
+    // the same thing there.
+    const pending = this.pendingBookmark;
+    if (pending && pending.from.changeId === change.changeId) {
+      this.draggingBookmark = pending;
+      this.draggingId = null;
+      this.overId = null;
+      event.dataTransfer?.setData('text/plain', pending.name);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      return;
+    }
     if (!this.canRebase) return;
     this.draggingId = change.changeId;
     this.overId = null;
@@ -358,28 +374,36 @@ export class LogGraph extends LitElement {
   }
 
   /**
-   * Start dragging a bookmark off the change it is on.
+   * Which bookmark the pointer went down on, if any — read by the *row's*
+   * `dragstart` to tell a bookmark move from a rebase.
    *
-   * `stopPropagation` is what keeps this from also being a rebase: the tag sits
-   * inside a row that is itself draggable, so without it the row's handler runs
-   * on the way up and the drop would carry both intentions.
+   * The two gestures start on different elements and cannot be told apart by
+   * the drag event alone. A chip carrying its own `dragstart` was the obvious
+   * shape and does not work: the chip sits inside a row that is itself
+   * draggable, WebKit resolves nested draggables to the *ancestor*, so the
+   * chip's handler never ran. The drag started (the browser drags a draggable
+   * ancestor regardless) and nothing could accept it, because the state that
+   * makes `dragover` call `preventDefault` was never set. A drag you can begin
+   * and cannot finish, with no error anywhere.
    *
-   * Unconditional, unlike the rebase drag. `canRebase` is off when the graph is
-   * showing something a rebase makes no sense against — a proposal's commits,
-   * say — and a bookmark still means the same thing there.
+   * `pointerdown` runs before any of that and reports the element actually
+   * under the finger, so the row's one handler can ask what was grabbed. Plain
+   * field, not `@state`: nothing renders from it, and a re-render between
+   * pointerdown and dragstart is exactly what we do not want.
    */
-  private onBookmarkDragStart(event: DragEvent, name: string, from: Change) {
-    event.stopPropagation();
-    this.draggingBookmark = { name, from };
-    this.draggingId = null;
-    this.overId = null;
-    event.dataTransfer?.setData('text/plain', name);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  private pendingBookmark: { name: string; from: Change } | null = null;
+
+  /** Record whether this press landed on a bookmark chip or on the row itself. */
+  private onPointerDown(event: PointerEvent, change: Change) {
+    const chip = (event.target as HTMLElement | null)?.closest<HTMLElement>('.tag[data-bookmark]');
+    const name = chip?.dataset.bookmark;
+    this.pendingBookmark = name ? { name, from: change } : null;
   }
 
   private onDragEnd = () => {
     this.draggingId = null;
     this.draggingBookmark = null;
+    this.pendingBookmark = null;
     this.overId = null;
   };
 
@@ -493,7 +517,7 @@ export class LogGraph extends LitElement {
     return html`
       <button
         class=${rowClass}
-        draggable=${this.canRebase ? 'true' : 'false'}
+        draggable=${this.canRebase || change.bookmarks.length ? 'true' : 'false'}
         title=${
           this.draggingBookmark
             ? barred
@@ -509,6 +533,7 @@ export class LogGraph extends LitElement {
         }
         @click=${() => this.pick(change)}
         @contextmenu=${(event: MouseEvent) => this.openMenu(event, change)}
+        @pointerdown=${(event: PointerEvent) => this.onPointerDown(event, change)}
         @dragstart=${(event: DragEvent) => this.onDragStart(event, change)}
         @dragend=${this.onDragEnd}
         @dragover=${(event: DragEvent) => this.onDragOver(event, change)}
@@ -535,7 +560,7 @@ export class LogGraph extends LitElement {
           const moving = this.draggingBookmark?.name === bookmark;
           return html`<span
             class="tag ${moving ? 'moving' : ''}"
-            draggable="true"
+            data-bookmark=${bookmark}
             title=${
               status?.ahead
                 ? `${bookmark} is ${status.ahead} commit${
@@ -545,8 +570,6 @@ export class LogGraph extends LitElement {
                   }\nDrag onto another change to move the bookmark there.`
                 : `${bookmark}\nDrag onto another change to move the bookmark there.`
             }
-            @dragstart=${(event: DragEvent) =>
-              this.onBookmarkDragStart(event, bookmark, change)}
             >${bookmark}${
               // Only ahead. `behind` is on the detail card, because it is not a
               // property of *this* row: the commits the remote has and we do not

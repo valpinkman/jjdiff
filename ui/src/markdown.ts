@@ -201,6 +201,18 @@ async function renderDiagram(
       htmlLabels: false,
       flowchart: { htmlLabels: false, curve: 'basis' },
       fontFamily: cssVar('--jj-sans') || 'sans-serif',
+      // Mermaid must not draw its own failure. It renders into a temp div it
+      // appends to `document.body`, and on a draw error it paints its bomb
+      // graphic into that div and throws *without removing it* — so the catch
+      // below wrote the honest fallback into the page while mermaid's cartoon
+      // stayed behind at the bottom of the document, outside any container and
+      // several hundred pixels tall. Three failed diagrams, three bombs, none
+      // of them anywhere near the section they belonged to.
+      //
+      // With this set the same path calls `removeTempElements()` and rethrows,
+      // which is all we ever wanted from it: the throw is the signal, and the
+      // fallback below is jjdiff's answer to it.
+      suppressErrorRendering: true,
     });
     const { svg } = await mermaid.render(`jj-mermaid-${id}`, source);
     const holder = document.createElement('template');
@@ -219,9 +231,30 @@ async function renderDiagram(
     // silent fallback is indistinguishable from an agent that wrote a fence of
     // plain text, which sent one real failure (a missing chunk in the WebView)
     // several hours in the wrong direction.
-    const note = `<p class="diagram-error">Diagram not rendered: ${escapeHtml(String(error))}</p>`;
+    const note = `<p class="diagram-error">Diagram not rendered: ${escapeHtml(
+      diagramFailure(error),
+    )}</p>`;
     return (await toHtml(marked, `\`\`\`\n${source}\n\`\`\``)) + note;
   }
+}
+
+/**
+ * Mermaid's complaint, reduced to the part that is news.
+ *
+ * `UnknownDiagramError` states its case and then echoes the whole diagram back:
+ * "No diagram type detected matching given configuration for text: float LR
+ * jj[…] vcs[…] app[…]…", flattened onto one line. Directly under a code block
+ * showing that same source, it is the source twice — once readable and once
+ * not — and the sentence that says what went wrong is lost in the middle of it.
+ *
+ * First line only, and cut where mermaid starts quoting. The first line is
+ * where every mermaid error puts its reason.
+ */
+function diagramFailure(error: unknown): string {
+  const first = String(error).split('\n')[0]!.trim();
+  const quoted = first.indexOf(' for text:');
+  const said = quoted === -1 ? first : first.slice(0, quoted);
+  return said.length > 200 ? `${said.slice(0, 200)}…` : said;
 }
 
 function cssVar(name: string): string {
