@@ -2879,6 +2879,90 @@ jj-app .conflict-position {
   white-space: nowrap;
 }
 
+/* ---- The sides of a divergent change ----
+   The conflict chip's shape, and for the same reason: one pill carrying more than one
+   verb, with dividers saying where one ends. Different in one way that matters — a
+   conflict chip is a place to go, so the whole pill is the trip; a side is a thing to
+   choose between, so its identity is a button and the verbs sit beside it. */
+
+jj-app .banner.divergence-sides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--jj-s-2);
+  padding-top: 0;
+}
+
+jj-app .side-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--jj-s-2);
+  max-width: 100%;
+  padding: 2px 10px;
+  border: 1px solid color-mix(in srgb, var(--jj-removed-fg) 30%, transparent);
+  border-radius: var(--jj-r-pill);
+  background: transparent;
+  color: var(--jj-removed-fg);
+  font-family: var(--jj-mono);
+  font-size: var(--jj-text-xs);
+  transition: background var(--jj-t-1) ease-out;
+}
+
+/* The one on screen is filled rather than merely labelled: the label says which, the
+   fill is what makes it findable among three without reading any of them. */
+jj-app .side-chip.here {
+  background: var(--jj-removed-bg);
+}
+
+jj-app .side-chip .pick,
+jj-app .side-chip .compare,
+jj-app .side-chip .keep {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--jj-s-2);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+jj-app .side-chip .compare,
+jj-app .side-chip .keep,
+jj-app .side-chip .showing {
+  padding-left: var(--jj-s-2);
+  border-left: 1px solid color-mix(in srgb, var(--jj-removed-fg) 30%, transparent);
+  font-family: var(--jj-sans);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+jj-app .side-chip .compare:hover,
+jj-app .side-chip .keep:hover,
+jj-app .side-chip .pick:hover {
+  text-decoration: underline;
+}
+
+/* The current side has nothing to show or compare against — itself. Its slot keeps the
+   word rather than collapsing, so the chips stay the same shape and the row does not
+   reflow as the selection moves along it. */
+jj-app .side-chip .showing {
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+jj-app .side-chip .pick:disabled {
+  cursor: default;
+  text-decoration: none;
+}
+
+jj-app .side-chip .shape {
+  font-family: var(--jj-sans);
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
 /* ---- Workspaces pane ----
    A list of places, not of changes: each row is a directory you could be standing in, so
    the path is shown rather than hidden behind the name. */

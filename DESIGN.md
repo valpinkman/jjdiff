@@ -263,7 +263,15 @@ top edge — that is what reads as height on a dark page.
   raised slab that *slides* between segments. The movement is what says the panes are
   neighbours on one strip; a fill that blinks on somewhere else does not.
 - **Tags:** pill-shaped, soft-filled, sentence case. Bookmarks amber, states neutral,
-  conflicts red. **The conflict chip explains itself:** `⚠ conflicts` names the state but
+  conflicts red. **Red is for the states jj refuses to act on**, which is conflicts and
+  one other: a **divergent** change, where two visible commits share a change id and every
+  command taking that id is rejected. Neutral would file it beside the workspace tag, which
+  names a place rather than a problem. It is spelled out rather than given a glyph — the
+  conflict × is legible because jj and this app use it everywhere, and divergence has no
+  such mark — and on the graph it carries the row's short commit id in the same inner span
+  the bookmark tag uses for its ahead count, because two rows wearing the same id, the same
+  description and the same badge are otherwise indistinguishable.
+  **The conflict chip explains itself:** `⚠ conflicts` names the state but
   not what it conflicts *with*, so it carries a tooltip — "This pull request has conflicts
   with its base branch" — in the banner and in the proposal view alike. The view used to
   have the bare chip; that was the copy that had drifted, not a decision, and the view is

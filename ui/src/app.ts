@@ -22,6 +22,7 @@ import {
   deleteBookmark,
   duplicateChange,
   editChange,
+  getChangeCommits,
   getChangeVersions,
   getInterdiff,
   getOperationDiff,
@@ -161,6 +162,35 @@ const relativeTime = (timestamp: string): string => age(timestamp, true);
 /** What the main pane shows for the selected change. */
 type ViewMode = 'full' | 'interdiff' | 'ops' | 'pr';
 
+/**
+ * Which change is selected — and, when that is not enough, which commit of it.
+ *
+ * One value rather than two fields, because the two halves are only correct
+ * together and a pair that can disagree is a bug waiting to be written.
+ *
+ * **Both are needed, and neither on its own will do.** The change id has to be
+ * there because it is what survives a rewrite: describe the selected change and
+ * every commit id in sight is replaced, so a selection remembered as a commit
+ * would be lost on the mutation that was supposed to act on it. The commit id
+ * has to be there because a **divergent** change is two visible commits under
+ * one id, and by change id alone the app could not point at either — both graph
+ * rows lit up and the diff pane showed whichever came first in the log, so the
+ * lower row was a thing you could click and not select.
+ *
+ * `App.resolveSelection` is where the pair is spent: exact match first, then the
+ * change id alone, which is the rewrite case — the commit is gone and the change
+ * is still there.
+ */
+interface Selection {
+  changeId: string;
+  commitId: string;
+}
+
+const selectionOf = (change: Change): Selection => ({
+  changeId: change.changeId,
+  commitId: change.commitId,
+});
+
 /** Revsets people actually reach for; the empty one restores the default view. */
 const REVSET_PRESETS: { label: string; revset: string }[] = [
   { label: 'All', revset: '' },
@@ -269,6 +299,7 @@ type RepoScoped =
   | 'versionPair'
   | 'versions'
   | 'versionsOpen'
+  | 'sides'
   | 'operations'
   | 'opDiff'
   | 'opCompareFrom'
@@ -347,6 +378,7 @@ function freshRepoScope() {
     versionPair: null,
     versions: [],
     versionsOpen: false,
+    sides: [],
     operations: [],
     opDiff: null,
     opCompareFrom: null,
@@ -386,7 +418,9 @@ export class App extends LitElement {
   @state() private error: string | null = null;
   @state() private actionError: string | null = null;
   @state() private actionInfo: string | null = null;
-  @state() private selected: string | null = null; // change id; null = working copy
+  // null = the working copy, which is never named by id at all: its commit id is
+  // the last snapshot's and goes stale on the next keystroke saved to disk.
+  @state() private selected: Selection | null = null;
   @state() private files: FilePatch[] = [];
   @state() private layout: DiffLayout = 'split';
   @state() private ignoreWhitespace = false;
@@ -511,7 +545,9 @@ export class App extends LitElement {
    * validation and the destination, and nothing else.
    */
   @state() private hunkVerb: 'split' | 'squash' = 'split';
-  /** Squash destination: the change the ticked hunks move into. */
+  /** Squash destination: the **commit** id of the change the ticked hunks move into.
+   *  A commit, like every other id the app remembers a row by — two options carrying one
+   *  change id would be the same option. */
   @state() private hunkInto: string | null = null;
   /** Shape of the diff the selection was made against — see `reconcileHunkSelection`. */
   private hunkShape = '';
@@ -564,6 +600,14 @@ export class App extends LitElement {
    * to showing a change whole.
    */
   @state() private versionPair: { from: string; to: string } | null = null;
+  /**
+   * The commits of the selected change when it is **divergent** — every side, not just
+   * the ones the graph happens to hold.
+   *
+   * Empty for an ordinary change, which is also what makes it the banner's own condition:
+   * a length of two or more is exactly "there is a choice to make here".
+   */
+  @state() private sides: Change[] = [];
   @state() private busy: string | null = null;
   /** Revset scoping the Log graph; null = the default. */
   @state() private graphRevset: string | null = null;
@@ -1325,7 +1369,7 @@ export class App extends LitElement {
           change.bookmarks.includes(opened.bookmark),
         );
         if (head) {
-          this.selected = head.changeId;
+          this.selected = selectionOf(head);
         }
         // Someone else's proposal is usually several commits, so default to the
         // whole thing rather than whichever commit happens to be the tip.
@@ -1681,6 +1725,18 @@ export class App extends LitElement {
   private renderChangeMeta(change: Change, trailing: unknown = nothing) {
     return html`<span class="detail-meta">
       <span class="detail-id">${change.changeId.slice(0, 12)}</span>
+      ${
+        // The commit id, but only where the change id has stopped being an
+        // answer. Divergent, it names two commits and jj refuses it, so this is
+        // the string to copy for `jj abandon` — and the only thing on the card
+        // telling the two rows apart. Everywhere else it would be a second id
+        // to read past for no gain.
+        change.divergent
+          ? html`<span class="detail-id" title="This change's commit id — the one jj will accept"
+              >${change.commitId.slice(0, 12)}</span
+            >`
+          : nothing
+      }
       ${change.bookmarks.map(
         (bookmark) => html`<span class="tag"
           >${bookmark}${this.renderTracking(bookmark)}
@@ -1701,6 +1757,13 @@ export class App extends LitElement {
       )}
       ${change.immutable ? html`<span class="tag muted">immutable</span>` : nothing}
       ${change.conflict ? html`<span class="tag warn">conflict</span>` : nothing}
+      ${change.divergent
+        ? html`<span
+            class="tag warn"
+            title="Two visible commits share this change id. jj refuses every command that takes the change id itself, so jjdiff addresses this one by its commit id. Abandon whichever side you do not want to clear it — review notes are shared by both, and stay with the one that remains."
+            >divergent</span
+          >`
+        : nothing}
       ${change.empty ? html`<span class="tag muted">empty</span>` : nothing}
       ${trailing}
     </span>`;
@@ -2115,16 +2178,47 @@ export class App extends LitElement {
 
   private get selectedChange(): Change | null {
     if (!this.repo) return null;
-    const id = this.selected ?? this.repo.workingCopy.changeId;
-    return (
-      this.repo.stack.find((change) => change.changeId === id) ??
-      this.repo.graph.find((change) => change.changeId === id) ??
-      this.repo.workingCopy
-    );
+    if (!this.selected) return this.repo.workingCopy;
+    return this.resolveSelection(this.selected) ?? this.repo.workingCopy;
+  }
+
+  /**
+   * Find the change a [`Selection`] names, in two passes over both lists.
+   *
+   * **Exact first, across both lists, before either falls back.** Interleaving
+   * the two questions — stack exact, stack loose, graph exact, graph loose —
+   * would let a loose match in `stack` beat the exact one waiting in `graph`,
+   * which is the whole case this exists for: a divergent change has one side in
+   * the stack and the other off it, and the off-stack side is the one you
+   * cannot otherwise reach.
+   *
+   * The loose pass is the rewrite case, and it is not a consolation prize:
+   * describing the selected change replaces its commit id, and keeping it
+   * selected afterwards is the behaviour every action depends on. Divergence
+   * makes it ambiguous, which is the price of a change id that no longer names
+   * one thing — and by then the exact pass has already done the work.
+   */
+  private resolveSelection(selection: Selection): Change | null {
+    // `sides` last and included at all because a divergent sibling is routinely in
+    // neither of the other two: picking one from the banner would otherwise resolve to
+    // nothing and fall back to the working copy.
+    const lists = [this.repo?.stack ?? [], this.repo?.graph ?? [], this.sides];
+    for (const list of lists) {
+      const exact = list.find(
+        (change) =>
+          change.changeId === selection.changeId && change.commitId === selection.commitId,
+      );
+      if (exact) return exact;
+    }
+    for (const list of lists) {
+      const loose = list.find((change) => change.changeId === selection.changeId);
+      if (loose) return loose;
+    }
+    return null;
   }
 
   private get isWorkingCopySelected(): boolean {
-    return this.selected === null || this.selected === this.repo?.workingCopy.changeId;
+    return this.selected === null || this.selected.changeId === this.repo?.workingCopy.changeId;
   }
 
   /** True when the selected change moved since it was last marked reviewed. */
@@ -2240,7 +2334,29 @@ export class App extends LitElement {
       this.loadWalkthrough(),
       this.loadComments(),
       this.syncMatchedProposal(),
+      this.loadDivergentSides(),
     ]);
+  }
+
+  /**
+   * The sides of a divergent change, for the banner that lets one be chosen.
+   *
+   * Gated on the flag rather than asked every time: this is a `jj` process, and on any
+   * ordinary change it would come back with the one commit already on screen. Cleared
+   * first, so a selection that is not divergent never shows the previous one's sides —
+   * and cleared again on failure, since a banner offering versions it could not load is
+   * worse than no banner.
+   */
+  private async loadDivergentSides() {
+    const change = this.selectedChange;
+    this.sides = [];
+    if (!change?.divergent) return;
+    try {
+      this.sides = await getChangeCommits(change.changeId);
+    } catch (error) {
+      console.warn('jjdiff: could not list the sides of a divergent change', error);
+      this.sides = [];
+    }
   }
 
   private async loadDiff() {
@@ -2496,8 +2612,8 @@ export class App extends LitElement {
             >
               ${this.hunkSquashTargets.map(
                 (target) => html`<option
-                  value=${target.changeId}
-                  ?selected=${target.changeId === this.hunkInto}
+                  value=${target.commitId}
+                  ?selected=${target.commitId === this.hunkInto}
                 >
                   ${this.changeLabel(target)}${target.immutable ? ' · immutable' : ''}
                 </option>`,
@@ -2555,6 +2671,72 @@ export class App extends LitElement {
    * itself as the merge tool. `jj resolve` in a terminal remains the way to use
    * your own merge editor, and the banner still says so.
    */
+  /**
+   * The versions of a divergent change, and the way out.
+   *
+   * A badge said the change was divergent and stopped there, which left the reviewer with
+   * the state named and no way to act on it: the sides are usually not both on the graph,
+   * the diff pane shows one of them without saying which, and `jj evolog` — the app's
+   * Versions drawer — does not help, because a side's evolog holds its own predecessors
+   * and never the sibling. So this is the one place both versions exist at once.
+   *
+   * Three verbs, which is the whole question: **see** each one (select it, the diff
+   * follows), **compare** them (an interdiff between the two commits, which is the only
+   * view that says what actually differs — both sides usually sit on the same parent, so
+   * their own diffs look nearly identical), and **keep** one.
+   *
+   * Two or more, not "divergent": the flag is what raises the badge, this needs the
+   * commits in hand. A change flagged divergent whose sides failed to load renders
+   * nothing here rather than an empty promise.
+   */
+  private renderDivergenceBanner() {
+    if (this.sides.length < 2) return nothing;
+    const here = this.selectedChange?.commitId;
+    return html`<div class="banner">
+        <span class="chip warn">${iconWarn}</span>
+        <span>
+          ${this.sides.length} versions of this change share one id, and jj will not act on
+          the id until one is left. Pick the one to keep.
+        </span>
+      </div>
+      <div class="banner divergence-sides">
+        ${this.sides.map((side) => {
+          const current = side.commitId === here;
+          return html`<span class="side-chip ${current ? 'here' : ''}">
+            <button
+              class="pick"
+              title=${`Show ${side.commitId.slice(0, 12)} — ${
+                side.description.split('\n')[0] || '(no description)'
+              }`}
+              ?disabled=${current}
+              @click=${() => this.select(side)}
+            >
+              <span class="name">${side.commitId.slice(0, 12)}</span>
+              <span class="shape"
+                >${side.author.name} · ${relativeTime(side.committer.timestamp)}</span
+              >
+            </button>
+            ${current
+              ? html`<span class="showing">showing</span>`
+              : html`<button
+                  class="compare"
+                  title="Interdiff this version against the one on screen"
+                  @click=${() => this.compareSide(side)}
+                >
+                  Compare
+                </button>`}
+            <button
+              class="keep"
+              title="jj abandon — drop every other version, leaving this one as the change"
+              @click=${() => void this.keepOneSide(side)}
+            >
+              Keep
+            </button>
+          </span>`;
+        })}
+      </div>`;
+  }
+
   private renderConflictBanner() {
     const files = [...this.conflicts];
     const count = files.length;
@@ -2747,7 +2929,7 @@ export class App extends LitElement {
   }
 
   private select(change: Change) {
-    this.selected = change.changeId;
+    this.selected = selectionOf(change);
     this.focusPath = null;
     this.viewMode = 'full';
     this.walkActive = false;
@@ -2904,7 +3086,9 @@ export class App extends LitElement {
   /** Index of the currently selected change within the stack-review order. */
   private get stackIndex(): number {
     if (!this.stackReview) return -1;
-    const id = this.selected ?? this.repo?.workingCopy.changeId;
+    // By change id: a stack-review order is a list of changes, and the one
+    // selected may have been rewritten since the review started.
+    const id = this.selected?.changeId ?? this.repo?.workingCopy.changeId;
     return this.stackReview.findIndex((change) => change.changeId === id);
   }
 
@@ -3017,7 +3201,7 @@ export class App extends LitElement {
 
   /** Move to a change within stack review, keeping guided mode on. */
   private async enterStackChange(change: Change, position: 'overview' | 'last') {
-    this.selected = change.changeId;
+    this.selected = selectionOf(change);
     this.focusPath = null;
     this.viewMode = 'full';
     this.description = change.description;
@@ -3475,6 +3659,67 @@ export class App extends LitElement {
     });
   }
 
+  /**
+   * Resolve a divergent change by keeping one commit and abandoning the rest.
+   *
+   * Abandoning the *others* rather than offering "abandon this one" is the whole point of
+   * the affordance: the question a reviewer has is which version to keep, and answering
+   * it the other way round means naming every side you do not want, one at a time, while
+   * the badge keeps saying divergent until the last one goes.
+   *
+   * One `jj abandon` with a union revset, not one call per side — a single operation is a
+   * single Undo, where three calls would leave a half-resolved change behind if the second
+   * failed. Commit ids, of course: the change id is the thing that does not resolve.
+   */
+  private async keepOneSide(keep: Change) {
+    const drop = this.sides.filter((side) => side.commitId !== keep.commitId);
+    if (!drop.length) return;
+    const immutable = drop.find((side) => side.immutable);
+    // The immutable dialog says everything the ordinary one does and more, so it stands
+    // in for it rather than being asked on top — the same rule `abandonSelected` follows.
+    const ok = immutable
+      ? await this.confirmImmutableRewrite(immutable, 'Abandon')
+      : await askConfirm({
+          heading: `Keep ${keep.commitId.slice(0, 12)} and abandon the other ${
+            drop.length === 1 ? 'version' : `${drop.length} versions`
+          }?`,
+          detail:
+            // The commit id and the description, not `changeLabel`: that leads with the
+            // change id, which every side here shares and so tells them apart not at all.
+            `${drop
+              .map(
+                (side) =>
+                  `${side.commitId.slice(0, 12)} — ${
+                    side.description.split('\n')[0] || '(no description)'
+                  }`,
+              )
+              .join('\n')}\n\n` +
+            'The change stops being divergent and this commit becomes the only one under ' +
+            'its id. Review notes stay with it, since they were filed under the change ' +
+            'rather than under a side. Undoable from the Ops tab.',
+          confirmLabel: 'Keep this one',
+          danger: true,
+        });
+    if (!ok) return;
+    void this.command('abandon', async () => {
+      const outcome = await abandonChange(
+        drop.map((side) => side.commitId).join(' | '),
+        !!immutable,
+      );
+      // Land on the survivor rather than clearing the selection: the reviewer was reading
+      // this change and has just said which version of it they meant.
+      this.selected = selectionOf(keep);
+      return outcome;
+    });
+  }
+
+  /** Interdiff one side of a divergent change against the one on screen. */
+  private compareSide(other: Change) {
+    const current = this.selectedChange;
+    if (!current) return;
+    this.compareVersions(other.commitId, current.commitId);
+  }
+
   private duplicateSelected() {
     const change = this.selectedChange;
     if (!change) return;
@@ -3561,8 +3806,8 @@ export class App extends LitElement {
    * so the reason arrives before the attempt.
    */
   private get hunkSquashTargets(): Change[] {
-    const source = this.selectedChange?.changeId;
-    return (this.repo?.stack ?? []).filter((change) => change.changeId !== source);
+    const source = this.selectedChange?.commitId;
+    return (this.repo?.stack ?? []).filter((change) => change.commitId !== source);
   }
 
   /** The parent of `change` as the graph knows it, when it is on screen. */
@@ -3620,8 +3865,8 @@ export class App extends LitElement {
       // on screen; the top of the stack is the fallback for a change whose
       // parent the current revset does not include.
       const parent = this.parentOf(change);
-      const inStack = parent && targets.some((target) => target.changeId === parent.changeId);
-      into = (inStack ? parent.changeId : targets[0]?.changeId) ?? null;
+      const inStack = parent && targets.some((target) => target.commitId === parent.commitId);
+      into = (inStack ? parent.commitId : targets[0]?.commitId) ?? null;
     }
 
     this.hunkVerb = verb;
@@ -3723,7 +3968,7 @@ export class App extends LitElement {
   private async confirmHunkSquash() {
     const change = this.selectedChange;
     const selection = this.hunkSelection;
-    const into = this.hunkSquashTargets.find((target) => target.changeId === this.hunkInto);
+    const into = this.hunkSquashTargets.find((target) => target.commitId === this.hunkInto);
     if (!change || !selection || !into) return;
 
     const immutable = [into, change].find((target) => target.immutable);
@@ -4557,7 +4802,10 @@ export class App extends LitElement {
     if (!this.repo) {
       return nothing;
     }
-    const selectedId = this.selected ?? this.repo.workingCopy.changeId;
+    // The *resolved* change's commit id, not the selection's own: after a
+    // rewrite the remembered commit is gone and `selectedChange` has already
+    // fallen back to the change id, so this is the one that is always on screen.
+    const selectedId = this.selectedChange?.commitId ?? null;
     const change = this.selectedChange;
     const isWc = this.isWorkingCopySelected;
     const visible = this.focusPath
@@ -4783,7 +5031,7 @@ export class App extends LitElement {
                   // Select first: every entry acts on the selection, and a menu
                   // whose verbs applied to a row the rest of the window is not
                   // showing is the kind of thing you only notice afterwards.
-                  if (event.detail.change.changeId !== this.selected) {
+                  if (event.detail.change.commitId !== this.selectedChange?.commitId) {
                     this.select(event.detail.change);
                   }
                   this.changeMenu = event.detail;
@@ -5239,6 +5487,7 @@ export class App extends LitElement {
             : nothing}
         ${this.hunkSelection ? this.renderHunkBanner(this.hunkSelection) : nothing}
         ${change?.conflict ? this.renderConflictBanner() : nothing}
+        ${this.renderDivergenceBanner()}
         ${this.versionPair
           ? html`<div class="banner">
               <span class="chip">${iconInfo}</span>

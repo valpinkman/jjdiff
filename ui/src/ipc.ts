@@ -18,6 +18,14 @@ export interface Change {
   empty: boolean;
   conflict: boolean;
   immutable: boolean;
+  /**
+   * Whether another visible commit shares this change id.
+   *
+   * True on **both** sides, because it is a property of the change id rather than of one
+   * commit: jj is saying the id names more than one thing. That is what makes `changeId`
+   * unresolvable as a revset, so it is also the flag explaining why `revisionOf` exists.
+   */
+  divergent: boolean;
   /** Whether this is *this window's* working copy — workspace-relative, so two windows on
    *  two workspaces of one repo correctly disagree. */
   workingCopy: boolean;
@@ -437,6 +445,17 @@ export const getChangeVersions = (changeId: string): Promise<ChangeVersion[]> =>
   IN_TAURI
     ? invoke<ChangeVersion[]>('change_versions', { changeId })
     : mock((m) => m.mockChangeVersions(changeId));
+/**
+ * Every visible commit under one change id — the sides of a divergent change.
+ *
+ * One element for an ordinary change, so the caller needs no second path. Asked of the
+ * backend rather than filtered out of the loaded graph: the default revset is
+ * `ancestors(@ | bookmarks())`, which a divergent sibling usually misses.
+ */
+export const getChangeCommits = (changeId: string): Promise<Change[]> =>
+  IN_TAURI
+    ? invoke<Change[]>('change_commits', { changeId })
+    : mock((m) => m.mockChangeCommits(changeId));
 /** Interdiff between two arbitrary versions of a change, addressed by commit id. */
 export const getInterdiff = (
   fromCommit: string,

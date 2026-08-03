@@ -529,6 +529,23 @@ async fn interdiff_since_reviewed(
     .await
 }
 
+/// Every visible commit under `change_id` — the sides of a divergent change.
+///
+/// One element for an ordinary change, so the frontend has no second code path for the
+/// common case. Not derivable from the graph already loaded: the default revset is
+/// `ancestors(@ | bookmarks())` and a divergent sibling is usually neither, so the pane
+/// can know a change is divergent (the flag is per commit) and still have nothing to
+/// offer as the other version.
+#[tauri::command]
+async fn change_commits(
+    window: tauri::Window,
+    state: tauri::State<'_, AppState>,
+    change_id: String,
+) -> Result<Vec<Change>, String> {
+    let repo = repo_handle(&state, &window)?;
+    blocking(move || vcs(repo.commits_of_change(&change_id))).await
+}
+
 /// Every recorded version of `change_id`, newest first — jj's evolog. Entry 0 is the
 /// change as it stands now; the rest are the commits it used to be.
 #[tauri::command]
@@ -1546,7 +1563,23 @@ fn spawn_window(
         // Matches `main` in tauri.conf.json. 1024 is the narrowest the layout is
         // designed for — a 52px rail plus a 292px sidebar leaves the diff pane
         // under 700px below that, which is not enough for a side-by-side diff.
-        .min_inner_size(1024.0, 640.0);
+        .min_inner_size(1024.0, 640.0)
+        // `dragDropEnabled: false` for `main` in tauri.conf.json, and there is
+        // no way to say it there for a window built here.
+        //
+        // It is what makes HTML5 drag and drop work inside the page. Tauri's
+        // handler makes the WebView an OS drag *destination* so a file dropped
+        // from Finder can raise an event, and wry only forwards the AppKit drag
+        // to WebKit when that handler declines — Tauri's never does. An
+        // in-page drag is an AppKit drag too, so it went to Tauri and stopped:
+        // `dragstart` fired (the source side is all WebKit), `dragover` and
+        // `drop` never did. A drag you can begin and cannot finish, with no
+        // error anywhere — rebase-by-drag and moving a bookmark onto another
+        // change both looked implemented and were dead.
+        //
+        // Free to turn off: jjdiff listens for no file drop. It takes a repo
+        // from argv and a second instance, not from the desktop.
+        .disable_drag_drop_handler();
 
     // Same chrome as the `main` window in tauri.conf.json: the title bar is an
     // overlay over the app's own background and the title is hidden, so the
@@ -2089,6 +2122,7 @@ pub fn run(args: Args) {
             interdiff_since_reviewed,
             interdiff,
             change_versions,
+            change_commits,
             describe,
             new_change,
             squash_paths,

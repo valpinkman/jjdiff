@@ -67,6 +67,24 @@ impl ReviewStore {
         Data::default()
     }
 
+    /// `(repo, change id)`, and **a divergent change's two commits share one entry**.
+    ///
+    /// Asked deliberately rather than inherited, because divergence is the one state where
+    /// "the same change" is two different diffs, and the obvious repair — key the commit
+    /// instead — is the wrong one. This key exists so review survives rewriting, and a
+    /// divergent change is two rewrites of one change: keying the commit would discard
+    /// every note on the next `describe`, imposing the failure the key was built to prevent
+    /// on every repo in order to serve a rare one.
+    ///
+    /// It also survives the way divergence *ends*. You clear it by abandoning a side, and
+    /// the notes were written about the change, not about the side — shared, they stay with
+    /// whichever commit remains. Keyed per commit they would be attached to the abandoned
+    /// one half the time and simply disappear.
+    ///
+    /// What crossing over costs is bounded by [`crate::comments::CommentStore::refresh_anchors`]:
+    /// a comment lands on the matching line of the other side, or is marked outdated when
+    /// there is no such line. Outdated is the honest answer — the note is about code this
+    /// side does not have — and it is visible, which a silently misplaced comment is not.
     fn key(repo: &str, change_id: &str) -> String {
         format!("{repo}\u{1}{change_id}")
     }
@@ -167,6 +185,33 @@ mod tests {
         assert!(reloaded.viewed("/elsewhere", "abcd").is_empty());
         assert_eq!(reloaded.reviewed_commit("/repo", "abcd").as_deref(), Some("commit111"));
         assert_eq!(reloaded.reviewed_commit("/repo", "wxyz"), None);
+    }
+
+    /// The two commits of a divergent change share their review state, on purpose.
+    ///
+    /// Pinned because it is a decision and not an accident, and because the change that
+    /// would break it looks like a fix: adding the commit id to the key would make the
+    /// sides independent and would throw away every note on the next rewrite of any change
+    /// in any repo. See [`ReviewStore::key`] for the whole argument.
+    ///
+    /// There is nothing divergence-specific to set up here — that is the point. The store
+    /// is handed a change id, both sides of a divergent change are the same change id, and
+    /// so the same entry answers for both.
+    #[test]
+    fn both_commits_of_a_divergent_change_read_one_set_of_notes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = ReviewStore::load(tmp.path().join("review.json"));
+
+        // Marked viewed while looking at one side...
+        store.set_viewed("/repo", "diverged", "src/cache.rs", true);
+        store.mark_reviewed("/repo", "diverged", "aaaa1111");
+        // ...and the other side is the same change, so it reads the same answer.
+        assert_eq!(store.viewed("/repo", "diverged"), vec!["src/cache.rs"]);
+
+        // `reviewed_commit` is the half that still tells them apart: it stores a commit,
+        // so "you last reviewed this at aaaa1111" stays true of the change and is simply
+        // not this side's own id — which is what makes the other side read as changed.
+        assert_eq!(store.reviewed_commit("/repo", "diverged").as_deref(), Some("aaaa1111"));
     }
 
     #[test]

@@ -28,6 +28,7 @@ const change = (partial: Partial<Change> & Pick<Change, 'changeId' | 'descriptio
   empty: false,
   conflict: false,
   immutable: false,
+  divergent: false,
   workingCopy: false,
   bookmarks: [],
   workspaces: [],
@@ -72,6 +73,25 @@ const sidebranch = change({
   workspaces: ['streaming'],
 });
 
+// A divergent change: one change id over two visible commits, which is the state a
+// reviewer reaches by rewriting a commit that a previous rewrite had already obsoleted.
+// Present in the mock because it is the only way to see the badge and the two-sided
+// selection in `pnpm dev` — producing one in a real repo means deliberately corrupting
+// its history. Commit ids are set by hand: the factory derives one from the change id,
+// and these two share that.
+const forkedA = change({
+  changeId: 'divergentdivergentdi',
+  commitId: 'aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111',
+  description: 'Rename the cache key helper\n\nThe version kept in this workspace.',
+  divergent: true,
+});
+const forkedB = change({
+  changeId: 'divergentdivergentdi',
+  commitId: 'bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222',
+  description: 'Rename the cache key helper\n\nThe version rewritten elsewhere.',
+  divergent: true,
+});
+
 // Parent wiring (commit ids) so the graph has a real fork: streaming branches off trunk1.
 wc.parents = [retry.commitId];
 retry.parents = [pool.commitId];
@@ -79,6 +99,8 @@ pool.parents = [trunk1.commitId];
 sidebranch.parents = [trunk1.commitId];
 trunk1.parents = [trunk2.commitId];
 trunk2.parents = [];
+forkedA.parents = [trunk1.commitId];
+forkedB.parents = [trunk1.commitId];
 
 export const mockRepoState: RepoState = {
   root: '/Users/dev/projects/example',
@@ -86,7 +108,7 @@ export const mockRepoState: RepoState = {
   jjVersion: '0.43.0 (mock)',
   workingCopy: wc,
   stack: [wc, retry, pool],
-  graph: [wc, retry, sidebranch, pool, trunk1, trunk2],
+  graph: [wc, retry, sidebranch, forkedA, forkedB, pool, trunk1, trunk2],
   // One of each case so `pnpm dev` exercises all three renderings: ahead (and on
   // the mock proposal's head branch, so the banner's staleness warning shows),
   // behind, and in sync — which must render nothing at all.
@@ -353,6 +375,14 @@ export const mockInterdiff: Interdiff = {
   fromCommit: 'anoldercommitid0000000000000000000000000',
   toCommit: mockRepoState.stack[1]!.commitId,
 };
+
+/**
+ * The commits under one change id. Filtered from the mock graph, which is the browser
+ * equivalent of `change_id(prefix)` — and unlike a real repo the mock graph holds both
+ * sides of its divergent pair, so the divergence banner has something to offer.
+ */
+export const mockChangeCommits = (changeId: string): Change[] =>
+  mockRepoState.graph.filter((entry) => entry.changeId === changeId);
 
 /**
  * Three versions of any change: the current commit, plus two invented predecessors.

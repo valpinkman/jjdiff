@@ -16,6 +16,17 @@ pub struct Change {
     pub empty: bool,
     pub conflict: bool,
     pub immutable: bool,
+    /// Whether this commit shares its change id with another visible commit.
+    ///
+    /// True on **every** commit of the pair, not on a winner — jj is stating that the
+    /// change id names more than one thing, which is a property of the set. So a row can
+    /// say so on its own, without the graph counting siblings to find out.
+    ///
+    /// This is the flag that makes `change_id` unusable as a revset (see
+    /// [`Change::commit_id`] and CLAUDE.md), and until it existed the app could not tell
+    /// a reviewer that: jj's own log prints `(divergent)` and a `pwlxtrxt/0` suffix, while
+    /// jjdiff drew two rows with the same id, the same description and no marker.
+    pub divergent: bool,
     /// Whether this is *the calling workspace's* working copy. Workspace-relative, so two
     /// workspaces of one repo disagree about it, correctly.
     pub working_copy: bool,
@@ -50,6 +61,7 @@ struct LogRecord {
     empty: bool,
     conflict: bool,
     immutable: bool,
+    divergent: bool,
     working_copy: bool,
     bookmarks: Vec<String>,
     /// Absent from records written before workspaces were surfaced; an old walkthrough or
@@ -120,7 +132,7 @@ struct WorkspaceRecord {
 /// Parse one `jj workspace list` record.
 ///
 /// The commit comes back as a bare `json(self)` with none of the flags `LOG_TEMPLATE`
-/// carries — no `empty`, no `conflict`, no `immutable`. Rather than run a second log per
+/// carries — no `empty`, no `conflict`, no `immutable`, no `divergent`. Rather than run a second log per
 /// workspace to fill them in, they are left at their defaults and the caller treats this
 /// `Change` as identity plus description, which is all a workspace row shows. `working_copy`
 /// is set from the workspace's own point of view, since that is unambiguously what it is.
@@ -140,6 +152,7 @@ pub(crate) fn parse_workspace(line: &str) -> Result<(String, Change)> {
             empty: false,
             conflict: false,
             immutable: false,
+            divergent: false,
             working_copy: true,
             bookmarks: Vec::new(),
             workspaces: vec![record.name],
@@ -172,8 +185,16 @@ pub(crate) fn parse_evolog_record(line: &str) -> Result<EvologEntry> {
 pub(crate) fn parse_record(line: &str) -> Result<Change> {
     let record: LogRecord = serde_json::from_str(line)
         .map_err(|error| VcsError::Parse(format!("bad log record: {error}; line: {line}")))?;
-    let LogRecord { commit, empty, conflict, immutable, working_copy, bookmarks, workspaces } =
-        record;
+    let LogRecord {
+        commit,
+        empty,
+        conflict,
+        immutable,
+        divergent,
+        working_copy,
+        bookmarks,
+        workspaces,
+    } = record;
     Ok(Change {
         change_id: commit.change_id,
         commit_id: commit.commit_id,
@@ -184,6 +205,7 @@ pub(crate) fn parse_record(line: &str) -> Result<Change> {
         empty,
         conflict,
         immutable,
+        divergent,
         working_copy,
         bookmarks,
         workspaces,
@@ -194,8 +216,11 @@ pub(crate) fn parse_record(line: &str) -> Result<Change> {
 mod tests {
     use super::*;
 
-    // Captured verbatim from `jj log -T <LOG_TEMPLATE>` with jj 0.43.0.
-    const FIXTURE: &str = r#"{"commit":{"commit_id":"8bc80827823ad4678e7d24f8639413d3dd0c9333","parents":["f1bbe5aac1e4c795b25257abe60fdc8e0742a49e"],"change_id":"vzusolpoxkysuylvxpvpvyykzllnvtqt","description":"Switch frontend plan to Lit 3 (light-DOM code pane, CSS custom property theming)\n","author":{"name":"Valentin D. Pinkman","email":"v@example.com","timestamp":"2026-07-25T23:03:46+02:00"},"committer":{"name":"Valentin D. Pinkman","email":"v@example.com","timestamp":"2026-07-25T23:03:49+02:00"}},"empty":false,"conflict":false,"immutable":false,"working_copy":false,"bookmarks":[]}"#;
+    // Captured from `jj log -T <LOG_TEMPLATE>` with jj 0.43.0, the author's email
+    // redacted. Recaptured when `divergent` joined the template — the point of the
+    // fixture is that a record jj really wrote parses, which a hand-edited one would
+    // stop being.
+    const FIXTURE: &str = r#"{"commit":{"commit_id":"8bc80827823ad4678e7d24f8639413d3dd0c9333","parents":["f1bbe5aac1e4c795b25257abe60fdc8e0742a49e"],"change_id":"vzusolpoxkysuylvxpvpvyykzllnvtqt","description":"Switch frontend plan to Lit 3 (light-DOM code pane, CSS custom property theming)\n","author":{"name":"Valentin D. Pinkman","email":"v@example.com","timestamp":"2026-07-25T23:03:46+02:00"},"committer":{"name":"Valentin D. Pinkman","email":"v@example.com","timestamp":"2026-07-25T23:03:49+02:00"}},"empty":false,"conflict":false,"immutable":true,"divergent":false,"working_copy":false,"bookmarks":[],"workspaces":[]}"#;
 
     #[test]
     fn parses_real_record() {
@@ -205,6 +230,7 @@ mod tests {
         assert_eq!(change.parents.len(), 1);
         assert_eq!(change.first_line(), "Switch frontend plan to Lit 3 (light-DOM code pane, CSS custom property theming)");
         assert!(!change.working_copy);
+        assert!(!change.divergent);
         assert!(change.bookmarks.is_empty());
     }
 

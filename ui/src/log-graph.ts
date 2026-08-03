@@ -185,6 +185,17 @@ export class LogGraph extends LitElement {
       border-left: 1px solid color-mix(in srgb, var(--jj-ref) 35%, transparent);
       font-family: var(--jj-mono);
     }
+    /* Which side of a divergent change this row is, in the same shape: the
+       commit id is the only thing distinguishing two rows that otherwise carry
+       the same id, the same description and the same badge. Off currentColor
+       rather than the bookmark hue, since this pill is a warning, not a ref. */
+    .tag .which {
+      margin-left: 5px;
+      padding-left: 5px;
+      border-left: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+      font-family: var(--jj-mono);
+      font-weight: 500;
+    }
     /* Not the bookmark colour: this is the absence of a ref, not one. Neutral,
        like the workspace tag, so a row of them does not read as a row of things
        that have names. */
@@ -271,6 +282,14 @@ export class LogGraph extends LitElement {
   `;
 
   @property({ attribute: false }) changes: Change[] = [];
+  /**
+   * The selected row, by **commit** id.
+   *
+   * A change id here highlighted both sides of a divergent change at once and
+   * gave the pane no way to tell which had been clicked. The app resolves its
+   * selection before handing it over, so this is always a commit currently in
+   * `changes` — one row, or none.
+   */
   @property() selected: string | null = null;
   /** The workspace this window is showing — the one whose `name@` tag is left off. */
   @property() workspace: string | null = null;
@@ -338,7 +357,7 @@ export class LogGraph extends LitElement {
    * the whole descendant set.
    */
   private get barred(): Set<string> {
-    const source = this.changes.find((change) => change.changeId === this.draggingId);
+    const source = this.changes.find((change) => change.commitId === this.draggingId);
     if (!source) return new Set();
     const barred = new Set<string>([source.commitId]);
     for (let index = this.changes.length - 1; index >= 0; index--) {
@@ -355,7 +374,7 @@ export class LogGraph extends LitElement {
     // no sense against — a proposal's commits, say — and a bookmark still means
     // the same thing there.
     const pending = this.pendingBookmark;
-    if (pending && pending.from.changeId === change.changeId) {
+    if (pending && pending.from.commitId === change.commitId) {
       this.draggingBookmark = pending;
       this.draggingId = null;
       this.overId = null;
@@ -364,7 +383,7 @@ export class LogGraph extends LitElement {
       return;
     }
     if (!this.canRebase) return;
-    this.draggingId = change.changeId;
+    this.draggingId = change.commitId;
     this.overId = null;
     // WebKit will not start a drag at all without data on the transfer, and the
     // id is the honest thing to carry: a jjdiff row dropped into a text field
@@ -411,7 +430,7 @@ export class LogGraph extends LitElement {
   private refuses(change: Change): boolean {
     // A bookmark can go anywhere but where it already is — moving a name is not
     // constrained by ancestry the way moving a commit is.
-    if (this.draggingBookmark) return this.draggingBookmark.from.changeId === change.changeId;
+    if (this.draggingBookmark) return this.draggingBookmark.from.commitId === change.commitId;
     return this.barred.has(change.commitId);
   }
 
@@ -422,12 +441,12 @@ export class LogGraph extends LitElement {
     // refuse the drop.
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    this.overId = change.changeId;
+    this.overId = change.commitId;
   }
 
   private onDrop(event: DragEvent, destination: Change) {
     event.preventDefault();
-    const source = this.changes.find((change) => change.changeId === this.draggingId);
+    const source = this.changes.find((change) => change.commitId === this.draggingId);
     const bookmark = this.draggingBookmark;
     // Read the exclusions before clearing the drag: they are derived from it.
     const refused = this.refuses(destination);
@@ -445,7 +464,7 @@ export class LogGraph extends LitElement {
       );
       return;
     }
-    if (!source || source.changeId === destination.changeId) return;
+    if (!source || source.commitId === destination.commitId) return;
     this.dispatchEvent(
       new CustomEvent('rebase-drop', {
         detail: { source, destination },
@@ -505,12 +524,12 @@ export class LogGraph extends LitElement {
     const barred = dragging && this.refuses(change);
     const rowClass = [
       'row',
-      change.changeId === this.selected ? 'selected' : '',
+      change.commitId === this.selected ? 'selected' : '',
       change.workingCopy ? 'wc' : '',
       change.immutable ? 'immutable' : '',
-      change.changeId === this.draggingId ? 'dragging' : '',
-      change.changeId === this.overId ? 'drop-target' : '',
-      barred && change.changeId !== this.draggingId ? 'barred' : '',
+      change.commitId === this.draggingId ? 'dragging' : '',
+      change.commitId === this.overId ? 'drop-target' : '',
+      barred && change.commitId !== this.draggingId ? 'barred' : '',
     ].join(' ');
     const summary = change.description.split('\n')[0] ?? '';
 
@@ -538,7 +557,7 @@ export class LogGraph extends LitElement {
         @dragend=${this.onDragEnd}
         @dragover=${(event: DragEvent) => this.onDragOver(event, change)}
         @dragleave=${() => {
-          if (this.overId === change.changeId) this.overId = null;
+          if (this.overId === change.commitId) this.overId = null;
         }}
         @drop=${(event: DragEvent) => this.onDrop(event, change)}
       >
@@ -605,6 +624,22 @@ export class LogGraph extends LitElement {
             )
         }
         ${change.conflict ? html`<span class="tag warn">×</span>` : nothing}
+        ${
+          // Spelled out, unlike the conflict glyph beside it. A conflict has a
+          // red × everywhere in this app and in jj, so the mark is the word; a
+          // divergent change has no such vocabulary, and two rows carrying the
+          // same unexplained symbol would read as one more thing they share.
+          change.divergent
+            ? html`<span
+                class="tag warn"
+                title="Two visible commits share this change id — this is one of them, ${change.commitId.slice(
+                  0,
+                  12,
+                )}. Abandon the side you do not want to clear it."
+                >divergent<span class="which">${change.commitId.slice(0, 8)}</span></span
+              >`
+            : nothing
+        }
         <span class="desc ${summary ? '' : 'empty-desc'}">
           ${summary || (change.workingCopy ? 'working copy' : '(no description)')}
         </span>

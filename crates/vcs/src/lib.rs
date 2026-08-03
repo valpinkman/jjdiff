@@ -164,7 +164,7 @@ fn resolve_git_dir(repo_dir: &Path) -> Option<PathBuf> {
 /// `working_copies` is mapped to bare names rather than passed to `json()` whole: the
 /// keyword yields a full workspace object per entry, commit and signatures included, which
 /// would repeat most of the record for a label.
-const LOG_TEMPLATE: &str = r#""{\"commit\":" ++ json(self) ++ ",\"empty\":" ++ json(empty) ++ ",\"conflict\":" ++ json(conflict) ++ ",\"immutable\":" ++ json(immutable) ++ ",\"working_copy\":" ++ json(current_working_copy) ++ ",\"bookmarks\":" ++ json(bookmarks.map(|b| b.name())) ++ ",\"workspaces\":" ++ json(working_copies.map(|w| w.name())) ++ "}\n""#;
+const LOG_TEMPLATE: &str = r#""{\"commit\":" ++ json(self) ++ ",\"empty\":" ++ json(empty) ++ ",\"conflict\":" ++ json(conflict) ++ ",\"immutable\":" ++ json(immutable) ++ ",\"divergent\":" ++ json(divergent) ++ ",\"working_copy\":" ++ json(current_working_copy) ++ ",\"bookmarks\":" ++ json(bookmarks.map(|b| b.name())) ++ ",\"workspaces\":" ++ json(working_copies.map(|w| w.name())) ++ "}\n""#;
 
 impl Repo {
     /// Find the jj workspace containing `path` and verify its repo is colocated.
@@ -289,6 +289,21 @@ impl Repo {
             .filter(|l| !l.is_empty())
             .map(change::parse_record)
             .collect()
+    }
+
+    /// Every visible commit under one change id: one for an ordinary change, several for a
+    /// **divergent** one.
+    ///
+    /// `change_id(prefix)` and not the bare id, which is the whole point — the bare id is
+    /// what jj refuses the moment there is more than one answer, and more than one answer
+    /// is the only reason to call this. (jj 0.31; `MIN_JJ_VERSION` is 0.33.)
+    ///
+    /// Asked of jj rather than filtered out of the graph already on screen, because the
+    /// other side is routinely not on it: the default revset is `ancestors(@ | bookmarks())`
+    /// and a divergent sibling is typically neither. So the pane could say "divergent" —
+    /// the flag is per commit — while having nothing to show as the second version.
+    pub fn commits_of_change(&self, change_id: &str) -> Result<Vec<Change>> {
+        self.log(&format!("change_id({change_id})"))
     }
 
     pub fn working_copy(&self) -> Result<Change> {
@@ -1641,7 +1656,29 @@ mod tests {
             // And the diff the pane asks for is available for each of them.
             repo.patch_for(&change.commit_id, false)
                 .unwrap_or_else(|error| panic!("diff by commit id failed: {error}"));
+            // Every side says so, rather than one of them being flagged as the
+            // odd one out — the graph draws a badge per row and must not have to
+            // count siblings to know whether to.
+            assert!(change.divergent, "{} should report divergent", change.commit_id);
         }
+
+        // And an ordinary change does not, or the badge would be on everything.
+        jj(&["new", "-m", "somewhere else"]);
+        let ordinary = repo.working_copy().unwrap();
+        assert!(!ordinary.divergent);
+
+        // `commits_of_change` is how the pane offers both versions to choose between,
+        // and it is the query the bare change id cannot express.
+        let sides = repo.commits_of_change(&change_id).unwrap();
+        assert_eq!(sides.len(), 2, "both versions, by change id: {sides:?}");
+        let mut ids: Vec<&str> = sides.iter().map(|s| s.commit_id.as_str()).collect();
+        let mut expected: Vec<&str> = visible.iter().map(|s| s.commit_id.as_str()).collect();
+        ids.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(ids, expected);
+        // The same call on an ordinary change answers with the one commit, so the
+        // frontend has no second code path for the case that is not divergent.
+        assert_eq!(repo.commits_of_change(&ordinary.change_id).unwrap().len(), 1);
     }
 
     /// `--ignore-immutable` is opt-in per handle, and the default handle must
