@@ -2352,10 +2352,19 @@ jj-app .describe textarea:focus {
 
 /* ---- Change detail ---- */
 
+/* The card is as tall as what is in it, up to the whole pane.
+   `flex: 0 1 auto` against the diff's `flex: 1 1 0` is what states that in one
+   line: with room to spare the card sits at its content height and the diff
+   takes the rest, and when the content overruns the pane the shrink is charged
+   entirely to the card — a zero flex-basis has a zero scaled shrink factor, so
+   the diff cannot give up height it never claimed. It was `max-height: 44%`,
+   which capped a long description at under half the window and left the reader
+   scrolling a box inside a page. */
 jj-app .detail {
   padding: var(--jj-s-4) var(--jj-s-5) var(--jj-s-5);
   overflow-y: auto;
-  max-height: 44%;
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 /* The hit target is the card's full width. Negative margins cancel the card's
@@ -2441,8 +2450,6 @@ jj-app .detail-desc {
   font-size: var(--jj-text-md);
   line-height: 1.6;
   max-width: 78ch;
-  max-height: 15em;
-  overflow-y: auto;
   white-space: pre-wrap;
   color: var(--jj-fg-soft);
 }
