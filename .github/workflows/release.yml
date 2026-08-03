@@ -1,0 +1,98 @@
+# Signed, notarized macOS builds. Deliberately separate from app.yml: that one
+# runs on every PR, including from forks, and must never have the signing
+# secrets in scope. This one runs only on a tag the maintainer pushed.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    runs-on: macos-15
+    # A GitHub Environment, not plain repo secrets: it can require a reviewer
+    # before the job starts and can be restricted to tags matching v*, so a
+    # workflow added on a branch cannot reach the certificate.
+    environment: release
+    permissions:
+      contents: write # create the release and upload the dmg
+      id-token: write # build provenance
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # notarytool wants the key as a file. RUNNER_TEMP is outside the
+      # workspace, so it cannot be picked up by the bundler or committed, and
+      # the runner is destroyed after the job.
+      - name: Stage the App Store Connect key
+        run: |
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc.p8"
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+
+      - uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing. CI=true makes the bundler import the .p12 into a throwaway
+          # keychain it creates and deletes, instead of touching the login one.
+          CI: "true"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Notarization, via an App Store Connect key rather than an Apple ID
+          # and app-specific password: it is scoped to Developer-level access,
+          # is revocable on its own, and is not a credential for the account.
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/asc.p8
+        with:
+          # deb/rpm are in tauri.conf.json for Linux; naming the bundles here
+          # keeps the macOS job from trying to produce them.
+          args: --target universal-apple-darwin --bundles app,dmg
+          tagName: ${{ github.ref_name }}
+          releaseName: jjdiff ${{ github.ref_name }}
+          releaseDraft: true
+
+      # Independent of the bundler's own claim to have done it. A dmg that is
+      # signed but not stapled installs fine on the build machine and fails on
+      # a machine that has never talked to Apple about it.
+      - name: Verify the signature and the stapled ticket
+        run: |
+          set -euo pipefail
+          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/jjdiff.app
+          dmg=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=4 "$app" 2>&1 | grep -q 'flags=.*runtime' \
+            || { echo "hardened runtime missing"; exit 1; }
+          spctl --assess --type execute --verbose=4 "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
+
+      - uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        with:
+          subject-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
