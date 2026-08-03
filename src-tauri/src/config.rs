@@ -66,7 +66,29 @@ pub struct DescribeConfig {
     /// Extra instructions appended to the message-generation prompt — house
     /// rules the diff and the recent history cannot convey on their own.
     pub prompt: String,
+    /// Model for message generation, overriding `[walkthrough] *-model`.
+    ///
+    /// Its own key because the two tasks want different models. Writing a
+    /// commit message is summarising a diff that is already in the prompt; a
+    /// walkthrough is a careful reading of it. Measured on a 39KB diff through
+    /// the Claude CLI, the difference between the two tiers was 14.3s and 3.5s
+    /// for the same message — most of it output tokens, since the larger model
+    /// wrote 816 of them where the smaller wrote 109.
+    ///
+    /// Empty means [`DEFAULT_CLAUDE_DESCRIBE_MODEL`] on the Claude backend and
+    /// the CLI's own default on the others, where jjdiff has no measurement to
+    /// justify naming one. It deliberately does *not* fall back to the
+    /// walkthrough model: that key is set to buy thoroughness on a review, and
+    /// inheriting it here would spend it on a one-line summary.
+    pub model: String,
 }
+
+/// What message generation asks the Claude CLI for when nothing is configured.
+///
+/// Named rather than left to the CLI, which is how this got slow: no `--model`
+/// meant Claude Code's own default, and that is the largest model. Nothing
+/// chose it for this task.
+pub const DEFAULT_CLAUDE_DESCRIBE_MODEL: &str = "claude-sonnet-5";
 
 /// `[editor]` — how "Open in Editor" launches an external editor.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -112,6 +134,23 @@ impl WalkthroughConfig {
             backend: selected,
             model: (!model.is_empty()).then_some(model),
         }
+    }
+
+    /// The same CLI, pointed at the model message generation wants.
+    ///
+    /// Takes `[describe] model` if set; otherwise names a default on the Claude
+    /// backend and leaves the others to the CLI. The *backend* is still
+    /// `[walkthrough] backend` — which agent CLI you drive is one choice, and
+    /// which model it runs is the one that differs by task.
+    pub fn cli_backend_for_describe(&self, describe: &DescribeConfig) -> crate::walkthrough::CliBackend {
+        let mut cli = self.cli_backend();
+        let chosen = describe.model.trim();
+        if !chosen.is_empty() {
+            cli.model = Some(chosen.to_string());
+        } else if matches!(cli.backend, crate::walkthrough::Backend::Claude) {
+            cli.model = Some(DEFAULT_CLAUDE_DESCRIBE_MODEL.to_string());
+        }
+        cli
     }
 
     /// Model override for whichever backend is selected.
@@ -225,6 +264,7 @@ const WRITABLE: &[(&str, &str, Kind)] = &[
     ("walkthrough", "pi-model", Kind::Str),
     ("walkthrough", "prompt", Kind::Str),
     ("describe", "prompt", Kind::Str),
+    ("describe", "model", Kind::Str),
     ("editor", "command", Kind::Str),
 ];
 
@@ -317,6 +357,50 @@ mod tests {
         let backend = crate::walkthrough::Backend::parse(&config.walkthrough.backend);
         assert_eq!(backend, crate::walkthrough::Backend::OpenCode);
         assert_eq!(config.walkthrough.model_for(backend), "anthropic/claude-sonnet-4-6");
+    }
+
+    /// Message generation names its own model, and does not inherit the
+    /// walkthrough's.
+    ///
+    /// The default matters more than it looks: with no `--model` the Claude CLI
+    /// picks its own, which is the largest model, and that is how a one-line
+    /// commit message came to take 14s. The non-inheritance matters too —
+    /// `[walkthrough] claude-model` is set to buy thoroughness on a review, and
+    /// spending it on a summary is the opposite of what the setter asked for.
+    #[test]
+    fn message_generation_names_its_own_model_and_never_inherits_the_walkthroughs() {
+        use crate::walkthrough::Backend;
+
+        // Nothing configured: a named default rather than the CLI's own.
+        let bare: Config = toml::from_str("").unwrap();
+        let cli = bare.walkthrough.cli_backend_for_describe(&bare.describe);
+        assert_eq!(cli.model.as_deref(), Some(DEFAULT_CLAUDE_DESCRIBE_MODEL));
+        assert!(cli.args().contains(&"--model".to_string()), "{:?}", cli.args());
+
+        // A walkthrough model is not a describe model.
+        let walk: Config =
+            toml::from_str("[walkthrough]\nclaude-model = \"claude-opus-5\"\n").unwrap();
+        assert_eq!(walk.walkthrough.cli_backend().model.as_deref(), Some("claude-opus-5"));
+        assert_eq!(
+            walk.walkthrough.cli_backend_for_describe(&walk.describe).model.as_deref(),
+            Some(DEFAULT_CLAUDE_DESCRIBE_MODEL),
+            "the walkthrough's model must not follow the message"
+        );
+
+        // And an explicit one wins over the default.
+        let own: Config = toml::from_str("[describe]\nmodel = \"claude-haiku-4-5\"\n").unwrap();
+        assert_eq!(
+            own.walkthrough.cli_backend_for_describe(&own.describe).model.as_deref(),
+            Some("claude-haiku-4-5")
+        );
+
+        // Other backends keep the CLI's default: jjdiff has measured nothing
+        // there and a guessed model id is a hard failure, not a slow one.
+        let codex: Config = toml::from_str("[walkthrough]\nbackend = \"codex\"\n").unwrap();
+        let cli = codex.walkthrough.cli_backend_for_describe(&codex.describe);
+        assert_eq!(cli.backend, Backend::Codex);
+        assert_eq!(cli.model, None);
+        assert!(!cli.args().contains(&"--model".to_string()));
     }
 
     /// A model set without a backend still reaches the CLI's argv.

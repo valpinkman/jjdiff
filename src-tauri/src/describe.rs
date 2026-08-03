@@ -80,6 +80,47 @@ fn render(files: &[FilePatch]) -> String {
     outline
 }
 
+/// How much of each recent message the prompt carries as a style example.
+///
+/// The examples are there to convey *convention* — prefix style, mood,
+/// capitalisation, whether bodies are written at all — and the opening of a
+/// message carries all of that. What the rest of it carries is length, and the
+/// prompt's next sentence is "match their style", so the model matches that
+/// too: on this repository, whose messages run to several thousand characters,
+/// the whole ones produced a 2861-token commit message and 36 seconds of
+/// waiting for it. Excerpted to 600 the same prompt answers in 9 with 410, and
+/// the convention still lands. A demonstration outweighs an instruction, and
+/// the instruction here already said "one to three short paragraphs".
+const MAX_EXAMPLE_CHARS: usize = 600;
+
+/// One example message, cut to whole lines and marked where it was cut.
+///
+/// Line-wise so a truncated example is never a half-sentence, and marked so the
+/// model reads a long message that has been shortened rather than a repository
+/// whose messages stop mid-thought — the ellipsis is a style example too.
+fn style_excerpt(message: &str) -> String {
+    let message = message.trim();
+    if message.len() <= MAX_EXAMPLE_CHARS {
+        return message.to_string();
+    }
+    let mut kept = String::new();
+    for line in message.lines() {
+        if !kept.is_empty() && kept.len() + line.len() + 1 > MAX_EXAMPLE_CHARS {
+            break;
+        }
+        if !kept.is_empty() {
+            kept.push('\n');
+        }
+        kept.push_str(line);
+    }
+    // A first line longer than the budget: keep it, since the subject is the
+    // single most useful thing here and half of one teaches nothing.
+    if kept.is_empty() {
+        kept.push_str(message.lines().next().unwrap_or_default());
+    }
+    format!("{}\n…", kept.trim_end())
+}
+
 /// Build the prompt. `recent` is newest-first; empty is fine, it just means the
 /// agent falls back on its own conventions.
 pub fn build_prompt(files: &[FilePatch], recent: &[String], extra: &str) -> Result<String, String> {
@@ -93,7 +134,7 @@ pub fn build_prompt(files: &[FilePatch], recent: &[String], extra: &str) -> Resu
             "\nRecent messages from this repository, newest first — match their style:\n",
         );
         for message in recent {
-            block.push_str(&format!("\n---\n{}\n", message.trim()));
+            block.push_str(&format!("\n---\n{}\n", style_excerpt(message)));
         }
         block.push_str("---\n");
         block
@@ -221,6 +262,47 @@ mod tests {
         assert!(prompt.contains("file list only"));
         assert!(prompt.contains("big.rs"));
         assert!(!prompt.contains(&"old ".repeat(120)));
+    }
+
+    /// The examples teach length as surely as they teach style, so they are
+    /// excerpted — pinned because the failure is invisible in the output and
+    /// shows up only as a wait: whole examples on this repository's own history
+    /// produced a 2861-token message in 36s where excerpts give 410 in 9.
+    #[test]
+    fn style_examples_are_excerpted_so_they_teach_convention_and_not_length() {
+        // Short enough to stand as it is: no marker, nothing removed.
+        let short = ":memo: (docs): Fix a typo\n\nIt was spelled wrong.";
+        assert_eq!(style_excerpt(short), short);
+
+        // A long one keeps its opening, is cut on a line boundary, and says so.
+        let long = format!(
+            ":sparkles: (forge): Open a pull request\n\n{}",
+            "A paragraph of reasoning that runs on.\n".repeat(40)
+        );
+        let excerpt = style_excerpt(&long);
+        assert!(excerpt.starts_with(":sparkles: (forge): Open a pull request"), "{excerpt}");
+        assert!(excerpt.ends_with('…'), "a cut example says it was cut: {excerpt}");
+        assert!(excerpt.len() < MAX_EXAMPLE_CHARS + 40, "still bounded: {}", excerpt.len());
+        assert!(
+            excerpt.lines().all(|line| long.contains(line) || line == "…"),
+            "cut between lines, never inside one"
+        );
+
+        // A subject longer than the whole budget is kept anyway — half a subject
+        // teaches nothing, and this is the one line always worth showing.
+        let huge_subject = "x".repeat(MAX_EXAMPLE_CHARS * 2);
+        assert!(style_excerpt(&huge_subject).starts_with(&huge_subject));
+
+        // And the prompt actually uses it.
+        let files = vec![FilePatch {
+            path: "a.rs".into(),
+            ..parse_git_patch("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n")
+                .unwrap()
+                .remove(0)
+        }];
+        let prompt = build_prompt(&files, std::slice::from_ref(&long), "").unwrap();
+        assert!(prompt.contains('…'), "the excerpt reached the prompt");
+        assert!(!prompt.contains(&long), "the whole message did not");
     }
 
     #[test]

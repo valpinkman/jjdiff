@@ -50,6 +50,10 @@ export function unpushedAndUnnamed(
   unpushed: ReadonlySet<string>,
   statuses: readonly BookmarkStatus[],
 ): boolean {
-  if (!unpushed.has(change.changeId)) return false;
+  // By commit id. The set holds commits, because "is this on a remote" is a
+  // question about one snapshot and a divergent change has several — asked by
+  // change id, publishing either one answered for both, and the graph put
+  // "never been pushed" on a commit that was.
+  if (!unpushed.has(change.commitId)) return false;
   return !change.bookmarks.some((bookmark) => worstTracking(statuses, bookmark)?.ahead);
 }

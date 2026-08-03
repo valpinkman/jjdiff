@@ -72,10 +72,14 @@ export interface RepoState {
   /** Tracking state per bookmark; empty when the repo has no remotes. */
   bookmarks: BookmarkStatus[];
   /**
-   * Change ids of work that exists on no remote — the half `bookmarks` cannot
-   * see. A change with no bookmark tracks nothing, so it has no ahead count and
-   * would never appear there however long it went unpushed. Empty when the repo
-   * has no remote at all, where "unpushed" means nothing.
+   * **Commit** ids of work that exists on no remote — the half `bookmarks`
+   * cannot see. A change with no bookmark tracks nothing, so it has no ahead
+   * count and would never appear there however long it went unpushed. Empty
+   * when the repo has no remote at all, where "unpushed" means nothing.
+   *
+   * Commits and not changes, unlike almost everything else jjdiff keys: the two
+   * visible commits of a divergent change can disagree about this, and one
+   * answer for both put the badge on a published commit.
    */
   unpushed: string[];
   /** Every workspace attached to this repo, this one included — so always at least one. */
@@ -292,6 +296,13 @@ export interface Config {
    */
   describe: {
     prompt: string;
+    /**
+     * Model for message generation. Empty means a jjdiff-chosen default on the
+     * Claude backend — writing a message is summarising a diff the prompt
+     * already carries, and letting the CLI pick meant the largest model and a
+     * 14-second wait for one line.
+     */
+    model: string;
   };
   editor: {
     /** Template with {file}, {line}, {repo}; empty = no editor configured. */

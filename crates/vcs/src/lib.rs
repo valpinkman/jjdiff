@@ -668,7 +668,15 @@ impl Repo {
         Ok(statuses)
     }
 
-    /// Change ids of every commit that exists here and on no remote.
+    /// Commit ids of every commit that exists here and on no remote.
+    ///
+    /// **Commit ids, not change ids**, and this is the rare place where the key
+    /// review state is filed under is the wrong answer. "Is this on a remote"
+    /// is a question about one snapshot: a **divergent** change has several
+    /// visible commits under one change id, and they need not agree — publish
+    /// one and the other is still unpushed. Reported by change id, the answer
+    /// for either became the answer for both, so the pushed commit wore the
+    /// "never been pushed" badge in the graph. Pinned below.
     ///
     /// [`bookmark_statuses`](Self::bookmark_statuses) answers the same question for work
     /// that has a *name*, and is the only half most tools show. It cannot see the rest:
@@ -700,7 +708,7 @@ impl Repo {
             "-r",
             r#"remote_bookmarks().. ~ (empty() & description(exact:""))"#,
             "-T",
-            r#"change_id ++ "\n""#,
+            r#"commit_id ++ "\n""#,
         ])?;
         Ok(out.lines().map(str::trim).filter(|line| !line.is_empty()).map(String::from).collect())
     }
@@ -1482,7 +1490,7 @@ mod tests {
         // `bookmark_statuses` forever, which is the gap this closes.
         std::fs::write(work.join("b.txt"), "two\n").unwrap();
         jj(&["commit", "-m", "nameless work"]);
-        let nameless = repo.log("@-").unwrap()[0].change_id.clone();
+        let nameless = repo.log("@-").unwrap()[0].commit_id.clone();
         assert!(
             repo.bookmark_statuses().unwrap().iter().all(|status| status.ahead == 0),
             "no bookmark moved, so tracking says nothing"
@@ -1493,6 +1501,88 @@ mod tests {
         // counting it would leave the badge on for good.
         jj(&["new"]);
         assert_eq!(repo.unpushed().unwrap().len(), 1, "the new empty @ is not unpushed work");
+    }
+
+    /// Commit ids and not change ids, driven against a real divergence.
+    ///
+    /// A divergent change is two visible commits under one change id, and their
+    /// answers to "is this published" differ the moment one of them is. Keyed by
+    /// change id the two shared an answer, so the graph put "never been pushed"
+    /// on a commit sitting on the remote — the badge is only worth having if it
+    /// is right about which of the two it is on.
+    #[test]
+    fn unpushed_tells_two_commits_of_a_divergent_change_apart() {
+        let _guard = jj_serial();
+        if !jj_available() {
+            eprintln!("skipping: jj not installed");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let origin = tmp.path().join("origin.git");
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let git_out = Command::new("git")
+            .args(["init", "--bare", "-q", "origin.git"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git runs");
+        assert!(git_out.status.success());
+        init_repo(&work);
+        let jj = |args: &[&str]| {
+            let out = Command::new("jj")
+                .args(["--config", "signing.behavior=drop"])
+                .args(args)
+                .current_dir(&work)
+                .env("JJ_USER", "Test")
+                .env("JJ_EMAIL", "test@example.com")
+                .output()
+                .expect("jj runs");
+            assert!(out.status.success(), "jj {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let repo = Repo::discover(&work).unwrap();
+        jj(&["git", "remote", "add", "origin", origin.to_str().unwrap()]);
+
+        // One commit, published.
+        std::fs::write(work.join("a.txt"), "one\n").unwrap();
+        jj(&["commit", "-m", "published"]);
+        jj(&["bookmark", "set", "main", "-r", "@-"]);
+        jj(&["git", "push", "-b", "main"]);
+        let published = repo.log("main").unwrap()[0].commit_id.clone();
+        let change = repo.log("main").unwrap()[0].change_id.clone();
+        assert!(repo.unpushed().unwrap().is_empty(), "it is on the remote");
+
+        // Divergence, the way jj makes it: rewrite a commit at an operation that
+        // did not see the first rewrite, so both survive under one change id.
+        // `--ignore-immutable` because it is published, which is exactly the
+        // commit this test needs on both sides of the divergence.
+        let before = repo.current_operation().unwrap();
+        jj(&["describe", "--ignore-immutable", "-r", &published, "-m", "rewritten once"]);
+        jj(&[
+            "describe",
+            "--ignore-immutable",
+            "--at-operation",
+            &before,
+            "-r",
+            &published,
+            "-m",
+            "rewritten twice",
+        ]);
+
+        let commits = repo.log(&format!("change_id({change})")).unwrap();
+        assert_eq!(commits.len(), 2, "two visible commits under one change id: {commits:?}");
+
+        // The published one is still published and the rewrite is not, and the
+        // set has to say so about each of them separately.
+        let unpushed = repo.unpushed().unwrap();
+        for commit in &commits {
+            assert_eq!(
+                unpushed.contains(&commit.commit_id),
+                commit.commit_id != published,
+                "{} should{} be unpushed",
+                commit.commit_id,
+                if commit.commit_id == published { " not" } else { "" }
+            );
+        }
     }
 
     /// A **divergent** change — one change id over several visible commits — is

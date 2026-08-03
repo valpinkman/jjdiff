@@ -219,10 +219,11 @@ struct RepoState {
     /// Ahead/behind for every bookmark tracking a remote. Empty on a repo with
     /// no remotes, which is not an error — it is most repos jjdiff opens.
     bookmarks: Vec<BookmarkStatus>,
-    /// Change ids of work that is on no remote — the other half of `bookmarks`.
+    /// Commit ids of work that is on no remote — the other half of `bookmarks`.
     /// A change with no bookmark tracks nothing, so it can never appear there
     /// however long it goes unpushed; this is what makes it visible. Empty when
     /// the repo has no remote at all, where the question means nothing.
+    /// Commits rather than changes: see [`Repo::unpushed`].
     unpushed: Vec<String>,
     /// Every workspace attached to this repo, this one included. Always at least one, so
     /// the pane can tell "one workspace" from "not loaded yet".
@@ -1294,7 +1295,7 @@ async fn generate_description(
             .take(5)
             .map(|change| change.description)
             .collect();
-        let backend = cfg.walkthrough.cli_backend();
+        let backend = cfg.walkthrough.cli_backend_for_describe(&cfg.describe);
         describe::generate(&backend, &files, &recent, &cfg.describe.prompt)
     })
     .await

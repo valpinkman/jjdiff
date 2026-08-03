@@ -482,6 +482,27 @@ export class SettingsView extends OverlayElement {
           </span>
         </div>
 
+        <div class="row">
+          <span class="label">
+            <strong>Model</strong>
+            <small>Overrides the walkthrough model above, because the two jobs differ: a
+              message summarises a diff the prompt already carries, while a walkthrough is a
+              careful reading of it. Left empty jjdiff asks Claude for a fast model rather
+              than letting the CLI choose, which is its largest — on a 39KB diff that was the
+              difference between 3 seconds and 14.</small>
+          </span>
+          <span class="control">
+            <input
+              type="text"
+              placeholder="claude-sonnet-5 (default)"
+              .value=${config.describe.model}
+              @keydown=${this.onTextKey}
+              @change=${this.commit('describe', 'model', config.describe.model)}
+              @blur=${this.commit('describe', 'model', config.describe.model)}
+            />
+          </span>
+        </div>
+
         <div class="group">External editor</div>
 
         <div class="row stacked">

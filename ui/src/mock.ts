@@ -98,7 +98,9 @@ export const mockRepoState: RepoState = {
   // The other half, and the case bookmarks cannot express: `pool` carries no
   // bookmark at all, so nothing above says it is unpushed. `retry` is on
   // `sync-retries`, which is ahead — the two renderings have to differ.
-  unpushed: [wc.changeId, retry.changeId, pool.changeId],
+  // Commit ids, as the backend sends (see `Repo::unpushed`); as change ids
+  // these matched nothing and the browser build drew no badge at all.
+  unpushed: [wc.commitId, retry.commitId, pool.commitId],
   // Three workspaces, because one would exercise none of the pane: the current one, a
   // second holding a different change, and one whose directory has been deleted — the
   // state whose only remaining action is to forget it.
@@ -219,7 +221,7 @@ export const mockConfig: Config = {
     piModel: '',
     prompt: '',
   },
-  describe: { prompt: '' },
+  describe: { prompt: '', model: '' },
   editor: { command: 'zed {file}:{line}' },
 };
 

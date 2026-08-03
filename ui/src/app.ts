@@ -2946,20 +2946,30 @@ export class App extends LitElement {
     }
     this.generating = true;
     void this.run(async () => {
-      const ready: Change[] = [];
-      for (const [index, change] of order.entries()) {
+      // Concurrently, a few at a time. Each change's walkthrough is an
+      // independent agent run over its own diff — nothing in one informs
+      // another — and they used to go one after the next, so a five-change
+      // stack cost five agent runs end to end before the first page appeared.
+      //
+      // Bounded rather than all at once: every slot is a CLI subprocess and an
+      // API call, and a twenty-change stack launching twenty of them is a way
+      // to be rate-limited and to make the machine unusable while you wait.
+      // Four is small enough to be polite and enough to hide most of the
+      // latency, since the wait is the slowest lane rather than the sum.
+      const CONCURRENCY = 4;
+      const done: (Change | null)[] = new Array(order.length).fill(null);
+      let started = 0;
+      let finished = 0;
+      const walk = async (index: number, change: Change) => {
         const status = await getWalkthrough(
           change.changeId,
           this.revsetFor(change),
           this.ignoreWhitespace,
         );
         if (status.walkthrough && !status.stale) {
-          ready.push(change);
-          continue;
+          done[index] = change;
+          return;
         }
-        this.actionInfo = `Generating walkthrough ${index + 1}/${order.length} — ${
-          change.description.split('\n')[0] || change.changeId.slice(0, 8)
-        }…`;
         try {
           await generateWalkthrough(
             change.changeId,
@@ -2969,12 +2979,31 @@ export class App extends LitElement {
               change.description.split('\n')[0] || '(no description)'
             }`,
           );
-          ready.push(change);
+          done[index] = change;
         } catch (error) {
           // A change that can't be walked (e.g. only binary files) is skipped, not fatal.
           this.actionInfo = `Skipped ${change.changeId.slice(0, 8)}: ${String(error)}`;
         }
-      }
+      };
+      // Counted, not named. In order the message could say which change was
+      // being read; out of order there are four at once and naming any one of
+      // them is picking a favourite, so this reports progress and nothing else.
+      const lane = async () => {
+        while (started < order.length) {
+          const index = started++;
+          await walk(index, order[index]!);
+          finished++;
+          if (finished < order.length) {
+            this.actionInfo = `Generating walkthroughs — ${finished}/${order.length} done…`;
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, order.length) }, () => lane()),
+      );
+      // Indexed on the way in and compacted here, so the reading order is the
+      // stack's however the lanes finished.
+      const ready = done.filter((change): change is Change => change !== null);
       if (ready.length === 0) {
         throw new Error('no change in the stack produced a walkthrough');
       }
