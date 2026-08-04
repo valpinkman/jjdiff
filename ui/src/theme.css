@@ -2146,18 +2146,31 @@ jj-app .tag.muted {
   color: var(--jj-fg-muted);
 }
 
-jj-app .tag-x {
+jj-app .tag-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
   border: 0;
   background: none;
   color: inherit;
   cursor: pointer;
   padding: 0;
-  font-size: 12px;
   line-height: 1;
   opacity: 0.55;
 }
 
-jj-app .tag-x:hover {
+jj-app .tag-action svg {
+  width: 10px;
+  height: 10px;
+}
+
+jj-app .tag-x {
+  font-size: 12px;
+}
+
+jj-app .tag-action:hover {
   opacity: 1;
 }
 

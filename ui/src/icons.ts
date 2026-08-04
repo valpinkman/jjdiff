@@ -80,6 +80,13 @@ export const iconCommit = icon(svg`
   <path d="M8 1.8v3.3" />
   <path d="M8 10.9v3.3" />`);
 
+/** Move a bookmark/ref from one commit to another. */
+export const iconMoveRef = icon(svg`
+  <circle cx="4.2" cy="4.2" r="1.6" />
+  <circle cx="11.8" cy="11.8" r="1.6" />
+  <path d="M5.5 5.5 10.5 10.5" />
+  <path d="M10.5 7.5v3h-3" />`);
+
 /* ---- Sidebar rail. One per pane; the pane's name is its tooltip and its title. ---- */
 
 /** Log: the commit graph — a trunk with a branch off it. */

@@ -130,6 +130,7 @@ import {
   iconGraph,
   iconWorkspaces,
   iconInfo,
+  iconMoveRef,
   iconSearch,
   iconSparkle,
   iconSplit,
@@ -293,7 +294,7 @@ type RepoScoped =
   | 'diagram'
   | 'rebasing'
   | 'composingProposal'
-  | 'proposalPicker'
+  | 'commandPicker'
   | 'fileMenu'
   | 'viewMode'
   | 'versionPair'
@@ -367,11 +368,11 @@ function freshRepoScope() {
     // An overlay opened over the old repo still refers to it: the rebase picker
     // holds one of its changes — and a second instance reaches this reset with
     // no user click, so confirming would rebase by an id the new repo does not
-    // have — the proposal list holds entries closed over its PR numbers, and the
-    // file menu names a file that is no longer on screen.
+    // have — a command-bar picker holds entries closed over repo-local ids, and
+    // the file menu names a file that is no longer on screen.
     rebasing: null,
     composingProposal: null,
-    proposalPicker: null,
+    commandPicker: null,
     fileMenu: null,
 
     viewMode: 'full' as ViewMode,
@@ -686,11 +687,11 @@ export class App extends LitElement {
   /** Review composer state; null when closed. */
   @state() private reviewDraft: { verdict: ReviewVerdict; body: string } | null = null;
   /**
-   * When set, the command bar shows these instead of the app commands — the
-   * proposal picker borrows the palette rather than duplicating its filtering
-   * and keyboard handling. Cleared when the bar closes.
+   * When set, the command bar shows these instead of the app commands — short
+   * pickers borrow the palette rather than duplicating its filtering and
+   * keyboard handling. Cleared when the bar closes.
    */
-  @state() private proposalPicker: Command[] | null = null;
+  @state() private commandPicker: Command[] | null = null;
 
   private unlisten: (() => void) | null = null;
   private unlistenMenu: (() => void) | null = null;
@@ -1428,7 +1429,7 @@ export class App extends LitElement {
         this.lastOutcome = { message: `No open ${this.forge?.noun ?? 'pull request'}s.`, operation: '' };
         return;
       }
-      this.proposalPicker = proposals.map((proposal) => ({
+      this.commandPicker = proposals.map((proposal) => ({
         id: `pr-${proposal.number}`,
         label: `#${proposal.number} ${proposal.title}`,
         hint: `${proposal.author}${proposal.draft ? ' · draft' : ''}`,
@@ -1741,8 +1742,20 @@ export class App extends LitElement {
         (bookmark) => html`<span class="tag"
           >${bookmark}${this.renderTracking(bookmark)}
           <button
-            class="tag-x"
+            class="tag-action"
+            title="Move bookmark"
+            aria-label=${`Move bookmark ${bookmark}`}
+            @click=${(event: Event) => {
+              event.stopPropagation();
+              this.pickBookmarkMoveDestination(bookmark, change);
+            }}
+          >
+            ${iconMoveRef}
+          </button>
+          <button
+            class="tag-action tag-x"
             title="Delete bookmark"
+            aria-label=${`Delete bookmark ${bookmark}`}
             @click=${(event: Event) => {
               // The detail card's header is itself a click target (it folds), so
               // this must not reach it. Harmless on the working-copy card, which
@@ -2063,7 +2076,7 @@ export class App extends LitElement {
     if (matchesShortcut(event, this.commandBarShortcut)) {
       event.preventDefault();
       // Always the command palette, never a stale proposal picker.
-      this.proposalPicker = null;
+      this.commandPicker = null;
       this.barOpen = !this.barOpen;
       return;
     }
@@ -4131,6 +4144,89 @@ export class App extends LitElement {
     void this.command('bookmark', () => setBookmark(wanted, revisionOf(change)));
   }
 
+  private knownChanges(): Change[] {
+    const repo = this.repo;
+    if (!repo) return [];
+    const changes: Change[] = [];
+    const seen = new Set<string>();
+    const add = (change: Change | null | undefined) => {
+      if (!change || seen.has(change.commitId)) return;
+      seen.add(change.commitId);
+      changes.push(change);
+    };
+    add(this.selectedChange);
+    add(repo.workingCopy);
+    repo.stack.forEach(add);
+    repo.graph.forEach(add);
+    return changes;
+  }
+
+  private bookmarkMoveEntries(): { name: string; from: Change }[] {
+    const entries: { name: string; from: Change }[] = [];
+    const seen = new Set<string>();
+    for (const change of this.knownChanges()) {
+      for (const name of change.bookmarks) {
+        if (seen.has(name)) continue;
+        seen.add(name);
+        entries.push({ name, from: change });
+      }
+    }
+    return entries;
+  }
+
+  private moveDestinations(from: Change): Change[] {
+    return this.knownChanges().filter((change) => change.changeId !== from.changeId);
+  }
+
+  private bookmarkChangeLabel(change: Change): string {
+    return change.description.split('\n')[0] || (change.workingCopy ? 'working copy' : change.changeId.slice(0, 8));
+  }
+
+  private bookmarkChangeHint(change: Change): string {
+    const parts = [change.changeId.slice(0, 12)];
+    if (change.workingCopy) parts.push('working copy');
+    if (change.bookmarks.length) parts.push(change.bookmarks.join(', '));
+    return parts.join(' · ');
+  }
+
+  private pickBookmarkToMove() {
+    const entries = this.bookmarkMoveEntries();
+    if (entries.length === 0) {
+      this.actionError = null;
+      this.actionInfo = 'No visible bookmarks to move.';
+      return;
+    }
+    if (entries.length === 1) {
+      this.pickBookmarkMoveDestination(entries[0]!.name, entries[0]!.from);
+      return;
+    }
+    this.commandPicker = entries.map(({ name, from }) => ({
+      id: `jj-bookmark-move-${name}`,
+      label: name,
+      hint: `currently on ${this.bookmarkChangeLabel(from)}`,
+      group: 'Move bookmark',
+      run: () => this.pickBookmarkMoveDestination(name, from),
+    }));
+    this.barOpen = true;
+  }
+
+  private pickBookmarkMoveDestination(name: string, from: Change) {
+    const destinations = this.moveDestinations(from);
+    if (destinations.length === 0) {
+      this.actionError = null;
+      this.actionInfo = `"${name}" has no visible destination to move to.`;
+      return;
+    }
+    this.commandPicker = destinations.map((to) => ({
+      id: `jj-bookmark-move-${name}-to-${to.commitId}`,
+      label: this.bookmarkChangeLabel(to),
+      hint: this.bookmarkChangeHint(to),
+      group: `Move "${name}" to`,
+      run: () => void this.moveBookmark({ name, from, to }),
+    }));
+    this.barOpen = true;
+  }
+
   /** The visible change a bookmark is currently on, if jjdiff can see it. */
   private changeCarrying(name: string): Change | null {
     const carries = (change: Change) => change.bookmarks.includes(name);
@@ -4156,13 +4252,11 @@ export class App extends LitElement {
    */
   private async moveBookmark({ name, from, to }: BookmarkDrop) {
     if (from.changeId === to.changeId) return;
-    const label = (change: Change) =>
-      change.description.split('\n')[0] || change.changeId.slice(0, 8);
     const tracking = this.tracking(name);
     const ok = await askConfirm({
-      heading: `Move "${name}" to "${label(to)}"?`,
+      heading: `Move "${name}" to "${this.bookmarkChangeLabel(to)}"?`,
       detail:
-        `The bookmark is on "${label(from)}" and would point at "${label(to)}" instead ` +
+        `The bookmark is on "${this.bookmarkChangeLabel(from)}" and would point at "${this.bookmarkChangeLabel(to)}" instead ` +
         '(jj bookmark set). No commits move, and nothing is published until you push.\n\n' +
         (tracking
           ? `It tracks ${tracking.remote}, so the next push sends the new position — ` +
@@ -4488,6 +4582,7 @@ export class App extends LitElement {
     const change = this.selectedChange;
     const isWc = this.isWorkingCopySelected;
     const stackSize = this.repo?.stack.filter((c) => !c.immutable && !c.empty).length ?? 0;
+    const bookmarkMoves = this.bookmarkMoveEntries();
     const commands: Command[] = [];
     const add = (group: string, entries: (Command | false)[]) => {
       for (const entry of entries) {
@@ -4561,6 +4656,11 @@ export class App extends LitElement {
           run: () => void this.openProposalComposer(),
         },
       { id: 'jj-bookmark', label: 'Create Bookmark…', run: () => void this.createBookmark() },
+      bookmarkMoves.length > 0 && {
+        id: 'jj-bookmark-move',
+        label: 'Move Bookmark…  (jj bookmark set)',
+        run: () => this.pickBookmarkToMove(),
+      },
       {
         id: 'jj-workspace-new',
         label: 'New Workspace…  (jj workspace add)',
@@ -5136,7 +5236,7 @@ export class App extends LitElement {
                 @click=${(event: Event) => {
                   // The row is the hit target — a 10px chevron was not clickable in
                   // practice. Nested controls (bookmark delete) opt out via stopPropagation.
-                  if ((event.target as HTMLElement).closest('.tag-x')) return;
+                  if ((event.target as HTMLElement).closest('.tag-action')) return;
                   this.detailCollapsed = !this.detailCollapsed;
                 }}
               >
@@ -5682,10 +5782,10 @@ export class App extends LitElement {
       </main>
       ${this.barOpen
         ? html`<jj-command-bar
-            .commands=${this.proposalPicker ?? this.commands}
+            .commands=${this.commandPicker ?? this.commands}
             @close=${() => {
               this.barOpen = false;
-              this.proposalPicker = null;
+              this.commandPicker = null;
             }}
           ></jj-command-bar>`
         : nothing}

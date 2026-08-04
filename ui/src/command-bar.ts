@@ -210,6 +210,11 @@ export class CommandBar extends OverlayElement {
   }
 
   private pick(command: Command) {
+    // Some commands replace the palette with a second-stage picker in the same
+    // turn. Clear the filter before the app swaps the command list, or the old
+    // query ("move", for example) filters the submenu immediately.
+    this.filter = '';
+    this.active = 0;
     this.dismiss();
     command.run();
   }
