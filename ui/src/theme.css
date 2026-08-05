@@ -1078,6 +1078,7 @@ jj-app .pr-conflict {
    toasts now, outside this pane entirely, which answers the same problem by
    construction: there is no rule to exempt them from. */
 jj-app main.showing-pr > *:not(.pr-view),
+jj-app main.showing-log > *:not(.log-view),
 jj-app main.showing-ops > *:not(.ops-view) {
   display: none;
 }
@@ -2310,6 +2311,7 @@ jj-app .search-bar {
    gesture as the empty state's copy and the working card's — one arrival
    animation, so a screen the user has not seen before still behaves the way
    the rest of the app taught them. */
+jj-app .log-view,
 jj-app .ops-view,
 jj-app .pr-view {
   animation: jj-rise var(--jj-t-3) var(--jj-ease-out);
@@ -4504,6 +4506,117 @@ jj-patch-view .file-header.stuck.closing {
 }
 .review-item.outdated {
   border-color: var(--jj-warn, #c89a2e);
+}
+
+/* ---- Full-page log view ---- */
+
+.log-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--jj-s-4);
+  padding: var(--jj-s-5) var(--jj-s-6) var(--jj-s-6);
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--jj-border);
+  border-radius: var(--jj-r-md);
+  background: var(--jj-surface);
+  box-shadow: var(--jj-shadow-card);
+  flex: 1;
+  min-height: 0;
+  margin-bottom: var(--jj-s-4);
+}
+
+.log-view-head {
+  display: flex;
+  align-items: center;
+  gap: var(--jj-s-3);
+  flex: none;
+}
+
+.log-view-title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.log-view-title h2 {
+  margin: 0;
+  font-size: var(--jj-text-title);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--jj-fg);
+}
+
+.log-view-title span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  color: var(--jj-fg-muted);
+  font-size: var(--jj-text-sm);
+}
+
+.log-view-title jj-orbs {
+  color: var(--jj-accent);
+}
+
+.log-view .revset-bar {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(260px, 1fr);
+  gap: var(--jj-s-3);
+  padding: 0;
+  flex: none;
+}
+
+.log-view .scope-menu {
+  min-width: 320px;
+}
+
+.log-view-graph {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: var(--jj-r-md);
+  background: var(--jj-bg-panel);
+  padding: var(--jj-s-2);
+}
+
+.log-loading {
+  position: sticky;
+  top: var(--jj-s-2);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--jj-s-2);
+  margin: var(--jj-s-1);
+  padding: 5px var(--jj-s-3);
+  border-radius: var(--jj-r-pill);
+  background: var(--jj-surface);
+  color: var(--jj-fg-muted);
+  font-size: var(--jj-text-sm);
+  font-weight: 550;
+  box-shadow: var(--jj-shadow-card);
+}
+
+.log-loading jj-orbs {
+  color: var(--jj-accent);
+}
+
+.log-view-graph jj-log-graph {
+  display: block;
+  min-width: 760px;
+}
+
+@media (max-width: 820px) {
+  .log-view .revset-bar {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .log-view-graph jj-log-graph {
+    min-width: 620px;
+  }
 }
 
 /* ---- Operation log in main view ---- */

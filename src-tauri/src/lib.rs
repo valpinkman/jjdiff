@@ -100,6 +100,7 @@ struct AppState {
 const MAIN_WINDOW: &str = "main";
 
 const MAX_RECENTS: usize = 8;
+const DEFAULT_GRAPH_REVSET: &str = "ancestors(@ | bookmarks() | working_copies())";
 
 fn load_recents(path: &PathBuf) -> Vec<String> {
     std::fs::read_to_string(path)
@@ -214,7 +215,7 @@ struct RepoState {
     jj_version: String,
     working_copy: Change,
     stack: Vec<Change>,
-    /// Recent history (ancestors of @ and all bookmarks) for the graph view.
+    /// Recent history for the graph view, including every workspace head.
     graph: Vec<Change>,
     /// Ahead/behind for every bookmark tracking a remote. Empty on a repo with
     /// no remotes, which is not an error — it is most repos jjdiff opens.
@@ -411,7 +412,7 @@ async fn repo_state(
     revset: Option<String>,
 ) -> Result<RepoState, String> {
     let repo = repo_handle(&state, &window)?;
-    let graph_revset = revset.unwrap_or_else(|| "ancestors(@ | bookmarks())".to_string());
+    let graph_revset = revset.unwrap_or_else(|| DEFAULT_GRAPH_REVSET.to_string());
     blocking(move || {
         // Tolerated rather than propagated, for the same reason as bookmarks below: a
         // repo whose workspace list cannot be read is still perfectly reviewable.
@@ -532,10 +533,10 @@ async fn interdiff_since_reviewed(
 /// Every visible commit under `change_id` — the sides of a divergent change.
 ///
 /// One element for an ordinary change, so the frontend has no second code path for the
-/// common case. Not derivable from the graph already loaded: the default revset is
-/// `ancestors(@ | bookmarks())` and a divergent sibling is usually neither, so the pane
-/// can know a change is divergent (the flag is per commit) and still have nothing to
-/// offer as the other version.
+/// common case. Not derivable from the graph already loaded: the default revset follows
+/// visible heads, and a divergent sibling is usually none of those, so the pane can know a
+/// change is divergent (the flag is per commit) and still have nothing to offer as the other
+/// version.
 #[tauri::command]
 async fn change_commits(
     window: tauri::Window,
@@ -2240,7 +2241,12 @@ pub fn run(args: Args) {
 
 #[cfg(test)]
 mod tests {
-    use super::pull_request_url;
+    use super::{pull_request_url, DEFAULT_GRAPH_REVSET};
+
+    #[test]
+    fn default_graph_revset_includes_workspace_heads() {
+        assert_eq!(DEFAULT_GRAPH_REVSET, "ancestors(@ | bookmarks() | working_copies())");
+    }
 
     #[test]
     fn scrapes_forge_pull_request_urls() {

@@ -299,9 +299,9 @@ impl Repo {
     /// is the only reason to call this. (jj 0.31; `MIN_JJ_VERSION` is 0.33.)
     ///
     /// Asked of jj rather than filtered out of the graph already on screen, because the
-    /// other side is routinely not on it: the default revset is `ancestors(@ | bookmarks())`
-    /// and a divergent sibling is typically neither. So the pane could say "divergent" —
-    /// the flag is per commit — while having nothing to show as the second version.
+    /// other side is routinely not on it: the default graph follows visible heads, not every
+    /// sibling of a divergent change. So the pane could say "divergent" — the flag is per
+    /// commit — while having nothing to show as the second version.
     pub fn commits_of_change(&self, change_id: &str) -> Result<Vec<Change>> {
         self.log(&format!("change_id({change_id})"))
     }

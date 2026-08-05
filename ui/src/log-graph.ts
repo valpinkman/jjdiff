@@ -44,9 +44,7 @@ export class LogGraph extends LitElement {
       transition:
         background-color var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
         color var(--jj-t-2, 180ms) var(--jj-ease-out, ease);
-      display: flex;
-      align-items: center;
-      gap: 7px;
+      display: block;
       width: 100%;
       height: ${ROW_H}px;
       border: 0;
@@ -62,9 +60,10 @@ export class LogGraph extends LitElement {
          what keeps the rail clear of the 2px selection bar *and* gives the
          working copy's halo room to breathe without being clipped. Padding here
          as well would just push the graph twice as far from the edge. */
-      padding: 0 10px 0 0;
+      padding: 0;
       cursor: pointer;
       box-sizing: border-box;
+      overflow: hidden;
     }
     .row:hover {
       background: var(--jj-wash);
@@ -97,8 +96,23 @@ export class LogGraph extends LitElement {
       }
     }
     svg {
-      flex: none;
+      position: absolute;
+      inset: 0 auto auto 0;
       display: block;
+      pointer-events: none;
+    }
+    .row-content {
+      position: absolute;
+      top: 0;
+      right: 10px;
+      bottom: 0;
+      left: var(--content-left);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      box-sizing: border-box;
+      padding-left: 4px;
     }
     /* Rails and mutable dots take their lane's hue (set per element); everything else
        keeps its meaning — immutable recedes, the working copy is the accent, conflicts
@@ -532,6 +546,8 @@ export class LogGraph extends LitElement {
       barred && change.commitId !== this.draggingId ? 'barred' : '',
     ].join(' ');
     const summary = change.description.split('\n')[0] ?? '';
+    const connectedLane = Math.max(row.lane, ...row.joins, ...row.forks);
+    const contentLeft = x(connectedLane) + DOT_R + 9;
 
     return html`
       <button
@@ -574,76 +590,78 @@ export class LogGraph extends LitElement {
             r=${DOT_R}
           />
         </svg>
-        ${change.bookmarks.map((bookmark) => {
-          const status = worstTracking(this.bookmarks, bookmark);
-          const moving = this.draggingBookmark?.name === bookmark;
-          return html`<span
-            class="tag ${moving ? 'moving' : ''}"
-            data-bookmark=${bookmark}
-            title=${
-              status?.ahead
-                ? `${bookmark} is ${status.ahead} commit${
-                    status.ahead === 1 ? '' : 's'
-                  } ahead of ${status.remote} — a push would send ${
-                    status.ahead === 1 ? 'it' : 'them'
-                  }\nDrag onto another change to move the bookmark there.`
-                : `${bookmark}\nDrag onto another change to move the bookmark there.`
-            }
-            >${bookmark}${
-              // Only ahead. `behind` is on the detail card, because it is not a
-              // property of *this* row: the commits the remote has and we do not
-              // are somewhere else entirely, and a `↓` here points at nothing on
-              // screen.
-              status?.ahead ? html`<span class="ahead">↑${status.ahead}</span>` : nothing
-            }</span
-          >`;
-        })}
-        ${
-          // Unpushed work with no bookmark to hang a count on. Deliberately not a
-          // number: there is no remote ref to be ahead *of*, so the honest claim
-          // is the binary one — this exists here and nowhere else.
-          unpushedAndUnnamed(change, this.unpushed, this.bookmarks)
-            ? html`<span
-                class="tag unpushed"
-                title="Not on any remote — this change has never been pushed, and has no bookmark to push it under"
-                >↑</span
-              >`
-            : nothing
-        }
-        ${
-          // `name@`, as jj writes it in its own log — for every workspace holding this
-          // commit *except* this window's own. That one is already marked by the dot and
-          // its halo, and labelling it too would put a tag on one row of every repo,
-          // including the overwhelming majority that have a single workspace.
-          change.workspaces
-            .filter((name) => name !== this.workspace)
-            .map(
-              (name) => html`<span class="tag workspace" title="Checked out in the ${name} workspace"
-                >${name}@</span
-              >`,
-            )
-        }
-        ${change.conflict ? html`<span class="tag warn">×</span>` : nothing}
-        ${
-          // Spelled out, unlike the conflict glyph beside it. A conflict has a
-          // red × everywhere in this app and in jj, so the mark is the word; a
-          // divergent change has no such vocabulary, and two rows carrying the
-          // same unexplained symbol would read as one more thing they share.
-          change.divergent
-            ? html`<span
-                class="tag warn"
-                title="Two visible commits share this change id — this is one of them, ${change.commitId.slice(
-                  0,
-                  12,
-                )}. Abandon the side you do not want to clear it."
-                >divergent<span class="which">${change.commitId.slice(0, 8)}</span></span
-              >`
-            : nothing
-        }
-        <span class="desc ${summary ? '' : 'empty-desc'}">
-          ${summary || (change.workingCopy ? 'working copy' : '(no description)')}
+        <span class="row-content" style=${`--content-left: ${contentLeft}px`}>
+          ${change.bookmarks.map((bookmark) => {
+            const status = worstTracking(this.bookmarks, bookmark);
+            const moving = this.draggingBookmark?.name === bookmark;
+            return html`<span
+              class="tag ${moving ? 'moving' : ''}"
+              data-bookmark=${bookmark}
+              title=${
+                status?.ahead
+                  ? `${bookmark} is ${status.ahead} commit${
+                      status.ahead === 1 ? '' : 's'
+                    } ahead of ${status.remote} — a push would send ${
+                      status.ahead === 1 ? 'it' : 'them'
+                    }\nDrag onto another change to move the bookmark there.`
+                  : `${bookmark}\nDrag onto another change to move the bookmark there.`
+              }
+              >${bookmark}${
+                // Only ahead. `behind` is on the detail card, because it is not a
+                // property of *this* row: the commits the remote has and we do not
+                // are somewhere else entirely, and a `↓` here points at nothing on
+                // screen.
+                status?.ahead ? html`<span class="ahead">↑${status.ahead}</span>` : nothing
+              }</span
+            >`;
+          })}
+          ${
+            // Unpushed work with no bookmark to hang a count on. Deliberately not a
+            // number: there is no remote ref to be ahead *of*, so the honest claim
+            // is the binary one — this exists here and nowhere else.
+            unpushedAndUnnamed(change, this.unpushed, this.bookmarks)
+              ? html`<span
+                  class="tag unpushed"
+                  title="Not on any remote — this change has never been pushed, and has no bookmark to push it under"
+                  >↑</span
+                >`
+              : nothing
+          }
+          ${
+            // `name@`, as jj writes it in its own log — for every workspace holding this
+            // commit *except* this window's own. That one is already marked by the dot and
+            // its halo, and labelling it too would put a tag on one row of every repo,
+            // including the overwhelming majority that have a single workspace.
+            change.workspaces
+              .filter((name) => name !== this.workspace)
+              .map(
+                (name) => html`<span class="tag workspace" title="Checked out in the ${name} workspace"
+                  >${name}@</span
+                >`,
+              )
+          }
+          ${change.conflict ? html`<span class="tag warn">×</span>` : nothing}
+          ${
+            // Spelled out, unlike the conflict glyph beside it. A conflict has a
+            // red × everywhere in this app and in jj, so the mark is the word; a
+            // divergent change has no such vocabulary, and two rows carrying the
+            // same unexplained symbol would read as one more thing they share.
+            change.divergent
+              ? html`<span
+                  class="tag warn"
+                  title="Two visible commits share this change id — this is one of them, ${change.commitId.slice(
+                    0,
+                    12,
+                  )}. Abandon the side you do not want to clear it."
+                  >divergent<span class="which">${change.commitId.slice(0, 8)}</span></span
+                >`
+              : nothing
+          }
+          <span class="desc ${summary ? '' : 'empty-desc'}">
+            ${summary || (change.workingCopy ? 'working copy' : '(no description)')}
+          </span>
+          <span class="when">${relativeTime(change.committer.timestamp)}</span>
         </span>
-        <span class="when">${relativeTime(change.committer.timestamp)}</span>
       </button>
     `;
   }

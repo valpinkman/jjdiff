@@ -75,7 +75,7 @@ export interface RepoState {
   jjVersion: string;
   workingCopy: Change;
   stack: Change[];
-  /** Recent history (ancestors of @ and all bookmarks) for the graph view. */
+  /** Recent history for the graph view, including every workspace head. */
   graph: Change[];
   /** Tracking state per bookmark; empty when the repo has no remotes. */
   bookmarks: BookmarkStatus[];

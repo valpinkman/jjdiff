@@ -161,7 +161,7 @@ import {
 const relativeTime = (timestamp: string): string => age(timestamp, true);
 
 /** What the main pane shows for the selected change. */
-type ViewMode = 'full' | 'interdiff' | 'ops' | 'pr';
+type ViewMode = 'full' | 'interdiff' | 'log' | 'ops' | 'pr';
 
 /**
  * Which change is selected — and, when that is not enough, which commit of it.
@@ -445,6 +445,7 @@ export class App extends LitElement {
    * about reading the diff, and the sidebar is 292px the diff could have.
    */
   @state() private sidebarCollapsed = false;
+  private sidebarCollapsedBeforeLog: boolean | null = null;
   /** Description editing is opt-in. Reading a change is the common case, and a
    *  textarea permanently sitting there reads as an input to fill in rather
    *  than a message to read. */
@@ -612,6 +613,8 @@ export class App extends LitElement {
   @state() private busy: string | null = null;
   /** Revset scoping the Log graph; null = the default. */
   @state() private graphRevset: string | null = null;
+  @state() private graphLoading = false;
+  private graphLoadTicket = 0;
   @state() private revsetSearch = '';
   /** "system" | "light" | "dark" — runtime override of the config value. */
   /** A `THEMES` id — 'system', 'light', 'dark' or a named palette. */
@@ -2314,9 +2317,16 @@ export class App extends LitElement {
     document.body.style.userSelect = 'none';
   };
 
-  private async refresh() {
+  private async refresh(options: { loadTarget?: boolean; graphTicket?: number } = {}) {
     try {
-      this.repo = await getRepoState(this.graphRevset ?? undefined);
+      const repo = await getRepoState(this.graphRevset ?? undefined);
+      if (
+        options.graphTicket !== undefined &&
+        options.graphTicket !== this.graphLoadTicket
+      ) {
+        return;
+      }
+      this.repo = repo;
       this.error = null;
       // Seed the description editor only when the selection target changed — a background
       // refresh must not clobber what the user is typing.
@@ -2325,7 +2335,7 @@ export class App extends LitElement {
         this.description = current.description;
         this.seededFor = current.changeId;
       }
-      await this.loadForTarget();
+      if (options.loadTarget ?? true) await this.loadForTarget();
     } catch (error) {
       this.error = String(error);
     }
@@ -3281,6 +3291,7 @@ export class App extends LitElement {
   }
 
   private selectTab(tab: SidebarTab) {
+    if (this.viewMode === 'log') this.showDiffView();
     // Clicking the pane you are already on folds the sidebar away; clicking any
     // other one brings it back on that pane. One control, and no extra chevron
     // hanging off the panel edge.
@@ -3298,6 +3309,10 @@ export class App extends LitElement {
 
   /** The keyboard/palette route, which does not care which pane is showing. */
   private toggleSidebar() {
+    if (this.viewMode === 'log') {
+      this.showDiffView();
+      return;
+    }
     this.sidebarCollapsed = !this.sidebarCollapsed;
   }
 
@@ -3441,7 +3456,12 @@ export class App extends LitElement {
   private applyRevset(revset: string) {
     const next = revset.trim();
     this.graphRevset = next === '' ? null : next;
-    void this.refresh();
+    this.scopeOpen = false;
+    const graphTicket = ++this.graphLoadTicket;
+    this.graphLoading = true;
+    void this.refresh({ loadTarget: false, graphTicket }).finally(() => {
+      if (graphTicket === this.graphLoadTicket) this.graphLoading = false;
+    });
   }
 
   private async loadOperations() {
@@ -4565,6 +4585,130 @@ export class App extends LitElement {
     return REVSET_PRESETS.find((preset) => preset.revset === current) ?? REVSET_PRESETS[0]!;
   }
 
+  private showLogView() {
+    if (this.viewMode !== 'log') this.sidebarCollapsedBeforeLog = this.sidebarCollapsed;
+    this.scopeOpen = false;
+    this.sidebarCollapsed = true;
+    this.viewMode = 'log';
+  }
+
+  private showDiffView() {
+    if (this.viewMode === 'log' && this.sidebarCollapsedBeforeLog !== null) {
+      this.sidebarCollapsed = this.sidebarCollapsedBeforeLog;
+    }
+    this.sidebarCollapsedBeforeLog = null;
+    this.scopeOpen = false;
+    this.viewMode = 'full';
+  }
+
+  private renderGraphControls(): TemplateResult {
+    return html`<div class="revset-bar">
+      <!-- Scope, then search: which commits are in the list, then
+           which of those you are looking for. The scope used to be a
+           deck of pills that collapsed to initials — clever, and
+           unreadable: it hid five of six options behind a hover, so
+           the only way to learn what the filters were was to sweep
+           the mouse across them one at a time. -->
+      <span class="scope-root">
+        <button
+          class="scope-button"
+          title="Which commits the log shows"
+          aria-expanded=${this.scopeOpen}
+          @click=${() => (this.scopeOpen = !this.scopeOpen)}
+        >
+          <span class="scope-label">${this.activeScope.label}</span>
+          <span class="fold-chevron ${this.scopeOpen ? 'up' : ''}">${iconChevron}</span>
+        </button>
+        ${this.scopeOpen
+          ? html`<div class="scope-menu" role="menu">
+              ${REVSET_PRESETS.map((preset) => {
+                const on = (this.graphRevset ?? '') === preset.revset;
+                return html`<button
+                  class="scope-item ${on ? 'on' : ''}"
+                  role="menuitem"
+                  @click=${() => {
+                    this.scopeOpen = false;
+                    this.applyRevset(preset.revset);
+                  }}
+                >
+                  <span class="scope-item-label">${preset.label}</span>
+                  <!-- The revset itself, because this app is for
+                       people who write them and the preset is a
+                       shortcut, not a replacement. -->
+                  <code>${preset.revset || 'all()'}</code>
+                </button>`;
+              })}
+            </div>`
+          : nothing}
+      </span>
+      <label class="field">
+        <span class="field-icon">${iconSearch}</span>
+        <input
+          class="revset-input"
+          placeholder="Search commits…"
+          .value=${this.revsetSearch}
+          @input=${(event: Event) =>
+            (this.revsetSearch = (event.target as HTMLInputElement).value)}
+        />
+      </label>
+    </div>`;
+  }
+
+  private renderLogGraph(): TemplateResult {
+    return html`<jj-log-graph
+      .changes=${this.filteredGraph}
+      .selected=${this.selectedChange?.commitId ?? null}
+      .canRebase=${!this.busy}
+      .workspace=${this.repo?.workspace ?? null}
+      .bookmarks=${this.repo?.bookmarks ?? []}
+      .unpushed=${this.unpushed}
+      @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
+      @change-menu=${(event: CustomEvent<ChangeMenuRequest>) => {
+        // Select first: every entry acts on the selection, and a menu
+        // whose verbs applied to a row the rest of the window is not
+        // showing is the kind of thing you only notice afterwards.
+        if (event.detail.change.commitId !== this.selectedChange?.commitId) {
+          this.select(event.detail.change);
+        }
+        this.changeMenu = event.detail;
+      }}
+      @rebase-drop=${(event: CustomEvent<{ source: Change; destination: Change }>) =>
+        void this.rebaseByDrop(event.detail.source, event.detail.destination)}
+      @bookmark-drop=${(event: CustomEvent<BookmarkDrop>) =>
+        void this.moveBookmark(event.detail)}
+    ></jj-log-graph>`;
+  }
+
+  private renderLogView(): TemplateResult {
+    return html`<section class="log-view">
+      <div class="log-view-head">
+        <span class="chip accent">${iconGraph}</span>
+        <span class="log-view-title">
+          <h2>Log</h2>
+          <span>
+            ${this.graphLoading
+              ? html`<jj-orbs .size=${12} label="Loading log"></jj-orbs> Loading…`
+              : html`${this.filteredGraph.length} change${
+                  this.filteredGraph.length === 1 ? '' : 's'
+                }`}
+          </span>
+        </span>
+        <span class="spacer"></span>
+        <button class="tool" @click=${this.showDiffView}>Back to Diff</button>
+      </div>
+      ${this.renderGraphControls()}
+      <div class="log-view-graph">
+        ${this.graphLoading
+          ? html`<div class="log-loading">
+              <jj-orbs .size=${16} label="Loading log"></jj-orbs>
+              <span>Loading log…</span>
+            </div>`
+          : nothing}
+        ${this.renderLogGraph()}
+      </div>
+    </section>`;
+  }
+
   /** Mutable non-@ stack changes a file can be squashed into. */
   private get squashTargets(): { changeId: string; label: string }[] {
     if (!this.repo) return [];
@@ -4848,6 +4992,12 @@ export class App extends LitElement {
         run: () => this.toggleSidebar(),
       },
       {
+        id: 'log-view',
+        label: this.viewMode === 'log' ? 'Back to Diff' : 'Show Log Full Page',
+        hint: 'tree',
+        run: () => (this.viewMode === 'log' ? this.showDiffView() : this.showLogView()),
+      },
+      {
         id: 'layout',
         label: `Diff Layout: ${this.layout === 'split' ? 'Split' : 'Unified'}`,
         hint: 'switch',
@@ -4902,10 +5052,6 @@ export class App extends LitElement {
     if (!this.repo) {
       return nothing;
     }
-    // The *resolved* change's commit id, not the selection's own: after a
-    // rewrite the remembered commit is gone and `selectedChange` has already
-    // fallen back to the change id, so this is the one that is always on screen.
-    const selectedId = this.selectedChange?.commitId ?? null;
     const change = this.selectedChange;
     const isWc = this.isWorkingCopySelected;
     const visible = this.focusPath
@@ -5066,82 +5212,20 @@ export class App extends LitElement {
           ${this.sidebarTab === 'walkthrough' && this.walkStale
             ? html`<span class="stale-dot" title="The change moved since this was generated"></span>`
             : nothing}
+          ${this.sidebarTab === 'stack'
+            ? html`<span class="spacer"></span>
+                <button
+                  class="tool icon pane-action"
+                  title="Show log full page"
+                  @click=${this.showLogView}
+                >
+                  ${iconGraph}
+                </button>`
+            : nothing}
         </div>
         ${this.sidebarTab === 'stack'
-          ? html`<div class="revset-bar">
-                <!-- Scope, then search: which commits are in the list, then
-                     which of those you are looking for. The scope used to be a
-                     deck of pills that collapsed to initials — clever, and
-                     unreadable: it hid five of six options behind a hover, so
-                     the only way to learn what the filters were was to sweep
-                     the mouse across them one at a time. -->
-                <span class="scope-root">
-                  <button
-                    class="scope-button"
-                    title="Which commits the log shows"
-                    aria-expanded=${this.scopeOpen}
-                    @click=${() => (this.scopeOpen = !this.scopeOpen)}
-                  >
-                    <span class="scope-label">${this.activeScope.label}</span>
-                    <span class="fold-chevron ${this.scopeOpen ? 'up' : ''}">${iconChevron}</span>
-                  </button>
-                  ${this.scopeOpen
-                    ? html`<div class="scope-menu" role="menu">
-                        ${REVSET_PRESETS.map((preset) => {
-                          const on = (this.graphRevset ?? '') === preset.revset;
-                          return html`<button
-                            class="scope-item ${on ? 'on' : ''}"
-                            role="menuitem"
-                            @click=${() => {
-                              this.scopeOpen = false;
-                              this.applyRevset(preset.revset);
-                            }}
-                          >
-                            <span class="scope-item-label">${preset.label}</span>
-                            <!-- The revset itself, because this app is for
-                                 people who write them and the preset is a
-                                 shortcut, not a replacement. -->
-                            <code>${preset.revset || 'all()'}</code>
-                          </button>`;
-                        })}
-                      </div>`
-                    : nothing}
-                </span>
-                <label class="field">
-                  <span class="field-icon">${iconSearch}</span>
-                  <input
-                    class="revset-input"
-                    placeholder="Search commits…"
-                    .value=${this.revsetSearch}
-                    @input=${(event: Event) =>
-                      (this.revsetSearch = (event.target as HTMLInputElement).value)}
-                  />
-                </label>
-              </div>
-              <div class="stack">
-              <jj-log-graph
-                .changes=${this.filteredGraph}
-                .selected=${selectedId}
-                .canRebase=${!this.busy}
-                .workspace=${this.repo?.workspace ?? null}
-                .bookmarks=${this.repo?.bookmarks ?? []}
-                .unpushed=${this.unpushed}
-                @change-selected=${(event: CustomEvent<Change>) => this.select(event.detail)}
-                @change-menu=${(event: CustomEvent<ChangeMenuRequest>) => {
-                  // Select first: every entry acts on the selection, and a menu
-                  // whose verbs applied to a row the rest of the window is not
-                  // showing is the kind of thing you only notice afterwards.
-                  if (event.detail.change.commitId !== this.selectedChange?.commitId) {
-                    this.select(event.detail.change);
-                  }
-                  this.changeMenu = event.detail;
-                }}
-                @rebase-drop=${(event: CustomEvent<{ source: Change; destination: Change }>) =>
-                  void this.rebaseByDrop(event.detail.source, event.detail.destination)}
-                @bookmark-drop=${(event: CustomEvent<BookmarkDrop>) =>
-                  void this.moveBookmark(event.detail)}
-              ></jj-log-graph>
-              </div>`
+          ? html`${this.renderGraphControls()}
+              <div class="stack">${this.renderLogGraph()}</div>`
           : this.sidebarTab === 'workspaces'
             ? this.renderWorkspaces()
           : this.sidebarTab === 'review'
@@ -5206,6 +5290,8 @@ export class App extends LitElement {
       <main
         class=${this.viewMode === 'pr' && this.pullRequest
           ? 'showing-pr'
+          : this.viewMode === 'log'
+            ? 'showing-log'
           : this.viewMode === 'ops'
             ? 'showing-ops'
             : this.showingOverview
@@ -5226,9 +5312,12 @@ export class App extends LitElement {
         ${this.viewMode === 'pr' && this.pullRequest
           ? this.renderProposalView(this.pullRequest)
           : nothing}
+        ${this.viewMode === 'log'
+          ? this.renderLogView()
+          : nothing}
         ${this.viewMode === 'ops'
           ? this.renderOperationLog()
-          : change && this.detailView
+          : change && this.detailView && !this.walkActive
           ? html`<section class="detail ${this.detailCollapsed ? 'collapsed' : ''}">
               <header
                 class="detail-head"
@@ -5749,7 +5838,7 @@ export class App extends LitElement {
              put the same path on screen twice, one line apart. -->
 
         ${this.showingOverview ? this.renderWalkthroughOverview() : nothing}
-        ${this.viewMode === 'pr' || this.showingOverview
+        ${this.viewMode === 'pr' || this.viewMode === 'log' || this.showingOverview
           ? nothing
           : html`<jj-patch-view
               .files=${visible}
