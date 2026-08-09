@@ -40,6 +40,7 @@ commit_parsers = [
   { message = "^:construction_worker:", group = "<!-- 6 -->👷 CI" },
   { message = "^:wrench:", group = "<!-- 7 -->🔧 Chores" },
   { message = "^:bookmark:", skip = true },
+  { message = "^Merge pull request", skip = true },
   { message = ".*", group = "<!-- 8 -->Other Changes" },
 ]
 

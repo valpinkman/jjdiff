@@ -44,6 +44,11 @@ All notable changes to jjdiff are documented here.
 - :construction_worker: (ci): Add signed release workflow, pin actions to SHAs ([429c372](https://github.com/valpinkman/jjdiff/commit/429c372574a6444e217ca7eefa83fd5af6a0793d))
 
 
+### 🔧 Chores
+
+- :wrench: (release): Changelog generation and one-command release via git-cliff ([9491da5](https://github.com/valpinkman/jjdiff/commit/9491da56d5c92c03d924f3d7a82bfbb77c5aa4ad))
+
+
 ### Other Changes
 
 - Plan jj-native diff review tool (Tauri + Rust) ([f1bbe5a](https://github.com/valpinkman/jjdiff/commit/f1bbe5aac1e4c795b25257abe60fdc8e0742a49e))
@@ -120,17 +125,11 @@ All notable changes to jjdiff are documented here.
 
 - Add GitHub Actions CI, remove Tangled CI ([050fb41](https://github.com/valpinkman/jjdiff/commit/050fb4110a8de450c8168b273789cd25ccebf914))
 
-- Merge pull request #1 from valpinkman/github-ci-workflows ([5960ed9](https://github.com/valpinkman/jjdiff/commit/5960ed995b0de7dba20b5a4f4fecebd94365fbb4))
-
 - C1: CLI and terminal helper ([343c782](https://github.com/valpinkman/jjdiff/commit/343c782ddd0778b2eef7f4a33cfae08f6bb48616))
-
-- Merge pull request #2 from valpinkman/valpinkman/jjdiff-cli-terminal-helper ([ff6422b](https://github.com/valpinkman/jjdiff/commit/ff6422b50826e66233461a5077ee5823ba356bd2))
 
 - C2: Inline review comments (#3) ([b262223](https://github.com/valpinkman/jjdiff/commit/b26222343117d49d65ee7a9222c924c702b7ed64))
 
 - C3: Image and markdown rendering ([70c32ee](https://github.com/valpinkman/jjdiff/commit/70c32eeb155a5142074d34d860691ea9756b4522))
-
-- Merge pull request #4 from valpinkman/valpinkman/jjdiff-images-markdown ([df2799e](https://github.com/valpinkman/jjdiff/commit/df2799e69c566c7af1602982c1169eda31e3a604))
 
 - UI refresh ([ddf90b9](https://github.com/valpinkman/jjdiff/commit/ddf90b9b1b3c221c163a6cb5c37bc4c40e381418))
 
@@ -140,17 +139,11 @@ All notable changes to jjdiff are documented here.
 
 - C4: Forge review via gh / glab ([977f3ff](https://github.com/valpinkman/jjdiff/commit/977f3ffe45b8c3609543a15a2410b4027c4128be))
 
-- Merge pull request #5 from valpinkman/valpinkman/jjdiff-polish-forge-review ([487c240](https://github.com/valpinkman/jjdiff/commit/487c240d116805692463ed1a0b0cea349afd042d))
-
 - Bookmark tracking state, and rewriting immutable commits ([7d6202a](https://github.com/valpinkman/jjdiff/commit/7d6202ac67a83dd9e2289383878c59c3c78b4cd1))
 
 - The proposal becomes a view; the description becomes readable ([8ec2063](https://github.com/valpinkman/jjdiff/commit/8ec206318566025f7c1620d0a226238cefacf921))
 
-- Merge pull request #6 from valpinkman/valpinkman/jjdiff-tracking-immutable ([77100b5](https://github.com/valpinkman/jjdiff/commit/77100b5a3f4fc9350bffd53d8bf8175ecfba2c91))
-
 - Visual overhaul: flat surfaces, an icon rail, and named themes ([f349d5d](https://github.com/valpinkman/jjdiff/commit/f349d5dc1b7811c57909891ad6701696d339beb3))
-
-- Merge pull request #7 from valpinkman/valpinkman/jjdiff-visual-overhaul ([cb3881b](https://github.com/valpinkman/jjdiff/commit/cb3881b75007dda90fd46a6471ee2bceb6a01b87))
 
 - Operation diffs, an evolog drawer, and three bugs they exposed ([ebcf9c6](https://github.com/valpinkman/jjdiff/commit/ebcf9c62230dc27ef85be75ebf720914153713e7))
 
