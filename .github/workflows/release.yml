@@ -57,7 +57,7 @@ jobs:
       - name: Stage the App Store Connect key
         run: |
           umask 077
-          printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc.p8"
+          printf '%s' "$APPLE_API_KEY_P8" | tr -d '[:space:]' | base64 --decode > "$RUNNER_TEMP/asc.p8"
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
 
