@@ -130,6 +130,16 @@ Flow: `jj` CLI -> `crates/vcs` -> `crates/diff` -> Tauri command -> `ui/src/ipc.
 - Generated commit messages are drafts.
 - `generate_description` returns text only; it must not describe the change.
 
+## Releasing
+
+- `pnpm release` runs `scripts/release.sh`: bump, changelog, describe, push, tag.
+- It wants an empty `@` on top of `main`.
+- git-cliff groups by gitmoji (`cliff.toml`): `:boom:` major, `:sparkles:` minor, else patch.
+- The version lives in `Cargo.toml`, `package.json`, and `src-tauri/tauri.conf.json`; the script syncs all three plus `Cargo.lock`.
+- Release commits are `:bookmark: (release): vX.Y.Z` and never appear in the changelog.
+- The tag push fires `release.yml`: signed macOS build, draft GitHub release.
+- The script runs `jj git export` first; git-cliff reads git, and jj exports lazily.
+
 ## Tests
 
 - `crates/vcs` and `crates/diff` tests shell out to real `jj`.
