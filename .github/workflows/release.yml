@@ -107,15 +107,22 @@ jobs:
       - name: Verify the signature and the stapled ticket
         run: |
           set -euo pipefail
-          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/jjdiff.app
-          dmg=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          # The target dir is the workspace root's target/, not src-tauri's —
+          # cargo resolves it from the workspace, wherever the build is invoked.
+          app=target/universal-apple-darwin/release/bundle/macos/jjdiff.app
+          dmg=$(ls target/universal-apple-darwin/release/bundle/dmg/*.dmg)
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign --display --verbose=4 "$app" 2>&1 | grep -q 'flags=.*runtime' \
             || { echo "hardened runtime missing"; exit 1; }
           spctl --assess --type execute --verbose=4 "$app"
           xcrun stapler validate "$app"
-          xcrun stapler validate "$dmg"
+          # The dmg is NOT stapled, and cannot be: only the app is submitted
+          # to the notary service, so no ticket exists for the dmg. That is
+          # fine — Gatekeeper's notarization check targets the executable,
+          # and the stapled ticket travels inside the app bundle. What the
+          # dmg must be is signed.
+          codesign --verify --verbose=2 "$dmg"
 
       - uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
         with:
-          subject-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          subject-path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
