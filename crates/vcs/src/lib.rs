@@ -761,6 +761,30 @@ impl Repo {
         self.mutate(&["git", "fetch", "--remote", remote, "--branch", branch])
     }
 
+    /// Fetch a single commit by SHA. The forge's `base_oid` is the merge base
+    /// at the time the PR was created; fetching the base branch afterwards
+    /// only brings the branch's current tip, which may have advanced past the
+    /// merge base. This fetches the exact commit so the review revset resolves.
+    pub fn git_fetch_commit(&self, remote: &str, oid: &str) -> Result<()> {
+        let refspec = format!("+{oid}");
+        let output = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(&self.git_dir)
+            .args(["fetch", remote, &refspec])
+            .current_dir(self.git_dir.parent().unwrap_or(&self.root))
+            .output()
+            .map_err(VcsError::Io)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(VcsError::CommandFailed {
+                args: vec!["git".into(), "fetch".into(), remote.into(), refspec],
+                stderr,
+            });
+        }
+        self.runner.mutate(&["git", "import"])?;
+        Ok(())
+    }
+
     pub fn git_fetch(&self, remote: Option<&str>) -> Result<Outcome> {
         let mut args = vec!["git", "fetch"];
         if let Some(remote) = remote {

@@ -1808,6 +1808,17 @@ async fn open_pull_request(
         if let Err(error) = repo.git_fetch_branch(&client.remote, &pull_request.base) {
             eprintln!("jjdiff: could not refresh {}: {error}", pull_request.base);
         }
+        // The base branch fetch only brings the branch tip; if it has advanced
+        // since the PR was created, the forge's `base_oid` (merge base) may not
+        // be reachable. Fetch the exact commit so the review revset resolves.
+        if !pull_request.base_oid.is_empty() {
+            if let Err(error) = repo.git_fetch_commit(&client.remote, &pull_request.base_oid) {
+                eprintln!(
+                    "jjdiff: could not fetch merge base {}: {error}",
+                    pull_request.base_oid
+                );
+            }
+        }
         // Diff against the forge's own merge base rather than `base..head`,
         // which goes empty the moment a proposal is merged.
         let revset = if pull_request.base_oid.is_empty() {
