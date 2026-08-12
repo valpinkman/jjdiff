@@ -4605,17 +4605,12 @@ jj-patch-view .file-header.stuck.closing {
 
 .log-view-graph jj-log-graph {
   display: block;
-  min-width: 760px;
 }
 
 @media (max-width: 820px) {
   .log-view .revset-bar {
     display: flex;
     flex-direction: column;
-  }
-
-  .log-view-graph jj-log-graph {
-    min-width: 620px;
   }
 }
 

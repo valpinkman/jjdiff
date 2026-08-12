@@ -422,6 +422,16 @@ export class App extends LitElement {
   // null = the working copy, which is never named by id at all: its commit id is
   // the last snapshot's and goes stale on the next keystroke saved to disk.
   @state() private selected: Selection | null = null;
+  /**
+   * The selection that was active before the context menu opened, if any.
+   *
+   * Right-clicking a row selects it so menu verbs apply to the right change;
+   * actions like abandon then clear the selection (the change is gone). Without
+   * restoring the prior selection, `selectedChange` falls back to the working
+   * copy and the detail view jumps to it. This holds what was on screen before
+   * the menu opened so it can be put back.
+   */
+  @state() private priorSelection: Selection | null = null;
   @state() private files: FilePatch[] = [];
   @state() private layout: DiffLayout = 'split';
   @state() private ignoreWhitespace = false;
@@ -895,6 +905,7 @@ export class App extends LitElement {
     }
     if (this.changeMenu && !inside('change-menu')) {
       this.changeMenu = null;
+      this.priorSelection = null;
     }
   };
 
@@ -2132,6 +2143,7 @@ export class App extends LitElement {
       }
       if (this.changeMenu) {
         this.changeMenu = null;
+        this.priorSelection = null;
         return;
       }
       if (this.searchOpen) {
@@ -3686,8 +3698,12 @@ export class App extends LitElement {
     if (!ok) return;
     void this.command('abandon', async () => {
       const outcome = await abandonChange(revisionOf(change), change.immutable);
-      this.selected = null;
-      this.detailView = false;
+      // Restore what was on screen before the context menu selected this change,
+      // rather than falling back to the working copy. If the menu was opened on
+      // the already-selected change (no prior), clear to null as before.
+      this.selected = this.priorSelection;
+      this.priorSelection = null;
+      if (!this.selected) this.detailView = false;
       return outcome;
     });
   }
@@ -4668,7 +4684,10 @@ export class App extends LitElement {
         // whose verbs applied to a row the rest of the window is not
         // showing is the kind of thing you only notice afterwards.
         if (event.detail.change.commitId !== this.selectedChange?.commitId) {
+          this.priorSelection = this.selected;
           this.select(event.detail.change);
+        } else {
+          this.priorSelection = null;
         }
         this.changeMenu = event.detail;
       }}

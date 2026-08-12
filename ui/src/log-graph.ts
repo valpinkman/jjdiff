@@ -1,8 +1,9 @@
-import { css, html, LitElement, nothing, svg, type TemplateResult } from 'lit';
+import { css, html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import { layoutGraph, type GraphRow } from './graph.js';
 import type { BookmarkStatus, Change } from './ipc.js';
+import { animateFlip, cssTime, cssValue, measureByKey, type RectSnapshot } from './motion.js';
 import { relativeTime } from './time.js';
 import { unpushedAndUnnamed, worstTracking } from './tracking.js';
 
@@ -38,12 +39,25 @@ export class LogGraph extends LitElement {
       font-size: 12.5px;
       user-select: none;
       padding: 4px 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .track {
+      position: relative;
+      min-width: max(var(--graph-gutter, 0px) + 400px, 760px);
+    }
+    @media (max-width: 820px) {
+      .track {
+        min-width: max(var(--graph-gutter, 0px) + 320px, 620px);
+      }
     }
     .row {
       position: relative;
       transition:
         background-color var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
-        color var(--jj-t-2, 180ms) var(--jj-ease-out, ease);
+        box-shadow var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
+        color var(--jj-t-2, 180ms) var(--jj-ease-out, ease),
+        opacity var(--jj-t-2, 180ms) var(--jj-ease-out, ease);
       display: block;
       width: 100%;
       height: ${ROW_H}px;
@@ -104,7 +118,7 @@ export class LogGraph extends LitElement {
     .row-content {
       position: absolute;
       top: 0;
-      right: 10px;
+      right: 0;
       bottom: 0;
       left: var(--content-left);
       display: flex;
@@ -113,6 +127,7 @@ export class LogGraph extends LitElement {
       min-width: 0;
       box-sizing: border-box;
       padding-left: 4px;
+      padding-right: 10px;
     }
     /* Rails and mutable dots take their lane's hue (set per element); everything else
        keeps its meaning — immutable recedes, the working copy is the accent, conflicts
@@ -250,6 +265,13 @@ export class LogGraph extends LitElement {
       flex: none;
       font-size: 10.5px;
       color: var(--jj-fg-faint);
+      /* Pin the date to the right edge during horizontal scroll so it stays
+         visible even when the graph lanes push the content wider than the
+         viewport. Sticky against the host's scroll container. */
+      position: sticky;
+      right: 0;
+      background: inherit;
+      padding-left: 8px;
     }
     /* Dragging: the row being moved recedes, the row under the pointer shows
        where it would land. A line rather than a fill, because the destination
@@ -337,6 +359,26 @@ export class LogGraph extends LitElement {
    * available — by `drop` both look like a row under a pointer.
    */
   @state() private draggingBookmark: { name: string; from: Change } | null = null;
+
+  private previousRowRects: RectSnapshot | null = null;
+
+  protected override willUpdate(changed: PropertyValues<this>) {
+    if (changed.has('changes') && this.hasUpdated) this.previousRowRects = this.measureRows();
+  }
+
+  protected override updated(changed: PropertyValues<this>) {
+    const previous = this.previousRowRects;
+    this.previousRowRects = null;
+    if (!previous || !changed.has('changes')) return;
+    animateFlip<HTMLButtonElement>(this.renderRoot, '.row[data-commit-id]', previous, rowKey, {
+      duration: cssTime(this, '--jj-t-2', 180),
+      easing: cssValue(this, '--jj-ease-out', 'cubic-bezier(0.22, 1, 0.36, 1)'),
+    });
+  }
+
+  private measureRows(): RectSnapshot {
+    return measureByKey<HTMLButtonElement>(this.renderRoot, '.row[data-commit-id]', rowKey);
+  }
 
   private pick(change: Change) {
     this.dispatchEvent(
@@ -492,7 +534,9 @@ export class LogGraph extends LitElement {
     const rows = layoutGraph(this.changes);
     const maxWidth = Math.max(1, ...rows.map((row) => row.width));
     const gutter = maxWidth * LANE_W + RAIL_INSET * 2;
-    return html`${rows.map((row) => this.renderRow(row, gutter))}`;
+    return html`<div class="track" style=${`--graph-gutter: ${gutter}px`}>
+      ${rows.map((row) => this.renderRow(row, gutter))}
+    </div>`;
   }
 
   private renderRow(row: GraphRow, gutter: number): TemplateResult {
@@ -552,6 +596,7 @@ export class LogGraph extends LitElement {
     return html`
       <button
         class=${rowClass}
+        data-commit-id=${change.commitId}
         draggable=${this.canRebase || change.bookmarks.length ? 'true' : 'false'}
         title=${
           this.draggingBookmark
@@ -671,6 +716,8 @@ export class LogGraph extends LitElement {
 const LANE_COLOURS = 6;
 
 const laneStroke = (lane: number) => `stroke: var(--jj-lane-${lane % LANE_COLOURS})`;
+
+const rowKey = (row: HTMLButtonElement) => row.dataset.commitId ?? null;
 
 /**
  * A bookmark dragged off one change and dropped on another.
