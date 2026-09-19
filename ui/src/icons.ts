@@ -30,8 +30,8 @@ export const iconAbsorb = icon(svg`
 
 /** jj undo — wind the last operation back. */
 export const iconUndo = icon(svg`
-  <path d="M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.49 1.83L2 5.33" />
-  <path d="M2 2v3.33h3.33" />`);
+  <path d="M6 9.33 2.67 6 6 2.67" />
+  <path d="M2.67 6h7a3.67 3.67 0 0 1 0 7.33H7.33" />`);
 
 /** Side-by-side diff: one pane split down the middle. */
 export const iconSplit = icon(svg`
